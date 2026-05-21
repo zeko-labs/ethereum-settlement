@@ -1,382 +1,216 @@
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use kimchi::{
-    circuits::constraints::FeatureFlags, groupmap::GroupMap, linearization::expr_linearization,
-    mina_curves::pasta::PallasParameters,
+use alloy_primitives::{keccak256, U256};
+use ark_ff::PrimeField;
+use ark_serialize::CanonicalSerialize;
+use mina_curves::pasta::{Fp, PallasParameters};
+use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
+use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
+use mina_poseidon::sponge::DefaultFqSponge;
+use mina_poseidon::FqSponge;
+use zeko_sp1_lib::{
+    Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ResolvedBridgeDeposit,
 };
-use ledger::proofs::public_input::plonk_checks::ShiftedValue;
-use ledger::proofs::public_input::prepared_statement::{DeferredValues, Plonk};
-use ledger::proofs::step::FeatureFlags as LFF;
-use ledger::proofs::transaction::{endos, InnerCurve};
-use ledger::proofs::verification::{
-    get_message_for_next_step_proof, get_message_for_next_wrap_proof, get_prepared_statement, VK,
-};
-use ledger::proofs::{prover::make_padded_proof_from_p2p, VerifierIndex};
-use ledger::scan_state::transaction_logic::zkapp_command::{OrIgnore, SetOrKeep, ZkAppCommand};
-use ledger::scan_state::transaction_logic::zkapp_statement::ZkappStatement;
-use ledger::VerificationKey;
-use mina_curves::pasta::{Fp, Fq, Pallas};
-use mina_p2p_messages::v2::{
-    CompositionTypesBranchDataDomainLog2StableV1, CompositionTypesBranchDataStableV1,
-    MinaBaseVerificationKeyWireStableV1, MinaBaseZkappCommandTStableV1WireStableV1,
-    PicklesBaseProofsVerifiedStableV1, PicklesProofProofsVerified2ReprStableV2,
-};
-use mina_poseidon::sponge::{DefaultFqSponge, DefaultFrSponge};
-use poly_commitment::{
-    hash_map_cache::HashMapCache,
-    ipa::{OpeningProof, SRS},
-};
-use std::{collections::HashMap, sync::Arc};
-use zeko_sp1_lib::{ArchivedRkyvSRS, SerializableDeferredValues, ZkappPublicValues};
 
-const FULL_ROUNDS: usize = 55;
-type SpongeParams = mina_poseidon::constants::PlonkSpongeConstantsKimchi;
-type EFqSponge = DefaultFqSponge<PallasParameters, SpongeParams, FULL_ROUNDS>;
-type EFrSponge = DefaultFrSponge<Fq, SpongeParams, FULL_ROUNDS>;
+type ActionStateSponge =
+    DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
-static SRS_RKYV: &[u8] = include_bytes!("srs_rkyv.bin");
+fn main() {
+    let input: BridgeTransitionInput = sp1_zkvm::io::read();
 
-// ---------- Helpers ----------
+    let mut ethereum_state = input.ethereum.deposit_state;
+    let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
+    let mut next_nonce = input.ethereum.deposit_nonce;
+    let mut resolved_deposits = Vec::with_capacity(input.deposits.len());
 
-#[inline(always)]
-fn deserialize_fp(bytes: [u8; 32]) -> Fp {
-    Fp::deserialize_uncompressed(&bytes[..]).expect("invalid Fp encoding")
+    let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
+
+    for deposit in &input.deposits {
+        assert!(
+            !deposit.zeko_recipient_fields.is_empty(),
+            "zeko recipient fields must not be empty"
+        );
+
+        let zeko_amount = u256_from_bytes(deposit.amount);
+        let zeko_recipient_hash = keccak256(&deposit.zeko_recipient).0;
+
+        next_nonce += 1;
+
+        let ethereum_deposit_leaf = compute_ethereum_deposit_leaf(
+            input.ethereum.chain_id,
+            input.ethereum.bridge_address,
+            deposit.token,
+            zeko_recipient_hash,
+            zeko_amount,
+            deposit.timeout,
+            next_nonce,
+        );
+
+        ethereum_state = compute_ethereum_state(ethereum_state, ethereum_deposit_leaf);
+
+        let zeko_action_hash = compute_zeko_action_hash(
+            input.ethereum.bridge_address,
+            deposit.token,
+            zeko_amount,
+            &deposit.zeko_recipient_fields,
+            deposit.timeout,
+        );
+        let zeko_action_list_hash = action_list_add(empty_action_list_hash, zeko_action_hash);
+        zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
+
+        resolved_deposits.push(ResolvedBridgeDeposit {
+            nonce: next_nonce,
+            token: deposit.token,
+            amount: deposit.amount,
+            zeko_amount: u256_to_bytes(zeko_amount),
+            zeko_recipient_hash,
+            timeout: deposit.timeout,
+            ethereum_deposit_leaf,
+            zeko_action_hash: fp_to_bytes(zeko_action_hash),
+            zeko_action_list_hash: fp_to_bytes(zeko_action_list_hash),
+            zeko_action_state_after: fp_to_bytes(zeko_action_state),
+        });
+    }
+
+    sp1_zkvm::io::commit(&BridgeTransitionPublicValues {
+        ethereum_state_before: input.ethereum.deposit_state,
+        ethereum_state_after: ethereum_state,
+        ethereum_nonce_before: input.ethereum.deposit_nonce,
+        ethereum_nonce_after: next_nonce,
+        zeko_action_state_before: fp_to_bytes(fp_from_bytes(input.zeko.action_state)),
+        zeko_action_state_after: fp_to_bytes(zeko_action_state),
+        deposit_count: input.deposits.len() as u32,
+        resolved_deposits,
+    });
 }
 
-#[inline(always)]
-fn fq_to_bytes<F: CanonicalSerialize>(x: &F) -> [u8; 32] {
+fn compute_ethereum_deposit_leaf(
+    chain_id: u64,
+    bridge_address: Address,
+    token: Address,
+    zeko_recipient_hash: Bytes32,
+    zeko_amount: U256,
+    timeout: u64,
+    nonce: u64,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(32 * 8);
+    encoded.extend_from_slice(&keccak256("ZEKO_BRIDGE_DEPOSIT_LEAF_V1".as_bytes()).0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge_address));
+    encoded.extend_from_slice(&address_word(token));
+    encoded.extend_from_slice(&zeko_recipient_hash);
+    encoded.extend_from_slice(&u256_to_bytes(zeko_amount));
+    encoded.extend_from_slice(&u64_word(timeout));
+    encoded.extend_from_slice(&u64_word(nonce));
+    keccak256(encoded).0
+}
+
+fn compute_ethereum_state(previous_state: Bytes32, deposit_leaf: Bytes32) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(96);
+    encoded.extend_from_slice(&keccak256("ZEKO_BRIDGE_DEPOSIT_STATE_V1".as_bytes()).0);
+    encoded.extend_from_slice(&previous_state);
+    encoded.extend_from_slice(&deposit_leaf);
+    keccak256(encoded).0
+}
+
+fn compute_zeko_action_hash(
+    holder_account_l1: Address,
+    token: Address,
+    zeko_amount: U256,
+    zeko_recipient_fields: &[Bytes32],
+    timeout: u64,
+) -> Fp {
+    let mut fields = Vec::with_capacity(4 + zeko_recipient_fields.len());
+    fields.push(fp_from_address(token));
+    fields.push(fp_from_address(holder_account_l1));
+    fields.push(fp_from_u256(zeko_amount));
+    for field in zeko_recipient_fields {
+        fields.push(fp_from_bytes(*field));
+    }
+    fields.push(Fp::from(timeout));
+
+    hash_with_prefix("Deposit_params - qFB3jXP*)", &fields)
+}
+
+fn action_list_add(hash: Fp, action: Fp) -> Fp {
+    let event_hash = hash_with_prefix("MinaZkappEvent******", &[action]);
+    hash_with_prefix("MinaZkappSeqEvents**", &[hash, event_hash])
+}
+
+fn merkle_actions_add(hash: Fp, actions_hash: Fp) -> Fp {
+    hash_with_prefix("MinaZkappSeqEvents**", &[hash, actions_hash])
+}
+
+fn empty_hash_with_prefix(prefix: &str) -> Fp {
+    salt(prefix)
+}
+
+fn hash_with_prefix(prefix: &str, input: &[Fp]) -> Fp {
+    let mut sponge = new_action_state_sponge();
+    let prefixed = prefix_to_field(prefix);
+    sponge.absorb_fq(&[prefixed]);
+    if !input.is_empty() {
+        sponge.absorb_fq(input);
+    }
+    sponge.digest_fq()
+}
+
+fn salt(prefix: &str) -> Fp {
+    let mut sponge = new_action_state_sponge();
+    sponge.absorb_fq(&[prefix_to_field(prefix)]);
+    sponge.digest_fq()
+}
+
+fn new_action_state_sponge() -> ActionStateSponge {
+    ActionStateSponge::new(fp_kimchi::static_params())
+}
+
+fn prefix_to_field(prefix: &str) -> Fp {
+    assert!(prefix.len() < 32, "prefix too long");
+    let mut bytes = [0u8; 32];
+    bytes[..prefix.len()].copy_from_slice(prefix.as_bytes());
+    Fp::from_le_bytes_mod_order(&bytes)
+}
+
+fn fp_from_address(address: Address) -> Fp {
+    let mut bytes = [0u8; 32];
+    bytes[12..32].copy_from_slice(&address);
+    Fp::from_be_bytes_mod_order(&bytes)
+}
+
+fn fp_from_u256(value: U256) -> Fp {
+    Fp::from_be_bytes_mod_order(&value.to_be_bytes::<32>())
+}
+
+fn fp_from_bytes(bytes: Bytes32) -> Fp {
+    Fp::from_be_bytes_mod_order(&bytes)
+}
+
+fn fp_to_bytes(x: Fp) -> Bytes32 {
     let mut buf = [0u8; 32];
     x.serialize_uncompressed(&mut buf[..])
         .expect("serialize field");
-    buf.reverse(); // ark-serialize outputs little-endian, EVM expects big-endian
+    buf.reverse();
     buf
 }
 
-#[inline(always)]
-fn to_shifted_value(bytes: [u8; 32]) -> ShiftedValue<Fp> {
-    ShiftedValue {
-        shifted: deserialize_fp(bytes),
-    }
+fn u64_word(value: u64) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[24..32].copy_from_slice(&value.to_be_bytes());
+    word
 }
 
-#[inline(always)]
-fn flat_to_fp(bytes: &[u8], offset: usize) -> Fp {
-    let mut limbs = [0u64; 4];
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            bytes[offset..offset + 32].as_ptr(),
-            limbs.as_mut_ptr() as *mut u8,
-            32,
-        );
-        core::mem::transmute(limbs)
-    }
+fn address_word(address: Address) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[12..32].copy_from_slice(&address);
+    word
 }
 
-#[inline(always)]
-fn flat_to_pallas(p: &[u8; 65]) -> Pallas {
-    if p[64] != 0 {
-        return Pallas::default();
-    }
-    let x = flat_to_fp(p, 0);
-    let y = flat_to_fp(p, 32);
-    Pallas::new_unchecked(x, y)
+fn u256_from_bytes(bytes: Bytes32) -> U256 {
+    U256::from_be_slice(&bytes)
 }
 
-fn main() {
-    // ------------------------------------------------------------------
-    // 1. Read inputs
-    // ------------------------------------------------------------------
-    let vk_wire: MinaBaseVerificationKeyWireStableV1 = sp1_zkvm::io::read();
-    let proof: PicklesProofProofsVerified2ReprStableV2 = sp1_zkvm::io::read();
-    let zkapp_stmt_raw = sp1_zkvm::io::read_vec();
-    let deferred_values_raw = sp1_zkvm::io::read_vec();
-    let zkapp_cmd_raw = sp1_zkvm::io::read_vec();
-    let verifier_index_raw = sp1_zkvm::io::read_vec();
-
-    // ------------------------------------------------------------------
-    // 2. Deserialize inputs
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: deserialize_inputs");
-
-    let zkapp_stmt: ZkappStatement =
-        bincode::deserialize(&zkapp_stmt_raw).expect("deserialize zkapp_stmt");
-
-    let sdv: SerializableDeferredValues =
-        bincode::deserialize(&deferred_values_raw).expect("deserialize deferred_values");
-
-    let deferred_values = DeferredValues {
-        plonk: Plonk {
-            alpha: sdv.plonk.alpha,
-            beta: sdv.plonk.beta,
-            gamma: sdv.plonk.gamma,
-            zeta: sdv.plonk.zeta,
-            zeta_to_srs_length: to_shifted_value(sdv.plonk.zeta_to_srs_length),
-            zeta_to_domain_size: to_shifted_value(sdv.plonk.zeta_to_domain_size),
-            perm: to_shifted_value(sdv.plonk.perm),
-            lookup: sdv.plonk.lookup,
-            feature_flags: LFF {
-                range_check0: sdv.plonk.feature_flags_range_check0,
-                range_check1: sdv.plonk.feature_flags_range_check1,
-                foreign_field_add: sdv.plonk.feature_flags_foreign_field_add,
-                foreign_field_mul: sdv.plonk.feature_flags_foreign_field_mul,
-                xor: sdv.plonk.feature_flags_xor,
-                rot: sdv.plonk.feature_flags_rot,
-                lookup: sdv.plonk.feature_flags_lookup,
-                runtime_tables: sdv.plonk.feature_flags_runtime_tables,
-            },
-        },
-        combined_inner_product: to_shifted_value(sdv.combined_inner_product),
-        b: to_shifted_value(sdv.b),
-        xi: sdv.xi,
-        bulletproof_challenges: sdv
-            .bulletproof_challenges
-            .iter()
-            .map(|b| deserialize_fp(*b))
-            .collect(),
-        branch_data: CompositionTypesBranchDataStableV1 {
-            proofs_verified: match sdv.branch_data_proofs_verified {
-                0 => PicklesBaseProofsVerifiedStableV1::N0,
-                1 => PicklesBaseProofsVerifiedStableV1::N1,
-                _ => PicklesBaseProofsVerifiedStableV1::N2,
-            },
-            domain_log2: CompositionTypesBranchDataDomainLog2StableV1(
-                sdv.branch_data_domain_log2.into(),
-            ),
-        },
-    };
-
-    let zkapp_cmd_wire: MinaBaseZkappCommandTStableV1WireStableV1 =
-        bincode::deserialize(&zkapp_cmd_raw).expect("deserialize zkapp_command wire");
-
-    let zkapp_cmd: ZkAppCommand = (&zkapp_cmd_wire).try_into().expect("wire -> ZkAppCommand");
-
-    println!("cycle-tracker-end: deserialize_inputs");
-
-    // ------------------------------------------------------------------
-    // 3. Bind zkapp_cmd <-> zkapp_stmt
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: verify_account_update_binding");
-
-    assert!(
-        !zkapp_cmd.account_updates.0.is_empty(),
-        "empty account_updates"
-    );
-
-    let first_update = &zkapp_cmd.account_updates.0[0].elt.account_update;
-    let recomputed_digest = first_update.digest();
-
-    assert_eq!(
-        recomputed_digest, *zkapp_stmt.account_update,
-        "zkapp_stmt/account_update mismatch"
-    );
-
-    assert_eq!(
-        zkapp_cmd.account_updates.0[0].elt.calls.hash(),
-        *zkapp_stmt.calls,
-        "zkapp_stmt/calls mismatch"
-    );
-
-    println!("cycle-tracker-end: verify_account_update_binding");
-
-    // ------------------------------------------------------------------
-    // 4. Deserialize verifier index
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: deserialize_verifier_index");
-    let mut verifier_index: VerifierIndex<Fq> =
-        bincode::deserialize(&verifier_index_raw).expect("deserialize verifier_index");
-    println!("cycle-tracker-end: deserialize_verifier_index");
-
-    // ------------------------------------------------------------------
-    // 5. Load static SRS
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: load_static_srs");
-
-    let archived = unsafe { rkyv::access_unchecked::<ArchivedRkyvSRS>(SRS_RKYV) };
-
-    let g: Vec<Pallas> = archived.g_flat.iter().map(|p| flat_to_pallas(p)).collect();
-
-    let h: Pallas = flat_to_pallas(&archived.h_flat);
-
-    let lagrange_bases: Vec<poly_commitment::PolyComm<Pallas>> = archived
-        .lagrange_flat
-        .iter()
-        .map(|p| poly_commitment::PolyComm {
-            chunks: vec![flat_to_pallas(p)],
-        })
-        .collect();
-
-    let domain_size = archived.domain_size.to_native();
-    let mut map = HashMap::new();
-    map.insert(domain_size.try_into().unwrap(), lagrange_bases);
-
-    let srs = SRS::<Pallas> {
-        g,
-        h,
-        lagrange_bases: HashMapCache::new_from_hashmap(map),
-    };
-
-    verifier_index.srs = Arc::new(srs);
-
-    println!("cycle-tracker-end: load_static_srs");
-
-    // ------------------------------------------------------------------
-    // 6. Reconstruct skipped fields
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: reconstruct_skip_fields");
-
-    let feature_flags = FeatureFlags::default();
-    let (linearization, powers_of_alpha) = expr_linearization(Some(&feature_flags), true);
-    let (endo_q, _) = endos::<Fq>();
-
-    verifier_index.linearization = linearization;
-    verifier_index.powers_of_alpha = powers_of_alpha;
-    verifier_index.endo = endo_q;
-
-    println!("cycle-tracker-end: reconstruct_skip_fields");
-
-    // ------------------------------------------------------------------
-    // 7. Stronger circuit binding
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: verify_circuit_binding");
-
-    let vk: VerificationKey = (&vk_wire).try_into().expect("vk wire -> runtime");
-
-    let make_poly = |poly: &InnerCurve<Fp>| poly_commitment::PolyComm {
-        chunks: vec![poly.to_affine()],
-    };
-
-    // These checks are partial but still useful as sanity guards.
-    assert_eq!(
-        verifier_index.generic_comm,
-        make_poly(&vk.wrap_index.generic),
-        "generic commitment mismatch"
-    );
-
-    assert_eq!(
-        verifier_index.sigma_comm,
-        vk.wrap_index.sigma.each_ref().map(make_poly),
-        "sigma commitments mismatch"
-    );
-
-    let vk_hash = vk.hash();
-
-    let verifier_index_hash = fq_to_bytes(&vk_hash);
-
-    println!("cycle-tracker-end: verify_circuit_binding");
-
-    // ------------------------------------------------------------------
-    // 8. Compute public inputs
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: compute_public_inputs");
-
-    let vk_wrapper = VK {
-        commitments: *vk.wrap_index.clone(),
-        index: &verifier_index,
-        data: (),
-    };
-
-    let msg_next_step = get_message_for_next_step_proof(
-        &proof.statement.messages_for_next_step_proof,
-        &vk_wrapper.commitments,
-        &zkapp_stmt,
-    )
-    .expect("get_message_for_next_step_proof");
-
-    let msg_next_wrap =
-        get_message_for_next_wrap_proof(&proof.statement.proof_state.messages_for_next_wrap_proof)
-            .expect("get_message_for_next_wrap_proof");
-
-    let prepared = get_prepared_statement(
-        &msg_next_step,
-        &msg_next_wrap,
-        deferred_values,
-        &proof.statement.proof_state.sponge_digest_before_evaluations,
-    );
-
-    let public_inputs: Vec<Fq> = prepared
-        .to_public_input(vk_wrapper.index.public)
-        .expect("prepared -> public inputs");
-
-    println!("cycle-tracker-end: compute_public_inputs");
-
-    // ------------------------------------------------------------------
-    // 9. Pad proof + group map
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: make_padded_proof");
-    let prover_proof = make_padded_proof_from_p2p(&proof).expect("padded proof");
-    println!("cycle-tracker-end: make_padded_proof");
-
-    println!("cycle-tracker-start: group_map_setup");
-    let group_map = GroupMap::<Fp>::setup();
-    println!("cycle-tracker-end: group_map_setup");
-
-    // ------------------------------------------------------------------
-    // 10. Verify Kimchi proof
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: kimchi_verify");
-
-    let result = kimchi::verifier::verify::<
-        FULL_ROUNDS,
-        Pallas,
-        EFqSponge,
-        EFrSponge,
-        OpeningProof<Pallas, FULL_ROUNDS>,
-    >(&group_map, &verifier_index, &prover_proof, &public_inputs);
-
-    println!("cycle-tracker-end: kimchi_verify");
-
-    let proof_valid = result.is_ok();
-    assert!(proof_valid, "Kimchi verify failed: {:?}", result.err());
-
-    // ------------------------------------------------------------------
-    // 11. Resolve canonical state transition
-    // ------------------------------------------------------------------
-    println!("cycle-tracker-start: resolve_settlement_values");
-
-    let body = &first_update.body;
-
-    let mut app_state_before = [[0u8; 32]; 8];
-    let mut app_state_after = [[0u8; 32]; 8];
-
-    for i in 0..8 {
-        app_state_before[i] = match &body.preconditions.account.0.state[i] {
-            OrIgnore::Check(f) => fq_to_bytes(f),
-            OrIgnore::Ignore => [0u8; 32],
-        };
-
-        // app_state_after[i] = match &body.update.app_state[i] {
-        //     SetOrKeep::Set(f) => fq_to_bytes(f),
-        //     SetOrKeep::Keep => match &body.preconditions.account.0.state[i] {
-        //         OrIgnore::Check(f) => fq_to_bytes(f),
-        //         OrIgnore::Ignore => [0u8; 32],
-        //     },
-        // };
-        app_state_after[i] = match &body.update.app_state[i] {
-            SetOrKeep::Set(f) => fq_to_bytes(f),
-            SetOrKeep::Keep => [0u8; 32],
-        };
-    }
-
-    // Same caveat: this assumes the canonical rollup transition is encoded here.
-    // Adjust these paths to your actual rollup semantics.
-    let action_state_before = match &body.preconditions.account.0.action_state {
-        OrIgnore::Check(x) => fq_to_bytes(x),
-        OrIgnore::Ignore => [0u8; 32],
-    };
-
-    println!("cycle-tracker-end: resolve_settlement_values");
-
-    // ------------------------------------------------------------------
-    // 12. Commit settlement outputs
-    // ------------------------------------------------------------------
-
-    sp1_zkvm::io::commit(&ZkappPublicValues {
-        proof_valid,
-        vk_hash: verifier_index_hash,
-        state_before: app_state_before,
-        state_after: app_state_after,
-        action_state_before,
-    });
+fn u256_to_bytes(value: U256) -> Bytes32 {
+    value.to_be_bytes::<32>()
 }

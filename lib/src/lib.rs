@@ -126,3 +126,61 @@ pub struct SerializableDeferredValues {
     pub branch_data_proofs_verified: u8,       // 0, 1, ou 2
     pub branch_data_domain_log2: u8,
 }
+
+pub type Bytes32 = [u8; 32];
+pub type Address = [u8; 20];
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeDeposit {
+    pub token: Address,
+    pub amount: Bytes32,
+    pub zeko_recipient: Vec<u8>,
+    pub zeko_recipient_fields: Vec<Bytes32>,
+    pub timeout: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EthereumBridgeState {
+    pub chain_id: u64,
+    pub bridge_address: Address,
+    pub deposit_nonce: u64,
+    pub deposit_state: Bytes32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ZekoBridgeState {
+    pub action_state: Bytes32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeTransitionInput {
+    pub ethereum: EthereumBridgeState,
+    pub zeko: ZekoBridgeState,
+    pub deposits: Vec<BridgeDeposit>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedBridgeDeposit {
+    pub nonce: u64,
+    pub token: Address,
+    pub amount: Bytes32,
+    pub zeko_amount: Bytes32,
+    pub zeko_recipient_hash: Bytes32,
+    pub timeout: u64,
+    pub ethereum_deposit_leaf: Bytes32,
+    pub zeko_action_hash: Bytes32,
+    pub zeko_action_list_hash: Bytes32,
+    pub zeko_action_state_after: Bytes32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeTransitionPublicValues {
+    pub ethereum_state_before: Bytes32,
+    pub ethereum_state_after: Bytes32,
+    pub ethereum_nonce_before: u64,
+    pub ethereum_nonce_after: u64,
+    pub zeko_action_state_before: Bytes32,
+    pub zeko_action_state_after: Bytes32,
+    pub deposit_count: u32,
+    pub resolved_deposits: Vec<ResolvedBridgeDeposit>,
+}

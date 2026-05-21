@@ -2169,18 +2169,12 @@ dependencies = [
 name = "bridge-program"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives 0.8.20",
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
- "bincode",
  "bytemuck",
- "kimchi",
- "mina-core",
  "mina-curves",
- "mina-p2p-messages",
  "mina-poseidon",
- "mina-tree",
- "poly-commitment",
- "rkyv",
  "serde",
  "sp1-lib",
  "sp1-zkvm",
