@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -25,6 +26,13 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     error FeeOnTransferTokenNotSupported();
     error TokenNotAllowed(address token);
     error InvalidCheckpointNonce(uint64 nonce);
+    error InvalidZekoDecimals(uint8 decimals);
+    error InvalidEthereumDecimals(address token, uint8 expected, uint8 actual);
+    error InvalidNativeEthereumDecimals(uint8 decimals);
+    error InvalidAmountPrecision(address token, uint256 amount, uint8 ethereumDecimals, uint8 zekoDecimals);
+    error NativeTransferFailed();
+    error TokenAlreadyAdded(address token);
+    error TokenNotAdded(address token);
 
     // -------------------------------------------------------------------------
     // Constants
@@ -38,6 +46,15 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
 
     bytes32 public constant DEPOSIT_STATE_DOMAIN =
         keccak256("ZEKO_BRIDGE_DEPOSIT_STATE_V1");
+
+    uint8 public constant MAX_ZEKO_DECIMALS = 9;
+    uint8 public constant NATIVE_ETHEREUM_DECIMALS = 18;
+
+    struct TokenConfig {
+        uint8 zekoDecimals;
+        uint8 ethereumDecimals;
+        bool allowed;
+    }
 
     // -------------------------------------------------------------------------
     // Storage
@@ -53,8 +70,8 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     /// @dev depositStateByNonce[0] is INITIAL_DEPOSIT_STATE.
     mapping(uint64 => bytes32) public depositStateByNonce;
 
-    /// @notice Optional token allowlist.
-    mapping(address => bool) public allowedToken;
+    /// @notice Token configuration by L1 token address. `address(0)` is native ETH.
+    mapping(address => TokenConfig) public allowedToken;
 
     /// @notice Total deposited amount per token.
     mapping(address => uint256) public totalDepositedByToken;
@@ -63,7 +80,12 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     // Events
     // -------------------------------------------------------------------------
 
-    event TokenAllowed(address indexed token, bool allowed);
+    event TokenAllowed(
+        address indexed token,
+        bool allowed,
+        uint8 zekoDecimals,
+        uint8 ethereumDecimals
+    );
 
     event BridgeDeposit(
         uint64 indexed nonce,
@@ -74,7 +96,9 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         address sender,
         bytes zekoRecipient,
         bytes32 zekoRecipientHash,
-        uint256 amount
+        uint256 amount,
+        uint256 zekoAmount,
+        uint64 timeout
     );
 
     event EmergencyTokenWithdraw(
@@ -92,18 +116,67 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
 
         currentDepositState = INITIAL_DEPOSIT_STATE;
         depositStateByNonce[0] = INITIAL_DEPOSIT_STATE;
+
+        allowedToken[address(0)] = TokenConfig({
+            zekoDecimals: MAX_ZEKO_DECIMALS,
+            ethereumDecimals: NATIVE_ETHEREUM_DECIMALS,
+            allowed: true
+        });
+
+        emit TokenAllowed(
+            address(0),
+            true,
+            MAX_ZEKO_DECIMALS,
+            NATIVE_ETHEREUM_DECIMALS
+        );
     }
 
     // -------------------------------------------------------------------------
     // Admin
     // -------------------------------------------------------------------------
 
-    function setAllowedToken(address token, bool allowed) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+    function addToken(
+        address token,
+        bool allowed,
+        uint8 zekoDecimals,
+        uint8 ethereumDecimals
+    ) external onlyOwner {
+        TokenConfig memory existingConfig = allowedToken[token];
+        if (existingConfig.ethereumDecimals != 0) revert TokenAlreadyAdded(token);
 
-        allowedToken[token] = allowed;
+        if (zekoDecimals > MAX_ZEKO_DECIMALS) revert InvalidZekoDecimals(zekoDecimals);
 
-        emit TokenAllowed(token, allowed);
+        if (token == address(0)) {
+            if (ethereumDecimals != NATIVE_ETHEREUM_DECIMALS) {
+                revert InvalidNativeEthereumDecimals(ethereumDecimals);
+            }
+        } else {
+            uint8 actualEthereumDecimals = IERC20Metadata(token).decimals();
+            if (actualEthereumDecimals != ethereumDecimals) {
+                revert InvalidEthereumDecimals(token, ethereumDecimals, actualEthereumDecimals);
+            }
+        }
+
+        allowedToken[token] = TokenConfig({
+            zekoDecimals: zekoDecimals,
+            ethereumDecimals: ethereumDecimals,
+            allowed: allowed
+        });
+
+        emit TokenAllowed(token, allowed, zekoDecimals, ethereumDecimals);
+    }
+
+    function setTokenAllowed(address token, bool allowed) external onlyOwner {
+        TokenConfig memory existingConfig = allowedToken[token];
+        if (existingConfig.ethereumDecimals == 0) revert TokenNotAdded(token);
+
+        allowedToken[token].allowed = allowed;
+        emit TokenAllowed(
+            token,
+            allowed,
+            existingConfig.zekoDecimals,
+            existingConfig.ethereumDecimals
+        );
     }
 
     function pause() external onlyOwner {
@@ -121,10 +194,15 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         address to,
         uint256 amount
     ) external onlyOwner nonReentrant {
-        if (token == address(0) || to == address(0)) revert ZeroAddress();
+        if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
-        IERC20(token).safeTransfer(to, amount);
+        if (token == address(0)) {
+            (bool success, ) = payable(to).call{value: amount}("");
+            if (!success) revert NativeTransferFailed();
+        } else {
+            IERC20(token).safeTransfer(to, amount);
+        }
 
         emit EmergencyTokenWithdraw(token, to, amount);
     }
@@ -140,10 +218,13 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     function deposit(
         address token,
         uint256 amount,
-        bytes calldata zekoRecipient
+        bytes calldata zekoRecipient,
+        uint64 timeout
     ) external nonReentrant whenNotPaused returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
         if (token == address(0)) revert ZeroAddress();
-        if (!allowedToken[token]) revert TokenNotAllowed(token);
+
+        TokenConfig memory config = allowedToken[token];
+        if (!config.allowed) revert TokenNotAllowed(token);
         if (amount == 0) revert ZeroAmount();
         if (zekoRecipient.length == 0) revert EmptyZekoRecipient();
 
@@ -156,37 +237,22 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         uint256 receivedAmount = balanceAfter - balanceBefore;
         if (receivedAmount != amount) revert FeeOnTransferTokenNotSupported();
 
-        nonce = depositNonce + 1;
+        return _recordDeposit(token, amount, zekoRecipient, timeout, config);
+    }
 
-        bytes32 oldDepositState = currentDepositState;
-        bytes32 zekoRecipientHash = keccak256(zekoRecipient);
+    /// @notice Deposits native ETH and appends a deposit leaf to the bridge accumulator.
+    /// @param zekoRecipient Encoded Zeko recipient. The exact format must be defined by your protocol.
+    /// @param timeout Deadline for the sequencer to relay the deposit to the other side.
+    function depositETH(
+        bytes calldata zekoRecipient,
+        uint64 timeout
+    ) external payable nonReentrant whenNotPaused returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
+        TokenConfig memory config = allowedToken[address(0)];
+        if (!config.allowed) revert TokenNotAllowed(address(0));
+        if (msg.value == 0) revert ZeroAmount();
+        if (zekoRecipient.length == 0) revert EmptyZekoRecipient();
 
-        depositLeaf = computeDepositLeaf({
-            token: token,
-            sender: msg.sender,
-            zekoRecipientHash: zekoRecipientHash,
-            amount: amount,
-            nonce: nonce
-        });
-
-        newDepositState = computeNextDepositState(oldDepositState, depositLeaf);
-
-        depositNonce = nonce;
-        currentDepositState = newDepositState;
-        depositStateByNonce[nonce] = newDepositState;
-        totalDepositedByToken[token] += amount;
-
-        emit BridgeDeposit({
-            nonce: nonce,
-            depositLeaf: depositLeaf,
-            newDepositState: newDepositState,
-            oldDepositState: oldDepositState,
-            token: token,
-            sender: msg.sender,
-            zekoRecipient: zekoRecipient,
-            zekoRecipientHash: zekoRecipientHash,
-            amount: amount
-        });
+        return _recordDeposit(address(0), msg.value, zekoRecipient, timeout, config);
     }
 
     // -------------------------------------------------------------------------
@@ -210,9 +276,9 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     /// @notice Computes the canonical deposit leaf used by the accumulator.
     function computeDepositLeaf(
         address token,
-        address sender,
         bytes32 zekoRecipientHash,
-        uint256 amount,
+        uint256 zekoAmount,
+        uint64 timeout,
         uint64 nonce
     ) public view returns (bytes32) {
         return keccak256(
@@ -221,9 +287,9 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
                 block.chainid,
                 address(this),
                 token,
-                sender,
                 zekoRecipientHash,
-                amount,
+                zekoAmount,
+                timeout,
                 nonce
             )
         );
@@ -241,5 +307,75 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
                 depositLeaf
             )
         );
+    }
+
+    function _recordDeposit(
+        address token,
+        uint256 amount,
+        bytes calldata zekoRecipient,
+        uint64 timeout,
+        TokenConfig memory config
+    ) internal returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
+        nonce = depositNonce + 1;
+
+        bytes32 oldDepositState = currentDepositState;
+        bytes32 zekoRecipientHash = keccak256(zekoRecipient);
+        uint256 zekoAmount = _normalizeAmount(amount, config, token);
+
+        depositLeaf = computeDepositLeaf({
+            token: token,
+            zekoRecipientHash: zekoRecipientHash,
+            zekoAmount: zekoAmount,
+            timeout: timeout,
+            nonce: nonce
+        });
+
+        newDepositState = computeNextDepositState(oldDepositState, depositLeaf);
+
+        depositNonce = nonce;
+        currentDepositState = newDepositState;
+        depositStateByNonce[nonce] = newDepositState;
+        totalDepositedByToken[token] += amount;
+
+        emit BridgeDeposit({
+            nonce: nonce,
+            depositLeaf: depositLeaf,
+            newDepositState: newDepositState,
+            oldDepositState: oldDepositState,
+            token: token,
+            sender: msg.sender,
+            zekoRecipient: zekoRecipient,
+            zekoRecipientHash: zekoRecipientHash,
+            amount: amount,
+            zekoAmount: zekoAmount,
+            timeout: timeout
+        });
+    }
+
+    function _normalizeAmount(
+        uint256 amount,
+        TokenConfig memory config,
+        address token
+    ) internal pure returns (uint256 zekoAmount) {
+        if (config.ethereumDecimals == config.zekoDecimals) {
+            return amount;
+        }
+
+        if (config.ethereumDecimals > config.zekoDecimals) {
+            uint8 diff = config.ethereumDecimals - config.zekoDecimals;
+            uint256 scale = 10 ** diff;
+            if (amount % scale != 0) {
+                revert InvalidAmountPrecision(
+                    token,
+                    amount,
+                    config.ethereumDecimals,
+                    config.zekoDecimals
+                );
+            }
+            return amount / scale;
+        }
+
+        uint8 diff = config.zekoDecimals - config.ethereumDecimals;
+        return amount * (10 ** diff);
     }
 }
