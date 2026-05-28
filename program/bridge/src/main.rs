@@ -1,20 +1,18 @@
-#![no_main]
+#![cfg_attr(not(test), no_main)]
+#[cfg(not(test))]
 sp1_zkvm::entrypoint!(main);
 
 use alloy_primitives::{keccak256, U256};
 use ark_ff::PrimeField;
 use ark_serialize::CanonicalSerialize;
-use mina_curves::pasta::{Fp, PallasParameters};
+use mina_curves::pasta::Fp;
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
-use mina_poseidon::sponge::DefaultFqSponge;
-use mina_poseidon::FqSponge;
+use mina_poseidon::permutation::poseidon_block_cipher;
 use zeko_sp1_lib::{
     Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ResolvedBridgeDeposit,
     ZekoAddress,
 };
-
-type ActionStateSponge = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
 fn main() {
     let input: BridgeTransitionInput = sp1_zkvm::io::read();
@@ -138,27 +136,41 @@ fn merkle_actions_add(hash: Fp, actions_hash: Fp) -> Fp {
 }
 
 fn empty_hash_with_prefix(prefix: &str) -> Fp {
-    salt(prefix)
+    poseidon_update(
+        [Fp::from(0u8), Fp::from(0u8), Fp::from(0u8)],
+        &[prefix_to_field(prefix)],
+    )[0]
 }
 
 fn hash_with_prefix(prefix: &str, input: &[Fp]) -> Fp {
-    let mut sponge = new_action_state_sponge();
-    let prefixed = prefix_to_field(prefix);
-    sponge.absorb_fq(&[prefixed]);
-    if !input.is_empty() {
-        sponge.absorb_fq(input);
+    let init = poseidon_update(
+        [Fp::from(0u8), Fp::from(0u8), Fp::from(0u8)],
+        &[prefix_to_field(prefix)],
+    );
+    poseidon_update(init, input)[0]
+}
+
+fn poseidon_update(mut state: [Fp; 3], input: &[Fp]) -> [Fp; 3] {
+    if input.is_empty() {
+        poseidon_block_cipher::<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>(
+            fp_kimchi::static_params(),
+            &mut state,
+        );
+        return state;
     }
-    sponge.digest_fq()
-}
 
-fn salt(prefix: &str) -> Fp {
-    let mut sponge = new_action_state_sponge();
-    sponge.absorb_fq(&[prefix_to_field(prefix)]);
-    sponge.digest_fq()
-}
+    for chunk in input.chunks(2) {
+        state[0] += chunk[0];
+        if chunk.len() == 2 {
+            state[1] += chunk[1];
+        }
+        poseidon_block_cipher::<Fp, PlonkSpongeConstantsKimchi, FULL_ROUNDS>(
+            fp_kimchi::static_params(),
+            &mut state,
+        );
+    }
 
-fn new_action_state_sponge() -> ActionStateSponge {
-    ActionStateSponge::new(fp_kimchi::static_params())
+    state
 }
 
 fn prefix_to_field(prefix: &str) -> Fp {
@@ -222,4 +234,81 @@ fn unpack_zeko_address(address: ZekoAddress) -> (U256, bool) {
     assert!(x < field_order, "invalid zeko address field");
 
     (x, is_odd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_deposit_matches_zeko_action_state() {
+        let mut bridge_address = [0u8; 20];
+        bridge_address[19] = 1;
+
+        let deposits = [
+            (
+                U256::from(1_000_000_000u64),
+                hex32("0000000000000000000000000000000000000000000000000000000001020304"),
+                hex32("08c18c1e345342a9376a5196008a3c2a47c9c544215e26594d3a7bf64a7c53b8"),
+            ),
+            (
+                U256::from(2_000_000_000u64),
+                hex32("0000000000000000000000000000000000000000000000000000000005060708"),
+                hex32("2b27eaae27d23ace717a80ad95f889a5977f5c278f158e6a6adda717e6a870c7"),
+            ),
+            (
+                U256::from(3_000_000_000u64),
+                hex32("80000000000000000000000000000000000000000000000000000000090a0b0c"),
+                hex32("2b8061d0b565f80c99acf967a3402618deecf886865394b67818fa988428f020"),
+            ),
+        ];
+
+        let mut action_state =
+            hex32("3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9");
+
+        for (zeko_amount, zeko_recipient, expected_action_hash) in deposits {
+            let (zeko_recipient_x, zeko_recipient_is_odd) = unpack_zeko_address(zeko_recipient);
+            let action_hash = compute_zeko_action_hash(
+                bridge_address,
+                zeko_amount,
+                zeko_recipient_x,
+                zeko_recipient_is_odd,
+                3600,
+            );
+            assert_eq!(fp_to_bytes(action_hash), expected_action_hash);
+
+            let action_list_hash =
+                action_list_add(empty_hash_with_prefix("MinaZkappActionsEmpty"), action_hash);
+            action_state = fp_to_bytes(merkle_actions_add(
+                fp_from_bytes(action_state),
+                action_list_hash,
+            ));
+        }
+
+        assert_eq!(
+            action_state,
+            hex32("3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf")
+        );
+    }
+
+    fn hex32(value: &str) -> [u8; 32] {
+        let value = value.strip_prefix("0x").unwrap_or(value);
+        assert_eq!(value.len(), 64);
+
+        let bytes = value.as_bytes();
+        let mut output = [0u8; 32];
+        for i in 0..32 {
+            output[i] = (hex_nibble(bytes[i * 2]) << 4) | hex_nibble(bytes[i * 2 + 1]);
+        }
+        output
+    }
+
+    fn hex_nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => panic!("invalid hex byte"),
+        }
+    }
 }

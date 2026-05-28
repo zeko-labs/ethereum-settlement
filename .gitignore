@@ -17,3 +17,7 @@ pgo-data.profdata
 
 # Env
 .env
+
+# Node examples
+**/node_modules
+tools/zeko-action-state/dist

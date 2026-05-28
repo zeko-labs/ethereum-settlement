@@ -1,0 +1,17 @@
+{
+  "name": "zeko-action-state",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "npm run build && node dist/action-state.js",
+    "build": "tsc",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "o1js": "^2.14.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
