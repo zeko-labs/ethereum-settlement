@@ -11,10 +11,10 @@ use mina_poseidon::sponge::DefaultFqSponge;
 use mina_poseidon::FqSponge;
 use zeko_sp1_lib::{
     Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ResolvedBridgeDeposit,
+    ZekoAddress,
 };
 
-type ActionStateSponge =
-    DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
+type ActionStateSponge = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
 fn main() {
     let input: BridgeTransitionInput = sp1_zkvm::io::read();
@@ -27,13 +27,9 @@ fn main() {
     let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
 
     for deposit in &input.deposits {
-        assert!(
-            !deposit.zeko_recipient_fields.is_empty(),
-            "zeko recipient fields must not be empty"
-        );
+        let (zeko_recipient_x, zeko_recipient_is_odd) = unpack_zeko_address(deposit.zeko_recipient);
 
-        let zeko_amount = u256_from_bytes(deposit.amount);
-        let zeko_recipient_hash = keccak256(&deposit.zeko_recipient).0;
+        let zeko_amount = u256_from_bytes(deposit.zeko_amount);
 
         next_nonce += 1;
 
@@ -41,7 +37,7 @@ fn main() {
             input.ethereum.chain_id,
             input.ethereum.bridge_address,
             deposit.token,
-            zeko_recipient_hash,
+            deposit.zeko_recipient,
             zeko_amount,
             deposit.timeout,
             next_nonce,
@@ -51,9 +47,9 @@ fn main() {
 
         let zeko_action_hash = compute_zeko_action_hash(
             input.ethereum.bridge_address,
-            deposit.token,
             zeko_amount,
-            &deposit.zeko_recipient_fields,
+            zeko_recipient_x,
+            zeko_recipient_is_odd,
             deposit.timeout,
         );
         let zeko_action_list_hash = action_list_add(empty_action_list_hash, zeko_action_hash);
@@ -64,7 +60,7 @@ fn main() {
             token: deposit.token,
             amount: deposit.amount,
             zeko_amount: u256_to_bytes(zeko_amount),
-            zeko_recipient_hash,
+            zeko_recipient: deposit.zeko_recipient,
             timeout: deposit.timeout,
             ethereum_deposit_leaf,
             zeko_action_hash: fp_to_bytes(zeko_action_hash),
@@ -89,7 +85,7 @@ fn compute_ethereum_deposit_leaf(
     chain_id: u64,
     bridge_address: Address,
     token: Address,
-    zeko_recipient_hash: Bytes32,
+    zeko_recipient: ZekoAddress,
     zeko_amount: U256,
     timeout: u64,
     nonce: u64,
@@ -99,7 +95,7 @@ fn compute_ethereum_deposit_leaf(
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge_address));
     encoded.extend_from_slice(&address_word(token));
-    encoded.extend_from_slice(&zeko_recipient_hash);
+    encoded.extend_from_slice(&zeko_recipient);
     encoded.extend_from_slice(&u256_to_bytes(zeko_amount));
     encoded.extend_from_slice(&u64_word(timeout));
     encoded.extend_from_slice(&u64_word(nonce));
@@ -116,18 +112,17 @@ fn compute_ethereum_state(previous_state: Bytes32, deposit_leaf: Bytes32) -> Byt
 
 fn compute_zeko_action_hash(
     holder_account_l1: Address,
-    token: Address,
     zeko_amount: U256,
-    zeko_recipient_fields: &[Bytes32],
+    zeko_recipient_x: U256,
+    zeko_recipient_is_odd: bool,
     timeout: u64,
 ) -> Fp {
-    let mut fields = Vec::with_capacity(4 + zeko_recipient_fields.len());
-    fields.push(fp_from_address(token));
+    let mut fields = Vec::with_capacity(6);
+    fields.push(Fp::from(0u8));
     fields.push(fp_from_address(holder_account_l1));
     fields.push(fp_from_u256(zeko_amount));
-    for field in zeko_recipient_fields {
-        fields.push(fp_from_bytes(*field));
-    }
+    fields.push(fp_from_u256(zeko_recipient_x));
+    fields.push(Fp::from(zeko_recipient_is_odd as u8));
     fields.push(Fp::from(timeout));
 
     hash_with_prefix("Deposit_params - qFB3jXP*)", &fields)
@@ -213,4 +208,18 @@ fn u256_from_bytes(bytes: Bytes32) -> U256 {
 
 fn u256_to_bytes(value: U256) -> Bytes32 {
     value.to_be_bytes::<32>()
+}
+
+fn unpack_zeko_address(address: ZekoAddress) -> (U256, bool) {
+    let x = U256::from_be_slice(&address) & ((U256::from(1u8) << 255) - U256::from(1u8));
+    let is_odd = (address[0] & 0x80) != 0;
+    let field_order = U256::from_be_slice(&[
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x22, 0x46, 0x98, 0xfc, 0x09, 0x4c, 0xf9, 0x1b, 0x99, 0x2d, 0x30, 0xed, 0x00, 0x00,
+        0x00, 0x01,
+    ]);
+
+    assert!(x < field_order, "invalid zeko address field");
+
+    (x, is_odd)
 }
