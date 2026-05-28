@@ -26,6 +26,13 @@ cd script
 cargo run --release -- --execute
 ```
 
+Bridge proof
+
+```sh
+cd script
+RUST_LOG=info cargo run --release --bin bridge  -- --execute
+```
+
 This will execute the program and display the output.
 
 ### Generate an SP1 Core Proof

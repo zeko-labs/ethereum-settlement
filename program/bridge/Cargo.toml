@@ -4,22 +4,14 @@ name = "bridge-program"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm          = "6.1.0"
-
-ark-serialize     = { workspace = true }
-ledger            = { workspace = true, default-features = false }
-mina-core         = { workspace = true, default-features = false }
-mina-curves       = { workspace = true, default-features = false  }
-mina-p2p-messages = { workspace = true, default-features = false }
-ark-ff            = { workspace = true }
-serde             = { workspace = true }
-zeko_sp1_lib      = { path = "../../lib" }
-kimchi            = { workspace = true, features =[] }
-mina-poseidon     = { workspace = true, features =[] }
-poly-commitment   = { workspace = true }
-bincode = { workspace = true }
-rkyv = { workspace = true }
-bytemuck = { workspace = true }
+sp1-zkvm         = "6.1.0"
+alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
+ark-ff           = { workspace = true }
+ark-serialize    = { workspace = true }
+mina-curves      = { workspace = true, default-features = false }
+mina-poseidon    = { workspace = true, features =[] }
+serde            = { workspace = true }
+zeko_sp1_lib     = { path = "../../lib" }
 
 [profile.release]
 lto            = "thin"
