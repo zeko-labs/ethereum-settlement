@@ -81,6 +81,10 @@ fn main() {
             hex::encode(public_values.zeko_action_state_after)
         );
         println!(
+            "  withdraw_state_after : 0x{}",
+            hex::encode(public_values.ethereum_withdraw_state_after)
+        );
+        println!(
             "  nonce_before         : {}",
             public_values.ethereum_nonce_before
         );
@@ -89,6 +93,7 @@ fn main() {
             public_values.ethereum_nonce_after
         );
         println!("  deposit_count        : {}", public_values.deposit_count);
+        println!("  withdraw_count       : {}", public_values.withdraw_count);
     } else {
         let pk = client.setup(BRIDGE_ELF).expect("failed to setup ELF");
 
@@ -113,6 +118,10 @@ fn main() {
         println!(
             "  zeko_action_after    : 0x{}",
             hex::encode(public_values.zeko_action_state_after)
+        );
+        println!(
+            "  withdraw_state_after : 0x{}",
+            hex::encode(public_values.ethereum_withdraw_state_after)
         );
 
         std::fs::create_dir_all("proofs").expect("create proofs dir");

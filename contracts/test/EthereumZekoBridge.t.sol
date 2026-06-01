@@ -27,19 +27,36 @@ contract TestERC20 is ERC20 {
     }
 }
 
+contract MockSettlementVerifier {
+    mapping(bytes32 => bool) public validActionState;
+
+    function setActionStateValid(bytes32 actionState, bool valid) external {
+        validActionState[actionState] = valid;
+    }
+
+    function isActionStateValid(
+        bytes32 actionState
+    ) external view returns (bool) {
+        return validActionState[actionState];
+    }
+}
+
 contract EthereumZekoBridgeTest is Test {
     uint256 private constant ZEKO_FIELD_ORDER =
         28948022309329048855892746252171976963363056481941560715954676764349967630337;
 
     EthereumZekoBridge internal bridge;
+    MockSettlementVerifier internal settlement;
     TestERC20 internal token18;
     TestERC20 internal token6;
 
     address internal owner = address(this);
     address internal alice = address(0xA11CE);
+    address internal bob = address(0xB0B);
 
     function setUp() public {
-        bridge = new EthereumZekoBridge(owner);
+        settlement = new MockSettlementVerifier();
+        bridge = new EthereumZekoBridge(owner, address(settlement));
         token18 = new TestERC20("Token18", "TK18", 18);
         token6 = new TestERC20("Token6", "TK6", 6);
 
@@ -54,6 +71,7 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(zekoDecimals, 9);
         assertEq(ethereumDecimals, 18);
         assertTrue(allowed);
+        assertEq(address(bridge.settlementVerifier()), address(settlement));
     }
 
     function test_AddToken_StoresDecimals() public {
@@ -214,7 +232,9 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(address(bridge).balance, amount);
     }
 
-    function test_DepositETH_RevertsWhenPrecisionDoesNotFitZekoDecimals() public {
+    function test_DepositETH_RevertsWhenPrecisionDoesNotFitZekoDecimals()
+        public
+    {
         vm.deal(alice, 1 ether + 1);
         vm.prank(alice);
         vm.expectRevert(
@@ -243,7 +263,12 @@ contract EthereumZekoBridgeTest is Test {
                 uint8(9)
             )
         );
-        bridge.deposit(address(token18), 1 ether + 1, ZekoAddressLib.pack(1, false), 99);
+        bridge.deposit(
+            address(token18),
+            1 ether + 1,
+            ZekoAddressLib.pack(1, false),
+            99
+        );
         vm.stopPrank();
     }
 
@@ -285,5 +310,183 @@ contract EthereumZekoBridgeTest is Test {
 
         vm.expectRevert(ZekoAddressLib.InvalidZekoField.selector);
         bridge.computeDepositLeaf(address(token18), invalid, 1, 1, 1);
+    }
+
+    function test_SubmitWithdrawState_RequiresSettlementActionState() public {
+        bytes32 actionState = keccak256("action state");
+        bytes32 newWithdrawState = keccak256("withdraw state");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.InvalidSettlementActionState.selector,
+                actionState
+            )
+        );
+        bridge.submitWithdrawState(actionState, bytes32(0), newWithdrawState);
+    }
+
+    function test_SubmitWithdrawState_StoresValidWithdrawState() public {
+        bytes32 actionState = keccak256("action state");
+        bytes32 newWithdrawState = keccak256("withdraw state");
+        settlement.setActionStateValid(actionState, true);
+
+        bridge.submitWithdrawState(actionState, bytes32(0), newWithdrawState);
+
+        assertTrue(bridge.processedActionState(actionState));
+        assertTrue(bridge.validWithdrawState(newWithdrawState));
+        assertEq(bridge.currentWithdrawState(), newWithdrawState);
+    }
+
+    function test_SubmitWithdrawState_RevertsWhenActionStateAlreadyProcessed()
+        public
+    {
+        bytes32 actionState = keccak256("action state");
+        bytes32 newWithdrawState = keccak256("withdraw state");
+        settlement.setActionStateValid(actionState, true);
+
+        bridge.submitWithdrawState(actionState, bytes32(0), newWithdrawState);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.ActionStateAlreadyProcessed.selector,
+                actionState
+            )
+        );
+        bridge.submitWithdrawState(
+            actionState,
+            newWithdrawState,
+            keccak256("next")
+        );
+    }
+
+    function test_ClaimWithdraw_ReconstructsSequentialStateAndTransfersERC20()
+        public
+    {
+        bridge.addToken(address(token18), true, 9, 18);
+        token18.mint(address(bridge), 10 ether);
+
+        bytes32 actionState = keccak256("action state");
+        settlement.setActionStateValid(actionState, true);
+
+        EthereumZekoBridge.WithdrawClaim memory target = EthereumZekoBridge
+            .WithdrawClaim({
+                token: _addressField(address(token18)),
+                recipient: _addressField(alice),
+                amount: bytes32(uint256(2 * 10 ** 9))
+            });
+
+        bytes32 leaf0 = bridge.computeWithdrawLeaf(
+            _addressField(address(token18)),
+            _addressField(bob),
+            bytes32(uint256(1 * 10 ** 9))
+        );
+        bytes32 leaf1 = bridge.computeWithdrawLeaf(
+            target.token,
+            target.recipient,
+            target.amount
+        );
+        bytes32 leaf2 = bridge.computeWithdrawLeaf(
+            _addressField(address(token18)),
+            _addressField(address(0xCAFE)),
+            bytes32(uint256(3 * 10 ** 9))
+        );
+
+        bytes32 state = bytes32(0);
+        state = bridge.computeNextWithdrawState(state, leaf0);
+        state = bridge.computeNextWithdrawState(state, leaf1);
+        state = bridge.computeNextWithdrawState(state, leaf2);
+
+        bridge.submitWithdrawState(actionState, bytes32(0), state);
+
+        bytes32[] memory leaves = new bytes32[](3);
+        leaves[0] = leaf0;
+        leaves[1] = bytes32(0);
+        leaves[2] = leaf2;
+
+        uint256 aliceBalanceBefore = token18.balanceOf(alice);
+
+        bridge.claimWithdraw(bytes32(0), state, target, 1, leaves);
+
+        assertEq(token18.balanceOf(alice), aliceBalanceBefore + 2 ether);
+        assertEq(token18.balanceOf(address(bridge)), 8 ether);
+
+        bytes32 nullifier = bridge.computeWithdrawNullifier(leaf1);
+        assertTrue(bridge.spentWithdraw(nullifier));
+    }
+
+    function test_ClaimWithdraw_RevertsOnDoubleClaim() public {
+        bridge.addToken(address(token18), true, 9, 18);
+        token18.mint(address(bridge), 10 ether);
+
+        bytes32 actionState = keccak256("action state");
+        settlement.setActionStateValid(actionState, true);
+
+        EthereumZekoBridge.WithdrawClaim memory target = EthereumZekoBridge
+            .WithdrawClaim({
+                token: _addressField(address(token18)),
+                recipient: _addressField(alice),
+                amount: bytes32(uint256(2 * 10 ** 9))
+            });
+
+        bytes32 leaf = bridge.computeWithdrawLeaf(
+            target.token,
+            target.recipient,
+            target.amount
+        );
+        bytes32 state = bridge.computeNextWithdrawState(bytes32(0), leaf);
+        bridge.submitWithdrawState(actionState, bytes32(0), state);
+
+        bytes32[] memory leaves = new bytes32[](1);
+        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+
+        bytes32 nullifier = bridge.computeWithdrawNullifier(leaf);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.WithdrawAlreadyClaimed.selector,
+                nullifier
+            )
+        );
+        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+    }
+
+    function test_ClaimWithdraw_RevertsOnWrongOrderedHashes() public {
+        bridge.addToken(address(token18), true, 9, 18);
+        token18.mint(address(bridge), 10 ether);
+
+        bytes32 actionState = keccak256("action state");
+        settlement.setActionStateValid(actionState, true);
+
+        EthereumZekoBridge.WithdrawClaim memory target = EthereumZekoBridge
+            .WithdrawClaim({
+                token: _addressField(address(token18)),
+                recipient: _addressField(alice),
+                amount: bytes32(uint256(2 * 10 ** 9))
+            });
+
+        bytes32 leaf0 = bridge.computeWithdrawLeaf(
+            _addressField(address(token18)),
+            _addressField(bob),
+            bytes32(uint256(1 * 10 ** 9))
+        );
+        bytes32 leaf1 = bridge.computeWithdrawLeaf(
+            target.token,
+            target.recipient,
+            target.amount
+        );
+
+        bytes32 state = bridge.computeNextWithdrawState(bytes32(0), leaf0);
+        state = bridge.computeNextWithdrawState(state, leaf1);
+        bridge.submitWithdrawState(actionState, bytes32(0), state);
+
+        bytes32[] memory leaves = new bytes32[](2);
+        leaves[0] = bytes32(0);
+        leaves[1] = leaf0;
+
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+    }
+
+    function _addressField(address value) private pure returns (bytes32) {
+        return bytes32(uint256(uint160(value)));
     }
 }

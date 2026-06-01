@@ -147,6 +147,16 @@ pub struct BridgeDeposit {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeWithdraw {
+    #[serde(with = "serde_bytes32")]
+    pub token: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub recipient: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub amount: Bytes32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct EthereumBridgeState {
     pub chain_id: u64,
     #[serde(with = "serde_address")]
@@ -154,6 +164,8 @@ pub struct EthereumBridgeState {
     pub deposit_nonce: u64,
     #[serde(with = "serde_bytes32")]
     pub deposit_state: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub withdraw_state: Bytes32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -167,28 +179,7 @@ pub struct BridgeTransitionInput {
     pub ethereum: EthereumBridgeState,
     pub zeko: ZekoBridgeState,
     pub deposits: Vec<BridgeDeposit>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedBridgeDeposit {
-    pub nonce: u64,
-    #[serde(with = "serde_address")]
-    pub token: Address,
-    #[serde(with = "serde_bytes32")]
-    pub amount: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_amount: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_recipient: ZekoAddress,
-    pub timeout: u64,
-    #[serde(with = "serde_bytes32")]
-    pub ethereum_deposit_leaf: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_action_hash: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_action_list_hash: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_action_state_after: Bytes32,
+    pub withdraws: Vec<BridgeWithdraw>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -203,8 +194,12 @@ pub struct BridgeTransitionPublicValues {
     pub zeko_action_state_before: Bytes32,
     #[serde(with = "serde_bytes32")]
     pub zeko_action_state_after: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub ethereum_withdraw_state_before: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub ethereum_withdraw_state_after: Bytes32,
     pub deposit_count: u32,
-    pub resolved_deposits: Vec<ResolvedBridgeDeposit>,
+    pub withdraw_count: u32,
 }
 
 mod serde_address {

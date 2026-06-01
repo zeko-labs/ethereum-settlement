@@ -26,6 +26,7 @@ contract ZekoProofVerifier {
     bytes32 public vkHash;
     bytes32 public actionState;
     bytes32 public currentRoot;
+    mapping(bytes32 => bool) public validActionState;
 
     event OwnershipTransferStarted(
         address indexed previousOwner,
@@ -90,6 +91,7 @@ contract ZekoProofVerifier {
         vkHash = initialVkHash_;
         actionState = initialActionState_;
         currentRoot = initialRoot_;
+        validActionState[initialActionState_] = true;
 
         emit OwnershipTransferred(address(0), msg.sender);
         emit VkHashUpdated(bytes32(0), initialVkHash_);
@@ -133,8 +135,15 @@ contract ZekoProofVerifier {
     function setActionState(bytes32 newActionState) external onlyOwner {
         bytes32 oldActionState = actionState;
         actionState = newActionState;
+        validActionState[newActionState] = true;
 
         emit ActionStateUpdated(oldActionState, newActionState);
+    }
+
+    function isActionStateValid(
+        bytes32 targetActionState
+    ) external view returns (bool) {
+        return validActionState[targetActionState];
     }
 
     function verifyAndUpdateRoot(
@@ -156,6 +165,8 @@ contract ZekoProofVerifier {
         if (decoded.actionStateBefore != actionState) {
             revert InvalidActionState(actionState, decoded.actionStateBefore);
         }
+
+        validActionState[decoded.actionStateBefore] = true;
 
         if (decoded.stateBefore[3] != currentRoot) {
             revert InvalidCurrentRoot(currentRoot, decoded.stateBefore[3]);

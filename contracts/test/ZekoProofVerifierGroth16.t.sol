@@ -90,6 +90,8 @@ contract ZekoProofVerifierGroth16Test is Test {
         assertEq(zeko.vkHash(), VK_HASH);
         assertEq(zeko.actionState(), ACTION_STATE);
         assertEq(zeko.currentRoot(), CURRENT_ROOT);
+        assertTrue(zeko.validActionState(ACTION_STATE));
+        assertTrue(zeko.isActionStateValid(ACTION_STATE));
     }
 
     function test_DecodePublicValues() public view {
@@ -254,8 +256,11 @@ contract ZekoProofVerifierGroth16Test is Test {
     }
 
     function test_SetActionStateOnlyOwner() public {
-        zeko.setActionState(keccak256("new action state"));
-        assertEq(zeko.actionState(), keccak256("new action state"));
+        bytes32 newActionState = keccak256("new action state");
+        zeko.setActionState(newActionState);
+        assertEq(zeko.actionState(), newActionState);
+        assertTrue(zeko.validActionState(newActionState));
+        assertTrue(zeko.isActionStateValid(newActionState));
     }
 
     function test_RevertSetActionStateWhenNotOwner() public {

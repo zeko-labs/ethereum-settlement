@@ -2,16 +2,27 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {
+    IERC20Metadata
+} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {
+    ReentrancyGuard
+} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ZekoAddress, ZekoAddressLib} from "./ZekoAddress.sol";
+
+interface IZekoSettlementVerifier {
+    function isActionStateValid(
+        bytes32 actionState
+    ) external view returns (bool);
+}
 
 /// @title EthereumZekoBridge
 /// @notice Ethereum-side bridge contract for Zeko.
-/// @dev Withdrawals are intentionally not implemented yet; this version only handles deposits.
 /// @dev Each deposit updates an append-only sequential state:
 ///      newDepositState = keccak256(DEPOSIT_STATE_DOMAIN, oldDepositState, depositLeaf)
 contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
@@ -30,10 +41,22 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     error InvalidZekoDecimals(uint8 decimals);
     error InvalidEthereumDecimals(address token, uint8 expected, uint8 actual);
     error InvalidNativeEthereumDecimals(uint8 decimals);
-    error InvalidAmountPrecision(address token, uint256 amount, uint8 ethereumDecimals, uint8 zekoDecimals);
+    error InvalidAmountPrecision(
+        address token,
+        uint256 amount,
+        uint8 ethereumDecimals,
+        uint8 zekoDecimals
+    );
     error NativeTransferFailed();
     error TokenAlreadyAdded(address token);
     error TokenNotAdded(address token);
+    error InvalidSettlementActionState(bytes32 actionState);
+    error ActionStateAlreadyProcessed(bytes32 actionState);
+    error InvalidWithdrawState(bytes32 withdrawState);
+    error InvalidWithdrawProof();
+    error InvalidWithdrawToken(bytes32 token);
+    error InvalidWithdrawRecipient(bytes32 recipient);
+    error WithdrawAlreadyClaimed(bytes32 nullifier);
 
     // -------------------------------------------------------------------------
     // Constants
@@ -48,6 +71,15 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     bytes32 public constant DEPOSIT_STATE_DOMAIN =
         keccak256("ZEKO_BRIDGE_DEPOSIT_STATE_V1");
 
+    bytes32 public constant WITHDRAW_LEAF_DOMAIN =
+        keccak256("ZEKO_BRIDGE_WITHDRAW_LEAF_V1");
+
+    bytes32 public constant WITHDRAW_STATE_DOMAIN =
+        keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1");
+
+    bytes32 public constant WITHDRAW_NULLIFIER_DOMAIN =
+        keccak256("ZEKO_BRIDGE_WITHDRAW_NULLIFIER_V1");
+
     uint8 public constant MAX_ZEKO_DECIMALS = 9;
     uint8 public constant NATIVE_ETHEREUM_DECIMALS = 18;
 
@@ -55,6 +87,15 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         uint8 zekoDecimals;
         uint8 ethereumDecimals;
         bool allowed;
+    }
+
+    struct WithdrawClaim {
+        /// @notice Token as a Zeko field. It must encode an Ethereum address in the low 160 bits.
+        bytes32 token;
+        /// @notice Recipient as a Zeko field. It must encode an Ethereum address in the low 160 bits.
+        bytes32 recipient;
+        /// @notice Amount as a Zeko field. Converted back to Ethereum decimals before transfer.
+        bytes32 amount;
     }
 
     // -------------------------------------------------------------------------
@@ -67,15 +108,29 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     /// @notice Current Ethereum deposit accumulator state.
     bytes32 public currentDepositState;
 
+    /// @notice Current Ethereum withdraw accumulator state.
+    bytes32 public currentWithdrawState;
+
     /// @notice Historical deposit state by nonce.
     /// @dev depositStateByNonce[0] is INITIAL_DEPOSIT_STATE.
     mapping(uint64 => bytes32) public depositStateByNonce;
+
+    /// @notice Settlement action states already consumed for withdraw batches.
+    mapping(bytes32 => bool) public processedActionState;
+
+    /// @notice Withdraw states accepted through a settlement action-state checkpoint.
+    mapping(bytes32 => bool) public validWithdrawState;
+
+    /// @notice Claimed withdraw nullifiers.
+    mapping(bytes32 => bool) public spentWithdraw;
 
     /// @notice Token configuration by L1 token address. `address(0)` is native ETH.
     mapping(address => TokenConfig) public allowedToken;
 
     /// @notice Total deposited amount per token.
     mapping(address => uint256) public totalDepositedByToken;
+
+    IZekoSettlementVerifier public immutable settlementVerifier;
 
     // -------------------------------------------------------------------------
     // Events
@@ -107,14 +162,36 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         uint256 amount
     );
 
+    event WithdrawStateAccepted(
+        bytes32 indexed actionState,
+        bytes32 indexed oldWithdrawState,
+        bytes32 indexed newWithdrawState
+    );
+
+    event BridgeWithdrawClaimed(
+        bytes32 indexed nullifier,
+        bytes32 indexed withdrawLeaf,
+        bytes32 indexed withdrawState,
+        address token,
+        address recipient,
+        bytes32 zekoAmount,
+        uint256 ethereumAmount
+    );
+
     // -------------------------------------------------------------------------
     // Constructor
     // -------------------------------------------------------------------------
 
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(
+        address initialOwner,
+        address settlementVerifier_
+    ) Ownable(initialOwner) {
         if (initialOwner == address(0)) revert ZeroAddress();
+        if (settlementVerifier_ == address(0)) revert ZeroAddress();
 
+        settlementVerifier = IZekoSettlementVerifier(settlementVerifier_);
         currentDepositState = INITIAL_DEPOSIT_STATE;
+        currentWithdrawState = bytes32(0);
         depositStateByNonce[0] = INITIAL_DEPOSIT_STATE;
 
         allowedToken[address(0)] = TokenConfig({
@@ -142,9 +219,11 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         uint8 ethereumDecimals
     ) external onlyOwner {
         TokenConfig memory existingConfig = allowedToken[token];
-        if (existingConfig.ethereumDecimals != 0) revert TokenAlreadyAdded(token);
+        if (existingConfig.ethereumDecimals != 0)
+            revert TokenAlreadyAdded(token);
 
-        if (zekoDecimals > MAX_ZEKO_DECIMALS) revert InvalidZekoDecimals(zekoDecimals);
+        if (zekoDecimals > MAX_ZEKO_DECIMALS)
+            revert InvalidZekoDecimals(zekoDecimals);
 
         if (token == address(0)) {
             if (ethereumDecimals != NATIVE_ETHEREUM_DECIMALS) {
@@ -153,7 +232,11 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         } else {
             uint8 actualEthereumDecimals = IERC20Metadata(token).decimals();
             if (actualEthereumDecimals != ethereumDecimals) {
-                revert InvalidEthereumDecimals(token, ethereumDecimals, actualEthereumDecimals);
+                revert InvalidEthereumDecimals(
+                    token,
+                    ethereumDecimals,
+                    actualEthereumDecimals
+                );
             }
         }
 
@@ -220,7 +303,12 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         uint256 amount,
         ZekoAddress zekoRecipient,
         uint64 timeout
-    ) external nonReentrant whenNotPaused returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
+    )
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
+    {
         if (token == address(0)) revert ZeroAddress();
 
         TokenConfig memory config = allowedToken[token];
@@ -245,12 +333,25 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     function depositETH(
         ZekoAddress zekoRecipient,
         uint64 timeout
-    ) external payable nonReentrant whenNotPaused returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
+    )
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
+    {
         TokenConfig memory config = allowedToken[address(0)];
         if (!config.allowed) revert TokenNotAllowed(address(0));
         if (msg.value == 0) revert ZeroAmount();
 
-        return _recordDeposit(address(0), msg.value, zekoRecipient, timeout, config);
+        return
+            _recordDeposit(
+                address(0),
+                msg.value,
+                zekoRecipient,
+                timeout,
+                config
+            );
     }
 
     // -------------------------------------------------------------------------
@@ -261,7 +362,8 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     /// @dev Nonce 0 always exists because it is the initial state.
     function hasDepositState(uint64 nonce) external view returns (bool) {
         if (nonce == 0) return depositStateByNonce[0] == INITIAL_DEPOSIT_STATE;
-        return nonce <= depositNonce && depositStateByNonce[nonce] != bytes32(0);
+        return
+            nonce <= depositNonce && depositStateByNonce[nonce] != bytes32(0);
     }
 
     /// @notice Returns a historical deposit state, reverting if the nonce does not exist yet.
@@ -281,18 +383,19 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
     ) public view returns (bytes32) {
         zekoRecipient.unpack();
 
-        return keccak256(
-            abi.encode(
-                DEPOSIT_LEAF_DOMAIN,
-                block.chainid,
-                address(this),
-                token,
-                zekoRecipient,
-                zekoAmount,
-                timeout,
-                nonce
-            )
-        );
+        return
+            keccak256(
+                abi.encode(
+                    DEPOSIT_LEAF_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    token,
+                    zekoRecipient,
+                    zekoAmount,
+                    timeout,
+                    nonce
+                )
+            );
     }
 
     /// @notice Computes the next accumulator state from an old state and a deposit leaf.
@@ -300,13 +403,154 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         bytes32 oldDepositState,
         bytes32 depositLeaf
     ) public pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                DEPOSIT_STATE_DOMAIN,
-                oldDepositState,
-                depositLeaf
-            )
+        return
+            keccak256(
+                abi.encode(DEPOSIT_STATE_DOMAIN, oldDepositState, depositLeaf)
+            );
+    }
+
+    /// @notice Computes the canonical withdraw leaf used by the withdraw accumulator.
+    function computeWithdrawLeaf(
+        bytes32 token,
+        bytes32 recipient,
+        bytes32 amount
+    ) public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    WITHDRAW_LEAF_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    token,
+                    recipient,
+                    amount
+                )
+            );
+    }
+
+    /// @notice Computes the next withdraw accumulator state from an old state and a withdraw leaf.
+    function computeNextWithdrawState(
+        bytes32 oldWithdrawState,
+        bytes32 withdrawLeaf
+    ) public pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    WITHDRAW_STATE_DOMAIN,
+                    oldWithdrawState,
+                    withdrawLeaf
+                )
+            );
+    }
+
+    /// @notice Computes the nullifier consumed when a withdraw is claimed.
+    function computeWithdrawNullifier(
+        bytes32 withdrawLeaf
+    ) public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    WITHDRAW_NULLIFIER_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    withdrawLeaf
+                )
+            );
+    }
+
+    /// @notice Accepts a withdraw accumulator transition tied to a settlement action state.
+    /// @dev This is owner-gated until bridge SP1 proof verification is wired into this contract.
+    function submitWithdrawState(
+        bytes32 actionState,
+        bytes32 oldWithdrawState,
+        bytes32 newWithdrawState
+    ) external onlyOwner whenNotPaused {
+        if (!settlementVerifier.isActionStateValid(actionState)) {
+            revert InvalidSettlementActionState(actionState);
+        }
+        if (processedActionState[actionState]) {
+            revert ActionStateAlreadyProcessed(actionState);
+        }
+        if (oldWithdrawState != currentWithdrawState) {
+            revert InvalidWithdrawState(oldWithdrawState);
+        }
+
+        processedActionState[actionState] = true;
+        validWithdrawState[newWithdrawState] = true;
+        currentWithdrawState = newWithdrawState;
+
+        emit WithdrawStateAccepted(
+            actionState,
+            oldWithdrawState,
+            newWithdrawState
         );
+    }
+
+    /// @notice Claims a withdraw included in an accepted sequential withdraw state.
+    /// @param withdrawStateBefore Starting state for the sequence supplied by the caller.
+    /// @param withdrawStateAfter Accepted final state to reconstruct.
+    /// @param withdraw Clear withdraw being claimed.
+    /// @param withdrawIndex Position of `withdraw` inside `leafHashes`.
+    /// @param leafHashes Full ordered sequence of withdraw leaf hashes, with any value at `withdrawIndex`.
+    function claimWithdraw(
+        bytes32 withdrawStateBefore,
+        bytes32 withdrawStateAfter,
+        WithdrawClaim calldata withdraw,
+        uint256 withdrawIndex,
+        bytes32[] calldata leafHashes
+    ) external nonReentrant whenNotPaused {
+        if (!validWithdrawState[withdrawStateAfter]) {
+            revert InvalidWithdrawState(withdrawStateAfter);
+        }
+        if (withdraw.amount == bytes32(0)) revert ZeroAmount();
+        if (withdrawIndex >= leafHashes.length) revert InvalidWithdrawProof();
+
+        bytes32 withdrawLeaf = computeWithdrawLeaf({
+            token: withdraw.token,
+            recipient: withdraw.recipient,
+            amount: withdraw.amount
+        });
+
+        bytes32 state = withdrawStateBefore;
+        for (uint256 i = 0; i < leafHashes.length; i++) {
+            bytes32 leaf = i == withdrawIndex ? withdrawLeaf : leafHashes[i];
+            state = computeNextWithdrawState(state, leaf);
+        }
+        if (state != withdrawStateAfter) revert InvalidWithdrawProof();
+
+        bytes32 nullifier = computeWithdrawNullifier(withdrawLeaf);
+        if (spentWithdraw[nullifier]) revert WithdrawAlreadyClaimed(nullifier);
+        spentWithdraw[nullifier] = true;
+
+        address token = _fieldAddress(withdraw.token, true);
+        TokenConfig memory config = allowedToken[token];
+        if (config.ethereumDecimals == 0) revert TokenNotAdded(token);
+
+        address recipient = _recipientAddress(withdraw.recipient);
+        uint256 ethereumAmount = _denormalizeAmount(
+            uint256(withdraw.amount),
+            config,
+            token
+        );
+
+        if (token == address(0)) {
+            (bool success, ) = payable(recipient).call{value: ethereumAmount}(
+                ""
+            );
+            if (!success) revert NativeTransferFailed();
+        } else {
+            IERC20(token).safeTransfer(recipient, ethereumAmount);
+        }
+
+        emit BridgeWithdrawClaimed({
+            nullifier: nullifier,
+            withdrawLeaf: withdrawLeaf,
+            withdrawState: withdrawStateAfter,
+            token: token,
+            recipient: recipient,
+            zekoAmount: withdraw.amount,
+            ethereumAmount: ethereumAmount
+        });
     }
 
     function _recordDeposit(
@@ -315,7 +559,10 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         ZekoAddress zekoRecipient,
         uint64 timeout,
         TokenConfig memory config
-    ) internal returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
+    )
+        internal
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
+    {
         nonce = depositNonce + 1;
 
         bytes32 oldDepositState = currentDepositState;
@@ -360,7 +607,8 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
         }
 
         if (config.ethereumDecimals > config.zekoDecimals) {
-            uint8 downscaleDecimals = config.ethereumDecimals - config.zekoDecimals;
+            uint8 downscaleDecimals = config.ethereumDecimals -
+                config.zekoDecimals;
             uint256 scale = 10 ** downscaleDecimals;
             if (amount % scale != 0) {
                 revert InvalidAmountPrecision(
@@ -375,5 +623,54 @@ contract EthereumZekoBridge is Ownable, Pausable, ReentrancyGuard {
 
         uint8 upscaleDecimals = config.zekoDecimals - config.ethereumDecimals;
         return amount * (10 ** upscaleDecimals);
+    }
+
+    function _denormalizeAmount(
+        uint256 zekoAmount,
+        TokenConfig memory config,
+        address token
+    ) internal pure returns (uint256 ethereumAmount) {
+        if (config.ethereumDecimals == config.zekoDecimals) {
+            return zekoAmount;
+        }
+
+        if (config.ethereumDecimals > config.zekoDecimals) {
+            uint8 upscaleDecimals = config.ethereumDecimals -
+                config.zekoDecimals;
+            return zekoAmount * (10 ** upscaleDecimals);
+        }
+
+        uint8 downscaleDecimals = config.zekoDecimals - config.ethereumDecimals;
+        uint256 scale = 10 ** downscaleDecimals;
+        if (zekoAmount % scale != 0) {
+            revert InvalidAmountPrecision(
+                token,
+                zekoAmount,
+                config.ethereumDecimals,
+                config.zekoDecimals
+            );
+        }
+        return zekoAmount / scale;
+    }
+
+    function _recipientAddress(
+        bytes32 recipient
+    ) internal pure returns (address) {
+        address recipientAddress = _fieldAddress(recipient, false);
+        if (recipientAddress == address(0)) revert ZeroAddress();
+
+        return recipientAddress;
+    }
+
+    function _fieldAddress(
+        bytes32 value,
+        bool isToken
+    ) internal pure returns (address) {
+        if (uint256(value) >> 160 != 0) {
+            if (isToken) revert InvalidWithdrawToken(value);
+            revert InvalidWithdrawRecipient(value);
+        }
+
+        return address(uint160(uint256(value)));
     }
 }
