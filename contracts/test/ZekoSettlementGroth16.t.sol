@@ -4,10 +4,10 @@ pragma solidity ^0.8.20;
 import {Test, console2} from "forge-std/Test.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 
-import {ZekoProofVerifier} from "../src/ZekoProofVerifier.sol";
-import {ISP1Verifier} from "../src/ZekoProofVerifier.sol";
+import {ZekoSettlement} from "../src/ZekoSettlement.sol";
+import {ISP1Verifier} from "../src/ZekoSettlement.sol";
 
-contract ZekoProofVerifierGroth16Test is Test {
+contract ZekoSettlementGroth16Test is Test {
     using stdJson for string;
 
     uint256 private constant PUBLIC_VALUES_LENGTH = 577;
@@ -45,7 +45,7 @@ contract ZekoProofVerifierGroth16Test is Test {
     address public bob = address(0xB0B);
 
     ISP1Verifier public gateway;
-    ZekoProofVerifier public zeko;
+    ZekoSettlement public zeko;
 
     // SP1 program vkey — only needed for the real proof test.
     // Loaded from the fixture file which must be regenerated when the Zeko VK changes.
@@ -73,7 +73,7 @@ contract ZekoProofVerifierGroth16Test is Test {
         fixturePublicValues = json.readBytes(".publicValues");
         fixtureProof = json.readBytes(".proof");
 
-        zeko = new ZekoProofVerifier(
+        zeko = new ZekoSettlement(
             address(gateway),
             fixtureVkey,
             VK_HASH,
@@ -104,7 +104,7 @@ contract ZekoProofVerifierGroth16Test is Test {
             ACTION_STATE
         );
 
-        ZekoProofVerifier.DecodedPublicValues memory d = zeko
+        ZekoSettlement.DecodedPublicValues memory d = zeko
             .getDecodedPublicValues(pv);
 
         assertTrue(d.proofValid);
@@ -118,7 +118,7 @@ contract ZekoProofVerifierGroth16Test is Test {
         bytes memory invalid = new bytes(16);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoProofVerifier.InvalidPublicValuesLength.selector,
+                ZekoSettlement.InvalidPublicValuesLength.selector,
                 PUBLIC_VALUES_LENGTH,
                 invalid.length
             )
@@ -137,7 +137,7 @@ contract ZekoProofVerifierGroth16Test is Test {
         pv[0] = bytes1(uint8(2));
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoProofVerifier.InvalidBool.selector,
+                ZekoSettlement.InvalidBool.selector,
                 uint8(2)
             )
         );
@@ -145,8 +145,9 @@ contract ZekoProofVerifierGroth16Test is Test {
     }
 
     function test_ValidGroth16ProofUpdatesRoot() public {
-        ZekoProofVerifier.DecodedPublicValues
-            memory decoded = _decodePublicValues(fixturePublicValues);
+        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
+            fixturePublicValues
+        );
 
         uint256 gasBefore = gasleft();
         zeko.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
@@ -170,11 +171,12 @@ contract ZekoProofVerifierGroth16Test is Test {
 
     function test_RevertOnInvalidVkHash() public {
         // Re-deploy with the fixture's actual vkHash so the SP1 proof passes,
-        // then set a bad vkHash so ZekoProofVerifier rejects it.
-        ZekoProofVerifier.DecodedPublicValues
-            memory decoded = _decodePublicValues(fixturePublicValues);
+        // then set a bad vkHash so ZekoSettlement rejects it.
+        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
+            fixturePublicValues
+        );
 
-        ZekoProofVerifier target = new ZekoProofVerifier(
+        ZekoSettlement target = new ZekoSettlement(
             address(gateway),
             fixtureVkey,
             decoded.vkHash,
@@ -187,7 +189,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoProofVerifier.InvalidVkHash.selector,
+                ZekoSettlement.InvalidVkHash.selector,
                 badVkHash,
                 decoded.vkHash
             )
@@ -196,10 +198,11 @@ contract ZekoProofVerifierGroth16Test is Test {
     }
 
     function test_RevertOnInvalidActionState() public {
-        ZekoProofVerifier.DecodedPublicValues
-            memory decoded = _decodePublicValues(fixturePublicValues);
+        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
+            fixturePublicValues
+        );
 
-        ZekoProofVerifier target = new ZekoProofVerifier(
+        ZekoSettlement target = new ZekoSettlement(
             address(gateway),
             fixtureVkey,
             decoded.vkHash,
@@ -212,7 +215,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoProofVerifier.InvalidActionState.selector,
+                ZekoSettlement.InvalidActionState.selector,
                 badActionState,
                 decoded.actionStateBefore
             )
@@ -221,12 +224,13 @@ contract ZekoProofVerifierGroth16Test is Test {
     }
 
     function test_RevertOnInvalidCurrentRoot() public {
-        ZekoProofVerifier.DecodedPublicValues
-            memory decoded = _decodePublicValues(fixturePublicValues);
+        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
+            fixturePublicValues
+        );
 
         bytes32 badRoot = keccak256("bad root");
 
-        ZekoProofVerifier target = new ZekoProofVerifier(
+        ZekoSettlement target = new ZekoSettlement(
             address(gateway),
             fixtureVkey,
             decoded.vkHash,
@@ -236,7 +240,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoProofVerifier.InvalidCurrentRoot.selector,
+                ZekoSettlement.InvalidCurrentRoot.selector,
                 badRoot,
                 decoded.stateBefore[3]
             )
@@ -251,7 +255,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
     function test_RevertSetVkHashWhenNotOwner() public {
         vm.prank(alice);
-        vm.expectRevert(ZekoProofVerifier.NotOwner.selector);
+        vm.expectRevert(ZekoSettlement.NotOwner.selector);
         zeko.setVkHash(keccak256("new vk hash"));
     }
 
@@ -265,7 +269,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
     function test_RevertSetActionStateWhenNotOwner() public {
         vm.prank(alice);
-        vm.expectRevert(ZekoProofVerifier.NotOwner.selector);
+        vm.expectRevert(ZekoSettlement.NotOwner.selector);
         zeko.setActionState(keccak256("new action state"));
     }
 
@@ -282,19 +286,19 @@ contract ZekoProofVerifierGroth16Test is Test {
 
     function test_RevertTransferOwnershipWhenNotOwner() public {
         vm.prank(alice);
-        vm.expectRevert(ZekoProofVerifier.NotOwner.selector);
+        vm.expectRevert(ZekoSettlement.NotOwner.selector);
         zeko.transferOwnership(bob);
     }
 
     function test_RevertTransferOwnershipToZeroAddress() public {
-        vm.expectRevert(ZekoProofVerifier.ZeroAddress.selector);
+        vm.expectRevert(ZekoSettlement.ZeroAddress.selector);
         zeko.transferOwnership(address(0));
     }
 
     function test_RevertAcceptOwnershipWhenNotPendingOwner() public {
         zeko.transferOwnership(alice);
         vm.prank(bob);
-        vm.expectRevert(ZekoProofVerifier.NotPendingOwner.selector);
+        vm.expectRevert(ZekoSettlement.NotPendingOwner.selector);
         zeko.acceptOwnership();
     }
 
@@ -308,7 +312,7 @@ contract ZekoProofVerifierGroth16Test is Test {
     function test_RevertCancelOwnershipTransferWhenNotOwner() public {
         zeko.transferOwnership(alice);
         vm.prank(alice);
-        vm.expectRevert(ZekoProofVerifier.NotOwner.selector);
+        vm.expectRevert(ZekoSettlement.NotOwner.selector);
         zeko.cancelOwnershipTransfer();
     }
 
@@ -350,7 +354,7 @@ contract ZekoProofVerifierGroth16Test is Test {
 
     function _decodePublicValues(
         bytes memory pv
-    ) private pure returns (ZekoProofVerifier.DecodedPublicValues memory d) {
+    ) private pure returns (ZekoSettlement.DecodedPublicValues memory d) {
         require(pv.length == PUBLIC_VALUES_LENGTH, "invalid length");
         uint256 cursor = 0;
 

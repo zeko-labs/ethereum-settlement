@@ -13,7 +13,7 @@ interface ISP1Verifier {
     ) external view;
 }
 
-contract ZekoProofVerifier {
+contract ZekoSettlement {
     uint256 private constant PUBLIC_VALUES_LENGTH = 577;
     uint256 private constant STATE_ARRAY_LENGTH = 8;
 
