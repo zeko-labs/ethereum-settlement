@@ -1,7 +1,8 @@
 # Withdrawals
 
 The withdrawal program proves that an ordered batch of Zeko withdrawal actions
-produces a specific Ethereum withdrawal accumulator.
+produces both a specific Ethereum sequential withdrawal accumulator and a
+fixed-depth withdrawal Merkle root.
 
 ## Proof input
 
@@ -14,6 +15,9 @@ list.
 | `token` | Zeko field encoding an Ethereum token address in its low 160 bits. Zero means native ETH. |
 | `recipient` | Zeko field encoding the Ethereum recipient in its low 160 bits. |
 | `amount` | Amount expressed using the token's configured Zeko decimals. |
+
+Zeko currently supports only the native token in withdrawal actions. The SP1
+program rejects every withdrawal whose `token` field is not zero.
 
 ## Withdraw accumulator
 
@@ -46,6 +50,18 @@ action = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
 ])
 ```
 
+The same ordered withdrawal leaves are committed into a depth-16 Keccak Merkle
+tree. The tree supports at most 65,536 withdrawals and pads unused leaves with
+`bytes32(0)`.
+
+```text
+node = keccak256(
+  keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1"),
+  left,
+  right
+)
+```
+
 ## Public values
 
 | Field | Meaning |
@@ -54,6 +70,7 @@ action = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
 | `zeko_action_state_after` | Zeko action state after the batch. |
 | `ethereum_withdraw_state_before` | Ethereum withdrawal accumulator before the batch. |
 | `ethereum_withdraw_state_after` | Ethereum withdrawal accumulator after the batch. |
+| `withdrawal_root` | Depth-16 Merkle root over the same ordered withdrawal leaves. |
 | `withdraw_count` | Number of withdrawals in the batch. |
 
 ## Accepting a transition
@@ -67,22 +84,24 @@ action = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
 - the new checkpoint index is exactly the old index plus one
 
 For a non-empty batch, the final withdrawal accumulator becomes a valid claim
-state. The bridge records the old action-state index used to scope withdrawal
-nullifiers and advances its current withdrawal state.
+transition and the Merkle root becomes a valid claim root. The bridge stores
+one withdrawal batch record under the old Zeko action state bound by the SP1
+proof. That record contains the Merkle root, sequential states, checkpoint
+index, and withdrawal count. The same Merkle root may safely appear in
+different action-state transitions.
 
 ## Claiming a withdrawal
 
 To claim, a caller supplies:
 
-- the accumulator state before the batch
-- an accepted accumulator state after the batch
+- the old Zeko action state bound to the withdrawal batch
 - the clear withdrawal being claimed
 - its index in the batch
-- the full ordered list of withdrawal leaf hashes
+- a fixed 16-sibling Merkle proof
 
-The contract replaces the hash at the claimed index with the leaf recomputed
-from the clear withdrawal, replays the complete accumulator sequence, and
-requires the result to equal the accepted final state.
+The contract recomputes the leaf and verifies its Merkle proof against the
+root stored for that old action state. Claims no longer require the root or the
+full ordered withdrawal batch in calldata.
 
 It then computes a nullifier from the old action-state index, withdrawal index,
 and leaf. A spent nullifier cannot be claimed again. Finally, the contract

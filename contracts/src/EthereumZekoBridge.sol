@@ -104,8 +104,15 @@ contract EthereumZekoBridge is
     bytes32 public constant WITHDRAW_NULLIFIER_DOMAIN =
         keccak256("ZEKO_BRIDGE_WITHDRAW_NULLIFIER_V1");
 
+    bytes32 public constant WITHDRAW_MERKLE_NODE_DOMAIN =
+        keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1");
+
+    uint256 public constant WITHDRAW_MERKLE_TREE_DEPTH = 16;
+    uint256 public constant MAX_WITHDRAW_COUNT =
+        1 << WITHDRAW_MERKLE_TREE_DEPTH;
+
     uint256 private constant BRIDGE_PUBLIC_VALUES_LENGTH = 148;
-    uint256 private constant WITHDRAW_PUBLIC_VALUES_LENGTH = 132;
+    uint256 private constant WITHDRAW_PUBLIC_VALUES_LENGTH = 164;
 
     uint8 public constant MAX_ZEKO_DECIMALS = 9;
     uint8 public constant NATIVE_ETHEREUM_DECIMALS = 18;
@@ -144,7 +151,17 @@ contract EthereumZekoBridge is
         bytes32 zekoActionStateAfter;
         bytes32 ethereumWithdrawStateBefore;
         bytes32 ethereumWithdrawStateAfter;
+        bytes32 withdrawalRoot;
         uint32 withdrawCount;
+    }
+
+    struct WithdrawalRootInfo {
+        bytes32 withdrawalRoot;
+        bytes32 withdrawStateBefore;
+        bytes32 withdrawStateAfter;
+        uint64 oldActionStateIndex;
+        uint32 withdrawCount;
+        bool valid;
     }
 
     // -------------------------------------------------------------------------
@@ -170,11 +187,12 @@ contract EthereumZekoBridge is
     /// @notice Settlement action states already consumed by bridge transitions.
     mapping(bytes32 => bool) public processedActionState;
 
-    /// @notice Withdraw states accepted through a settlement action-state checkpoint.
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     mapping(bytes32 => bool) public validWithdrawState;
 
-    /// @notice Old Zeko action state/index for an accepted withdraw state.
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     mapping(bytes32 => bytes32) public withdrawStateOldActionState;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     mapping(bytes32 => uint64) public withdrawStateOldActionStateIndex;
 
     /// @notice Claimed withdraw nullifiers.
@@ -191,6 +209,9 @@ contract EthereumZekoBridge is
     bytes32 public bridgeProgramVKey;
     ISP1Verifier public withdrawVerifier;
     bytes32 public withdrawProgramVKey;
+
+    /// @notice Accepted withdrawal batch information by old action state.
+    mapping(bytes32 => WithdrawalRootInfo) public withdrawalRootInfo;
 
     // -------------------------------------------------------------------------
     // Events
@@ -227,6 +248,15 @@ contract EthereumZekoBridge is
         bytes32 indexed actionState,
         bytes32 indexed oldWithdrawState,
         bytes32 newWithdrawState
+    );
+
+    event WithdrawalRootAccepted(
+        bytes32 indexed oldActionState,
+        bytes32 indexed newActionState,
+        bytes32 indexed withdrawalRoot,
+        bytes32 oldWithdrawState,
+        bytes32 newWithdrawState,
+        uint32 withdrawCount
     );
 
     event BridgeTransitionAccepted(
@@ -655,23 +685,38 @@ contract EthereumZekoBridge is
                 decoded.zekoActionStateAfter
             );
         }
+        if (decoded.withdrawCount > MAX_WITHDRAW_COUNT) {
+            revert InvalidWithdrawProof();
+        }
 
         processedActionState[decoded.zekoActionStateAfter] = true;
 
         if (decoded.withdrawCount > 0) {
-            validWithdrawState[decoded.ethereumWithdrawStateAfter] = true;
-            withdrawStateOldActionState[
-                decoded.ethereumWithdrawStateAfter
-            ] = decoded.zekoActionStateBefore;
-            withdrawStateOldActionStateIndex[
-                decoded.ethereumWithdrawStateAfter
-            ] = oldL2ActionStateIndex;
+            if (
+                decoded.withdrawalRoot == bytes32(0) ||
+                withdrawalRootInfo[decoded.zekoActionStateBefore].valid
+            ) {
+                revert InvalidWithdrawProof();
+            }
 
-            emit WithdrawStateAccepted(
+            withdrawalRootInfo[
+                decoded.zekoActionStateBefore
+            ] = WithdrawalRootInfo({
+                withdrawalRoot: decoded.withdrawalRoot,
+                withdrawStateBefore: decoded.ethereumWithdrawStateBefore,
+                withdrawStateAfter: decoded.ethereumWithdrawStateAfter,
+                oldActionStateIndex: oldL2ActionStateIndex,
+                withdrawCount: decoded.withdrawCount,
+                valid: true
+            });
+
+            emit WithdrawalRootAccepted(
                 decoded.zekoActionStateBefore,
                 decoded.zekoActionStateAfter,
+                decoded.withdrawalRoot,
                 decoded.ethereumWithdrawStateBefore,
-                decoded.ethereumWithdrawStateAfter
+                decoded.ethereumWithdrawStateAfter,
+                decoded.withdrawCount
             );
         }
 
@@ -735,30 +780,29 @@ contract EthereumZekoBridge is
             cursor
         );
         cursor += 32;
+        decoded.withdrawalRoot = _readBytes32(publicValues, cursor);
+        cursor += 32;
         decoded.withdrawCount = _readUint32LE(publicValues, cursor);
         cursor += 4;
 
         assert(cursor == WITHDRAW_PUBLIC_VALUES_LENGTH);
     }
 
-    /// @notice Claims a withdraw included in an accepted sequential withdraw state.
-    /// @param withdrawStateBefore Starting state for the sequence supplied by the caller.
-    /// @param withdrawStateAfter Accepted final state to reconstruct.
+    /// @notice Claims a withdraw included in an accepted withdrawal Merkle root.
+    /// @param oldActionState Old action state bound to the withdrawal batch.
     /// @param withdraw Clear withdraw being claimed.
-    /// @param withdrawIndex Position of `withdraw` inside `leafHashes`.
-    /// @param leafHashes Full ordered sequence of withdraw leaf hashes, with any value at `withdrawIndex`.
+    /// @param withdrawIndex Position of `withdraw` inside the withdrawal batch.
+    /// @param merkleProof Fixed-depth Merkle proof containing exactly 16 siblings.
     function claimWithdraw(
-        bytes32 withdrawStateBefore,
-        bytes32 withdrawStateAfter,
+        bytes32 oldActionState,
         WithdrawClaim calldata withdraw,
         uint256 withdrawIndex,
-        bytes32[] calldata leafHashes
+        bytes32[16] calldata merkleProof
     ) external nonReentrant whenNotPaused {
-        if (!validWithdrawState[withdrawStateAfter]) {
-            revert InvalidWithdrawState(withdrawStateAfter);
-        }
+        WithdrawalRootInfo memory info = withdrawalRootInfo[oldActionState];
+        if (!info.valid) revert InvalidWithdrawProof();
         if (withdraw.amount == bytes32(0)) revert ZeroAmount();
-        if (withdrawIndex >= leafHashes.length) revert InvalidWithdrawProof();
+        if (withdrawIndex >= info.withdrawCount) revert InvalidWithdrawProof();
 
         bytes32 withdrawLeaf = computeWithdrawLeaf({
             token: withdraw.token,
@@ -766,15 +810,17 @@ contract EthereumZekoBridge is
             amount: withdraw.amount
         });
 
-        bytes32 state = withdrawStateBefore;
-        for (uint256 i = 0; i < leafHashes.length; i++) {
-            bytes32 leaf = i == withdrawIndex ? withdrawLeaf : leafHashes[i];
-            state = computeNextWithdrawState(state, leaf);
-        }
-        if (state != withdrawStateAfter) revert InvalidWithdrawProof();
+        if (
+            !_verifyMerkleProof(
+                withdrawLeaf,
+                withdrawIndex,
+                merkleProof,
+                info.withdrawalRoot
+            )
+        ) revert InvalidWithdrawProof();
 
         bytes32 nullifier = computeWithdrawNullifier(
-            withdrawStateOldActionStateIndex[withdrawStateAfter],
+            info.oldActionStateIndex,
             withdrawIndex,
             withdrawLeaf
         );
@@ -804,12 +850,43 @@ contract EthereumZekoBridge is
         emit BridgeWithdrawClaimed({
             nullifier: nullifier,
             withdrawLeaf: withdrawLeaf,
-            withdrawState: withdrawStateAfter,
+            withdrawState: info.withdrawStateAfter,
             token: token,
             recipient: recipient,
             zekoAmount: withdraw.amount,
             ethereumAmount: ethereumAmount
         });
+    }
+
+    function _hashMerkleNode(
+        bytes32 left,
+        bytes32 right
+    ) internal pure returns (bytes32) {
+        return
+            keccak256(abi.encode(WITHDRAW_MERKLE_NODE_DOMAIN, left, right));
+    }
+
+    function _verifyMerkleProof(
+        bytes32 leaf,
+        uint256 index,
+        bytes32[16] calldata proof,
+        bytes32 root
+    ) internal pure returns (bool) {
+        bytes32 computed = leaf;
+
+        for (uint256 i = 0; i < WITHDRAW_MERKLE_TREE_DEPTH; i++) {
+            bytes32 sibling = proof[i];
+
+            if ((index & 1) == 0) {
+                computed = _hashMerkleNode(computed, sibling);
+            } else {
+                computed = _hashMerkleNode(sibling, computed);
+            }
+
+            index >>= 1;
+        }
+
+        return computed == root;
     }
 
     function _recordDeposit(

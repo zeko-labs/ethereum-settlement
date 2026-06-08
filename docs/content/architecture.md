@@ -11,7 +11,8 @@ Each guest program commits a narrowly scoped public output:
 
 - Settlement commits proof validity and the extracted Zeko state transition.
 - Bridge commits Ethereum deposit accumulator and Zeko action-state transitions.
-- Withdraw commits Zeko action-state and Ethereum withdrawal accumulator transitions.
+- Withdraw commits Zeko action-state, Ethereum sequential withdrawal
+  accumulator, and fixed-depth withdrawal Merkle root transitions.
 
 The host binaries in `script/src/bin` parse fixtures, prepare SP1 inputs,
 execute or prove the guest programs, and decode their public values. Shared

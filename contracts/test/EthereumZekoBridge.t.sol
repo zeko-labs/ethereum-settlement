@@ -487,10 +487,11 @@ contract EthereumZekoBridgeTest is Test {
         bridge.submitBridgeTransition(publicValues, "");
     }
 
-    function test_SubmitWithdrawTransition_StoresValidWithdrawState() public {
+    function test_SubmitWithdrawTransition_StoresWithdrawalRootInfo() public {
         bytes32 oldActionState = keccak256("old action state");
         bytes32 actionState = keccak256("action state");
         bytes32 newWithdrawState = keccak256("withdraw state");
+        bytes32 withdrawalRoot = keccak256("withdrawal root");
         settlement.setL2ActionStateInfo(oldActionState, 0, true);
         settlement.setL2ActionStateInfo(actionState, 1, true);
         bytes memory publicValues = _withdrawPublicValues(
@@ -498,17 +499,27 @@ contract EthereumZekoBridgeTest is Test {
             actionState,
             bridge.currentWithdrawState(),
             newWithdrawState,
+            withdrawalRoot,
             1
         );
 
         bridge.submitWithdrawTransition(publicValues, "");
 
         assertTrue(bridge.processedActionState(actionState));
-        assertTrue(bridge.validWithdrawState(newWithdrawState));
-        assertEq(
-            bridge.withdrawStateOldActionState(newWithdrawState),
-            oldActionState
-        );
+        (
+            bytes32 storedWithdrawalRoot,
+            bytes32 storedStateBefore,
+            bytes32 storedStateAfter,
+            uint64 storedOldActionStateIndex,
+            uint32 storedWithdrawCount,
+            bool valid
+        ) = bridge.withdrawalRootInfo(oldActionState);
+        assertEq(storedWithdrawalRoot, withdrawalRoot);
+        assertEq(storedStateBefore, bytes32(0));
+        assertEq(storedStateAfter, newWithdrawState);
+        assertEq(storedOldActionStateIndex, 0);
+        assertEq(storedWithdrawCount, 1);
+        assertTrue(valid);
         assertEq(bridge.currentWithdrawState(), newWithdrawState);
     }
 
@@ -573,9 +584,7 @@ contract EthereumZekoBridgeTest is Test {
         bridge.submitWithdrawTransition(secondPublicValues, "");
     }
 
-    function test_ClaimWithdraw_ReconstructsSequentialStateAndTransfersERC20()
-        public
-    {
+    function test_ClaimWithdraw_VerifiesMerkleProofAndTransfersERC20() public {
         bridge.addToken(address(token18), true, 9, 18);
         token18.mint(address(bridge), 10 ether);
 
@@ -612,25 +621,32 @@ contract EthereumZekoBridgeTest is Test {
         state = bridge.computeNextWithdrawState(state, leaf1);
         state = bridge.computeNextWithdrawState(state, leaf2);
 
+        bytes32[] memory leaves = new bytes32[](3);
+        leaves[0] = leaf0;
+        leaves[1] = leaf1;
+        leaves[2] = leaf2;
+        bytes32 withdrawalRoot = _merkleRoot(leaves);
+
         bridge.submitWithdrawTransition(
             _withdrawPublicValues(
                 oldActionState,
                 actionState,
                 bytes32(0),
                 state,
+                withdrawalRoot,
                 3
             ),
             ""
         );
 
-        bytes32[] memory leaves = new bytes32[](3);
-        leaves[0] = leaf0;
-        leaves[1] = bytes32(0);
-        leaves[2] = leaf2;
-
         uint256 aliceBalanceBefore = token18.balanceOf(alice);
 
-        bridge.claimWithdraw(bytes32(0), state, target, 1, leaves);
+        bridge.claimWithdraw(
+            oldActionState,
+            target,
+            1,
+            _merkleProof(leaves, 1)
+        );
 
         assertEq(token18.balanceOf(alice), aliceBalanceBefore + 2 ether);
         assertEq(token18.balanceOf(address(bridge)), 8 ether);
@@ -665,19 +681,23 @@ contract EthereumZekoBridgeTest is Test {
             target.amount
         );
         bytes32 state = bridge.computeNextWithdrawState(bytes32(0), leaf);
+        bytes32[] memory leaves = new bytes32[](1);
+        leaves[0] = leaf;
+        bytes32 withdrawalRoot = _merkleRoot(leaves);
         bridge.submitWithdrawTransition(
             _withdrawPublicValues(
                 oldActionState,
                 actionState,
                 bytes32(0),
                 state,
+                withdrawalRoot,
                 1
             ),
             ""
         );
 
-        bytes32[] memory leaves = new bytes32[](1);
-        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+        bytes32[16] memory proof = _merkleProof(leaves, 0);
+        bridge.claimWithdraw(oldActionState, target, 0, proof);
 
         bytes32 nullifier = bridge.computeWithdrawNullifier(
             0,
@@ -690,10 +710,10 @@ contract EthereumZekoBridgeTest is Test {
                 nullifier
             )
         );
-        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+        bridge.claimWithdraw(oldActionState, target, 0, proof);
     }
 
-    function test_ClaimWithdraw_RevertsOnWrongOrderedHashes() public {
+    function test_ClaimWithdraw_RevertsOnInvalidMerkleProof() public {
         bridge.addToken(address(token18), true, 9, 18);
         token18.mint(address(bridge), 10 ether);
 
@@ -722,23 +742,237 @@ contract EthereumZekoBridgeTest is Test {
 
         bytes32 state = bridge.computeNextWithdrawState(bytes32(0), leaf0);
         state = bridge.computeNextWithdrawState(state, leaf1);
+        bytes32[] memory leaves = new bytes32[](2);
+        leaves[0] = leaf0;
+        leaves[1] = leaf1;
+        bytes32 withdrawalRoot = _merkleRoot(leaves);
         bridge.submitWithdrawTransition(
             _withdrawPublicValues(
                 oldActionState,
                 actionState,
                 bytes32(0),
                 state,
+                withdrawalRoot,
                 2
             ),
             ""
         );
 
-        bytes32[] memory leaves = new bytes32[](2);
-        leaves[0] = bytes32(0);
-        leaves[1] = leaf0;
+        bytes32[16] memory proof = _merkleProof(leaves, 1);
+        proof[0] = keccak256("invalid sibling");
 
         vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
-        bridge.claimWithdraw(bytes32(0), state, target, 0, leaves);
+        bridge.claimWithdraw(oldActionState, target, 1, proof);
+    }
+
+    function test_ClaimWithdraw_RevertsWhenIndexExceedsWithdrawCount() public {
+        bytes32 oldActionState = keccak256("old action state");
+        bytes32 actionState = keccak256("action state");
+        settlement.setL2ActionStateInfo(oldActionState, 0, true);
+        settlement.setL2ActionStateInfo(actionState, 1, true);
+
+        EthereumZekoBridge.WithdrawClaim memory target = EthereumZekoBridge
+            .WithdrawClaim({
+                token: bytes32(0),
+                recipient: _addressField(alice),
+                amount: bytes32(uint256(1))
+            });
+        bytes32 leaf = bridge.computeWithdrawLeaf(
+            target.token,
+            target.recipient,
+            target.amount
+        );
+        bytes32[] memory leaves = new bytes32[](1);
+        leaves[0] = leaf;
+        bytes32 withdrawalRoot = _merkleRoot(leaves);
+
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                oldActionState,
+                actionState,
+                bytes32(0),
+                bridge.computeNextWithdrawState(bytes32(0), leaf),
+                withdrawalRoot,
+                1
+            ),
+            ""
+        );
+
+        (, , , , uint32 withdrawCount, bool valid) = bridge
+            .withdrawalRootInfo(oldActionState);
+        assertEq(withdrawCount, 1);
+        assertTrue(valid);
+        bytes32[16] memory proof = _merkleProof(leaves, 0);
+
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.claimWithdraw(oldActionState, target, 1, proof);
+    }
+
+    function test_ClaimWithdraw_RevertsForUnknownOldActionState() public {
+        bytes32 oldActionState = keccak256("old action state");
+        bytes32 actionState = keccak256("action state");
+        settlement.setL2ActionStateInfo(oldActionState, 0, true);
+        settlement.setL2ActionStateInfo(actionState, 1, true);
+
+        EthereumZekoBridge.WithdrawClaim memory target = EthereumZekoBridge
+            .WithdrawClaim({
+                token: bytes32(0),
+                recipient: _addressField(alice),
+                amount: bytes32(uint256(1))
+            });
+        bytes32 leaf = bridge.computeWithdrawLeaf(
+            target.token,
+            target.recipient,
+            target.amount
+        );
+        bytes32[] memory leaves = new bytes32[](1);
+        leaves[0] = leaf;
+        bytes32 withdrawalRoot = _merkleRoot(leaves);
+
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                oldActionState,
+                actionState,
+                bytes32(0),
+                bridge.computeNextWithdrawState(bytes32(0), leaf),
+                withdrawalRoot,
+                1
+            ),
+            ""
+        );
+
+        bytes32[16] memory proof = _merkleProof(leaves, 0);
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.claimWithdraw(
+            keccak256("wrong old action state"),
+            target,
+            0,
+            proof
+        );
+    }
+
+    function test_SubmitWithdrawTransition_RevertsAboveMaxWithdrawCount()
+        public
+    {
+        bytes32 oldActionState = keccak256("old action state");
+        bytes32 actionState = keccak256("action state");
+        settlement.setL2ActionStateInfo(oldActionState, 0, true);
+        settlement.setL2ActionStateInfo(actionState, 1, true);
+        uint32 invalidWithdrawCount = uint32(
+            bridge.MAX_WITHDRAW_COUNT() + 1
+        );
+
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                oldActionState,
+                actionState,
+                bytes32(0),
+                keccak256("withdraw state"),
+                keccak256("withdrawal root"),
+                invalidWithdrawCount
+            ),
+            ""
+        );
+    }
+
+    function test_SubmitWithdrawTransition_RevertsOnZeroRootForNonEmptyBatch()
+        public
+    {
+        bytes32 oldActionState = keccak256("old action state");
+        bytes32 actionState = keccak256("action state");
+        settlement.setL2ActionStateInfo(oldActionState, 0, true);
+        settlement.setL2ActionStateInfo(actionState, 1, true);
+
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                oldActionState,
+                actionState,
+                bytes32(0),
+                keccak256("withdraw state"),
+                bytes32(0),
+                1
+            ),
+            ""
+        );
+    }
+
+    function test_SubmitWithdrawTransition_AllowsSameRootForDifferentActionStates()
+        public
+    {
+        bytes32 firstActionState = keccak256("first action state");
+        bytes32 secondActionState = keccak256("second action state");
+        bytes32 thirdActionState = keccak256("third action state");
+        bytes32 firstWithdrawState = keccak256("first withdraw state");
+        bytes32 secondWithdrawState = keccak256("second withdraw state");
+        bytes32 withdrawalRoot = keccak256("withdrawal root");
+        settlement.setL2ActionStateInfo(firstActionState, 0, true);
+        settlement.setL2ActionStateInfo(secondActionState, 1, true);
+        settlement.setL2ActionStateInfo(thirdActionState, 2, true);
+
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                firstActionState,
+                secondActionState,
+                bytes32(0),
+                firstWithdrawState,
+                withdrawalRoot,
+                1
+            ),
+            ""
+        );
+
+        bridge.submitWithdrawTransition(
+            _withdrawPublicValues(
+                secondActionState,
+                thirdActionState,
+                firstWithdrawState,
+                secondWithdrawState,
+                withdrawalRoot,
+                1
+            ),
+            ""
+        );
+
+        (bytes32 firstStoredRoot, , , , , bool firstValid) = bridge
+            .withdrawalRootInfo(firstActionState);
+        (bytes32 secondStoredRoot, , , , , bool secondValid) = bridge
+            .withdrawalRootInfo(secondActionState);
+        assertEq(firstStoredRoot, withdrawalRoot);
+        assertEq(secondStoredRoot, withdrawalRoot);
+        assertTrue(firstValid);
+        assertTrue(secondValid);
+    }
+
+    function test_DecodeWithdrawPublicValues_Expects164Bytes() public view {
+        bytes32 withdrawalRoot = keccak256("withdrawal root");
+        EthereumZekoBridge.DecodedWithdrawPublicValues memory decoded = bridge
+            .decodeWithdrawPublicValues(
+                _withdrawPublicValues(
+                    bytes32(uint256(1)),
+                    bytes32(uint256(2)),
+                    bytes32(uint256(3)),
+                    bytes32(uint256(4)),
+                    withdrawalRoot,
+                    5
+                )
+            );
+
+        assertEq(decoded.withdrawalRoot, withdrawalRoot);
+        assertEq(decoded.withdrawCount, 5);
+    }
+
+    function test_DecodeWithdrawPublicValues_RevertsOnOld132Bytes() public {
+        bytes memory oldPublicValues = new bytes(132);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.InvalidBridgePublicValuesLength.selector,
+                uint256(164),
+                uint256(132)
+            )
+        );
+        bridge.decodeWithdrawPublicValues(oldPublicValues);
     }
 
     function _bridgePublicValues(
@@ -777,7 +1011,31 @@ contract EthereumZekoBridgeTest is Test {
         bytes32 ethereumWithdrawStateAfter,
         uint32 withdrawCount
     ) private pure returns (bytes memory publicValues) {
-        publicValues = new bytes(132);
+        return
+            _withdrawPublicValues(
+                zekoActionStateBefore,
+                zekoActionStateAfter,
+                ethereumWithdrawStateBefore,
+                ethereumWithdrawStateAfter,
+                keccak256(
+                    abi.encode(
+                        "test withdrawal root",
+                        ethereumWithdrawStateAfter
+                    )
+                ),
+                withdrawCount
+            );
+    }
+
+    function _withdrawPublicValues(
+        bytes32 zekoActionStateBefore,
+        bytes32 zekoActionStateAfter,
+        bytes32 ethereumWithdrawStateBefore,
+        bytes32 ethereumWithdrawStateAfter,
+        bytes32 withdrawalRoot,
+        uint32 withdrawCount
+    ) private pure returns (bytes memory publicValues) {
+        publicValues = new bytes(164);
         uint256 cursor = 0;
 
         _writeBytes32(publicValues, cursor, zekoActionStateBefore);
@@ -788,10 +1046,79 @@ contract EthereumZekoBridgeTest is Test {
         cursor += 32;
         _writeBytes32(publicValues, cursor, ethereumWithdrawStateAfter);
         cursor += 32;
+        _writeBytes32(publicValues, cursor, withdrawalRoot);
+        cursor += 32;
         _writeUint32LE(publicValues, cursor, withdrawCount);
         cursor += 4;
 
         assert(cursor == publicValues.length);
+    }
+
+    function _merkleRoot(
+        bytes32[] memory leaves
+    ) private view returns (bytes32) {
+        if (leaves.length == 0) return _zeroHashes()[16];
+
+        bytes32[17] memory zeroHashes = _zeroHashes();
+        bytes32[] memory nodes = leaves;
+
+        for (uint256 level = 0; level < 16; level++) {
+            bytes32[] memory parents = new bytes32[]((nodes.length + 1) / 2);
+            for (uint256 i = 0; i < nodes.length; i += 2) {
+                bytes32 right = i + 1 < nodes.length
+                    ? nodes[i + 1]
+                    : zeroHashes[level];
+                parents[i / 2] = _hashMerkleNode(nodes[i], right);
+            }
+            nodes = parents;
+        }
+
+        return nodes[0];
+    }
+
+    function _merkleProof(
+        bytes32[] memory leaves,
+        uint256 targetIndex
+    ) private view returns (bytes32[16] memory proof) {
+        bytes32[17] memory zeroHashes = _zeroHashes();
+        bytes32[] memory nodes = leaves;
+        uint256 index = targetIndex;
+
+        for (uint256 level = 0; level < 16; level++) {
+            uint256 siblingIndex = index ^ 1;
+            proof[level] = siblingIndex < nodes.length
+                ? nodes[siblingIndex]
+                : zeroHashes[level];
+
+            bytes32[] memory parents = new bytes32[]((nodes.length + 1) / 2);
+            for (uint256 i = 0; i < nodes.length; i += 2) {
+                bytes32 right = i + 1 < nodes.length
+                    ? nodes[i + 1]
+                    : zeroHashes[level];
+                parents[i / 2] = _hashMerkleNode(nodes[i], right);
+            }
+            nodes = parents;
+            index >>= 1;
+        }
+    }
+
+    function _zeroHashes() private view returns (bytes32[17] memory hashes) {
+        for (uint256 level = 0; level < 16; level++) {
+            hashes[level + 1] = _hashMerkleNode(
+                hashes[level],
+                hashes[level]
+            );
+        }
+    }
+
+    function _hashMerkleNode(
+        bytes32 left,
+        bytes32 right
+    ) private view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(bridge.WITHDRAW_MERKLE_NODE_DOMAIN(), left, right)
+            );
     }
 
     function _writeBytes32(

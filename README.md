@@ -6,7 +6,7 @@ The project has three verification paths:
 
 - **Settlement circuit**: verifies a Zeko/o1 proof for a zkApp command and commits the rollup state transition that Ethereum should accept.
 - **Bridge circuit**: verifies the Ethereum-to-Zeko bridge transition by replaying deposits, updating the Ethereum deposit accumulator, and computing the Zeko action state expected by the Zeko bridge account.
-- **Withdraw circuit**: verifies the Zeko-to-Ethereum withdraw transition by replaying withdrawals, updating the Ethereum withdraw accumulator, and computing the Zeko action state for the withdraw batch.
+- **Withdraw circuit**: verifies the Zeko-to-Ethereum withdraw transition by replaying withdrawals, updating the Ethereum withdraw accumulator, computing a fixed-depth withdrawal Merkle root, and computing the Zeko action state for the withdraw batch.
 
 The goal is to let Ethereum verify succinct SP1 proofs instead of directly verifying the full Zeko/o1 proof system or re-executing bridge action-state logic on-chain.
 
@@ -187,6 +187,7 @@ The withdraw public output includes:
 
 - Zeko action state before/after
 - Ethereum withdraw state before/after
+- withdrawal Merkle root
 - withdraw count
 
 The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatches the same deposit actions, so the SP1 bridge output can be compared against a real action-state update.

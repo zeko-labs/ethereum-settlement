@@ -12336,6 +12336,7 @@ dependencies = [
  "alloy-primitives 0.8.20",
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
+ "bincode",
  "bytemuck",
  "mina-curves",
  "mina-poseidon",

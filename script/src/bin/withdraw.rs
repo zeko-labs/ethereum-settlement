@@ -78,6 +78,10 @@ fn main() {
             "  withdraw_state_after : 0x{}",
             hex::encode(public_values.ethereum_withdraw_state_after)
         );
+        println!(
+            "  withdrawal_root      : 0x{}",
+            hex::encode(public_values.withdrawal_root)
+        );
         println!("  withdraw_count       : {}", public_values.withdraw_count);
     } else {
         let pk = client.setup(WITHDRAW_ELF).expect("failed to setup ELF");
@@ -103,6 +107,10 @@ fn main() {
         println!(
             "  withdraw_state_after : 0x{}",
             hex::encode(public_values.ethereum_withdraw_state_after)
+        );
+        println!(
+            "  withdrawal_root      : 0x{}",
+            hex::encode(public_values.withdrawal_root)
         );
 
         std::fs::create_dir_all("proofs").expect("create proofs dir");

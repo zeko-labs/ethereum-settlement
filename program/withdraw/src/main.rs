@@ -11,15 +11,31 @@ use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use zeko_sp1_lib::{Address, Bytes32, WithdrawTransitionInput, WithdrawTransitionPublicValues};
 
+const WITHDRAW_TREE_DEPTH: usize = 16;
+const MAX_WITHDRAWS: usize = 1 << WITHDRAW_TREE_DEPTH;
+
 fn main() {
     let input: WithdrawTransitionInput = sp1_zkvm::io::read();
+    let public_values = process_withdraw_transition(&input);
+    sp1_zkvm::io::commit(&public_values);
+}
+
+fn process_withdraw_transition(input: &WithdrawTransitionInput) -> WithdrawTransitionPublicValues {
+    assert!(
+        input.withdraws.len() <= MAX_WITHDRAWS,
+        "too many withdrawals"
+    );
 
     let mut ethereum_withdraw_state = input.ethereum.withdraw_state;
     let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
+    let mut ethereum_withdraw_leaves = Vec::with_capacity(input.withdraws.len());
 
     let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
 
     for withdraw in &input.withdraws {
+        // TODO: Remove this assert once Zeko withdrawal actions support token identifiers.
+        assert_eq!(withdraw.token, [0u8; 32], "only native token supported");
+
         let ethereum_withdraw_leaf = compute_ethereum_withdraw_leaf(
             input.ethereum.chain_id,
             input.ethereum.bridge_address,
@@ -28,6 +44,7 @@ fn main() {
             withdraw.amount,
         );
 
+        ethereum_withdraw_leaves.push(ethereum_withdraw_leaf);
         ethereum_withdraw_state =
             compute_ethereum_withdraw_state(ethereum_withdraw_state, ethereum_withdraw_leaf);
 
@@ -37,13 +54,14 @@ fn main() {
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
     }
 
-    sp1_zkvm::io::commit(&WithdrawTransitionPublicValues {
+    WithdrawTransitionPublicValues {
         zeko_action_state_before: fp_to_bytes(fp_from_bytes(input.zeko.action_state)),
         zeko_action_state_after: fp_to_bytes(zeko_action_state),
         ethereum_withdraw_state_before: input.ethereum.withdraw_state,
         ethereum_withdraw_state_after: ethereum_withdraw_state,
+        withdrawal_root: compute_withdrawal_root(&ethereum_withdraw_leaves),
         withdraw_count: input.withdraws.len() as u32,
-    });
+    }
 }
 
 fn compute_ethereum_withdraw_leaf(
@@ -68,6 +86,48 @@ fn compute_ethereum_withdraw_state(previous_state: Bytes32, withdraw_leaf: Bytes
     encoded.extend_from_slice(&keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1".as_bytes()).0);
     encoded.extend_from_slice(&previous_state);
     encoded.extend_from_slice(&withdraw_leaf);
+    keccak256(encoded).0
+}
+
+fn compute_withdrawal_root(leaves: &[Bytes32]) -> Bytes32 {
+    assert!(leaves.len() <= MAX_WITHDRAWS, "too many withdrawals");
+
+    let zero_hashes = compute_zero_hashes();
+    if leaves.is_empty() {
+        return zero_hashes[WITHDRAW_TREE_DEPTH];
+    }
+
+    let mut nodes = leaves.to_vec();
+    for level in 0..WITHDRAW_TREE_DEPTH {
+        let mut parents = Vec::with_capacity(nodes.len().div_ceil(2));
+        for pair in nodes.chunks(2) {
+            let right = if pair.len() == 2 {
+                pair[1]
+            } else {
+                zero_hashes[level]
+            };
+            parents.push(hash_merkle_node(pair[0], right));
+        }
+        nodes = parents;
+    }
+
+    assert_eq!(nodes.len(), 1, "invalid withdrawal tree");
+    nodes[0]
+}
+
+fn compute_zero_hashes() -> [Bytes32; WITHDRAW_TREE_DEPTH + 1] {
+    let mut zero_hashes = [[0u8; 32]; WITHDRAW_TREE_DEPTH + 1];
+    for level in 0..WITHDRAW_TREE_DEPTH {
+        zero_hashes[level + 1] = hash_merkle_node(zero_hashes[level], zero_hashes[level]);
+    }
+    zero_hashes
+}
+
+fn hash_merkle_node(left: Bytes32, right: Bytes32) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(96);
+    encoded.extend_from_slice(&keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1".as_bytes()).0);
+    encoded.extend_from_slice(&left);
+    encoded.extend_from_slice(&right);
     keccak256(encoded).0
 }
 
@@ -162,6 +222,9 @@ fn address_word(address: Address) -> Bytes32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zeko_sp1_lib::{
+        BridgeWithdraw, EthereumBridgeState, WithdrawTransitionInput, ZekoBridgeState,
+    };
 
     #[test]
     fn withdrawal_hash_matches_zeko_aux_shape() {
@@ -179,6 +242,99 @@ mod tests {
         );
 
         assert_eq!(action_hash, expected);
+    }
+
+    #[test]
+    fn empty_withdrawal_root_is_fully_padded_tree() {
+        assert_eq!(
+            compute_withdrawal_root(&[]),
+            compute_zero_hashes()[WITHDRAW_TREE_DEPTH]
+        );
+    }
+
+    #[test]
+    fn one_withdrawal_root_uses_zero_siblings() {
+        let leaf = hex32("0000000000000000000000000000000000000000000000000000000000000001");
+        let zero_hashes = compute_zero_hashes();
+        let mut expected = leaf;
+        for sibling in zero_hashes.iter().take(WITHDRAW_TREE_DEPTH) {
+            expected = hash_merkle_node(expected, *sibling);
+        }
+
+        assert_eq!(compute_withdrawal_root(&[leaf]), expected);
+    }
+
+    #[test]
+    fn two_withdrawal_root_preserves_leaf_order() {
+        let left = hex32("0000000000000000000000000000000000000000000000000000000000000001");
+        let right = hex32("0000000000000000000000000000000000000000000000000000000000000002");
+        let zero_hashes = compute_zero_hashes();
+        let mut expected = hash_merkle_node(left, right);
+        for sibling in zero_hashes.iter().take(WITHDRAW_TREE_DEPTH).skip(1) {
+            expected = hash_merkle_node(expected, *sibling);
+        }
+
+        assert_eq!(compute_withdrawal_root(&[left, right]), expected);
+        assert_ne!(
+            compute_withdrawal_root(&[left, right]),
+            compute_withdrawal_root(&[right, left])
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "too many withdrawals")]
+    fn more_than_max_withdrawals_fails() {
+        let input = test_input(vec![test_withdraw(1); MAX_WITHDRAWS + 1]);
+        process_withdraw_transition(&input);
+    }
+
+    #[test]
+    #[should_panic(expected = "only native token supported")]
+    fn non_native_token_fails() {
+        let mut input = test_input(vec![test_withdraw(1)]);
+        input.withdraws[0].token[31] = 1;
+        process_withdraw_transition(&input);
+    }
+
+    #[test]
+    fn public_values_include_withdrawal_root_in_expected_order() {
+        let input = test_input(vec![test_withdraw(1)]);
+        let public_values = process_withdraw_transition(&input);
+        let encoded = bincode::serialize(&public_values).expect("serialize public values");
+
+        assert_eq!(encoded.len(), 164);
+        assert_eq!(&encoded[128..160], &public_values.withdrawal_root);
+        assert_eq!(&encoded[160..164], &1u32.to_le_bytes());
+    }
+
+    fn test_input(withdraws: Vec<BridgeWithdraw>) -> WithdrawTransitionInput {
+        WithdrawTransitionInput {
+            ethereum: EthereumBridgeState {
+                chain_id: 1,
+                bridge_address: [0u8; 20],
+                deposit_nonce: 0,
+                deposit_state: [0u8; 32],
+                withdraw_state: [0u8; 32],
+            },
+            zeko: ZekoBridgeState {
+                action_state: hex32(
+                    "3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9",
+                ),
+            },
+            withdraws,
+        }
+    }
+
+    fn test_withdraw(value: u8) -> BridgeWithdraw {
+        let mut recipient = [0u8; 32];
+        recipient[31] = value;
+        let mut amount = [0u8; 32];
+        amount[31] = value;
+        BridgeWithdraw {
+            token: [0u8; 32],
+            recipient,
+            amount,
+        }
     }
 
     fn hex32(value: &str) -> [u8; 32] {

@@ -48,7 +48,8 @@ deposits.
 ### Withdrawals
 
 The withdrawal path replays Zeko withdrawal actions, computes an Ethereum
-withdrawal accumulator, and permits claims only after the transition is linked
-to consecutive settlement-recorded action checkpoints.
+withdrawal accumulator and fixed-depth Merkle root, and permits compact Merkle
+claims only after the transition is linked to consecutive settlement-recorded
+action checkpoints.
 
 [Read the withdrawal flow →](/protocol/withdrawals)

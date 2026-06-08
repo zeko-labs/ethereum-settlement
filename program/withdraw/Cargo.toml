@@ -21,3 +21,6 @@ opt-level      = 3
 [target.'cfg(target_os = "zkvm")'.dependencies]
 sp1-lib  = "6.1.0"
 bytemuck = "1"
+
+[dev-dependencies]
+bincode = { workspace = true }

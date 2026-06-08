@@ -213,6 +213,8 @@ pub struct WithdrawTransitionPublicValues {
     pub ethereum_withdraw_state_before: Bytes32,
     #[serde(with = "serde_bytes32")]
     pub ethereum_withdraw_state_after: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub withdrawal_root: Bytes32,
     pub withdraw_count: u32,
 }
 
