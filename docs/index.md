@@ -1,4 +1,9 @@
-# Zeko SP1 Verifier
+---
+layout: default
+title: Zeko Ethereum L2
+---
+
+# Zeko Ethereum L2
 
 This repository uses SP1 proofs to connect Zeko state transitions with Ethereum
 contracts. It contains three separate SP1 programs:

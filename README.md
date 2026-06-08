@@ -1,4 +1,4 @@
-# Zeko SP1 Verifier
+# Zeko Ethereum L2 Gateway
 
 This repository contains SP1 programs and Ethereum contracts used to settle Zeko state transitions on Ethereum.
 
