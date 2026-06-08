@@ -1,117 +1,173 @@
-# Zeko SP1 Verifier Documentation
+# Zeko SP1 Verifier
 
-This project uses SP1 to produce Ethereum-verifiable proofs for Zeko settlement and bridge transitions.
+This repository uses SP1 proofs to connect Zeko state transitions with Ethereum
+contracts. It contains three separate SP1 programs:
 
-The system is split into two circuits:
+| Program | Direction | Purpose |
+| --- | --- | --- |
+| `program/settlement` | Zeko to Ethereum | Verifies a Zeko/o1 zkApp proof and exposes the rollup root transition. |
+| `program/bridge` | Ethereum to Zeko | Replays an ordered batch of Ethereum deposits and computes the matching Zeko action-state transition. |
+| `program/withdraw` | Zeko to Ethereum | Replays an ordered batch of Zeko withdrawal actions and computes the matching Ethereum withdrawal accumulator. |
 
-- **Settlement** proves that a Zeko/o1 zkApp proof is valid and extracts the rollup state transition Ethereum should accept.
-- **Bridge** proves that Ethereum deposits produce the expected Zeko action-state transition.
+The SP1 programs perform expensive proof verification and hashing off-chain.
+The Ethereum contracts verify the resulting succinct SP1 proofs and enforce
+continuity against state already stored on Ethereum.
 
-## System Overview
+## Architecture
 
 ```text
-Ethereum contracts / fixtures
-        |
-        v
-Host scripts encode inputs
-        |
-        v
-SP1 guest programs
-        |
-        v
-SP1 public values
-        |
-        v
-Ethereum verifier contracts
+                         Zeko zkApp proof
+                                |
+                                v
+                     settlement SP1 program
+                                |
+                                v
+                       ZekoSettlement.sol
+                      root + action checkpoints
+                                |
+                                v
+Ethereum deposits --> bridge SP1 program ----\
+                                              > EthereumZekoBridge.sol
+Zeko withdrawals -> withdraw SP1 program ----/  deposits + withdrawals
 ```
 
-## Settlement
+The host binaries in `script/src/bin` parse fixtures, prepare SP1 inputs,
+execute or prove the guest programs, and decode their public values. Shared
+input and output types live in `lib/src/lib.rs`.
 
-The settlement circuit lives in `program/settlement`.
+## Settlement Flow
 
-It verifies a Zeko/o1 proof inside SP1. The guest receives:
+Settlement proves that a specific Zeko/o1 zkApp proof is valid and exposes the
+state transition encoded by the first account update.
 
-- the Zeko verification key
-- the o1 proof
-- the zkApp statement
-- deferred proof values
-- the zkApp command
-- the verifier index
+### 1. Host preparation
 
-The guest then:
+The settlement host binary reads:
 
-1. Deserializes all proof and command data.
-2. Checks that the first account update in the zkApp command matches the zkApp statement.
-3. Reconstructs the verifier index with the embedded SRS from `srs_rkyv.bin`.
-4. Reconstructs skipped verifier fields such as linearization data and endomorphism constants.
-5. Runs Kimchi verification.
-6. Extracts the canonical settlement values from the first account update.
-7. Commits these values as SP1 public output.
+- a base64-encoded Zeko verification key from `proofs/vk.txt`
+- a GraphQL zkApp command and proof from `proofs/graphql.txt`
 
-### Settlement Public Values
+The host derives the zkApp statement, computes deferred proof values, builds
+the verifier index, and serializes all required inputs for the SP1 guest.
 
-`ZkappPublicValues` contains:
+### 2. Settlement guest verification
+
+`program/settlement` performs the following work inside SP1:
+
+1. Deserializes the verification key, o1 proof, zkApp statement, deferred
+   values, zkApp command, and verifier index.
+2. Binds the supplied statement to the first account update by checking both
+   the account-update digest and calls hash.
+3. Loads the embedded Pasta SRS from `srs_rkyv.bin`.
+4. Restores verifier-index fields omitted from serialization, including
+   linearization data, powers of alpha, and the endomorphism constant.
+5. Checks selected verifier-index commitments against the supplied Zeko
+   verification key.
+6. Reconstructs the Kimchi public inputs and verifies the o1 proof.
+7. Extracts the first account update's app-state preconditions, app-state
+   updates, and action-state precondition.
+8. Commits the result as SP1 public values.
+
+The guest aborts if Kimchi verification fails. Therefore, a successfully
+verified SP1 proof always contains `proof_valid = true`.
+
+### 3. Settlement public values
+
+`ZkappPublicValues` is serialized in the following order:
 
 | Field | Meaning |
 | --- | --- |
-| `proof_valid` | Whether Kimchi verification succeeded. |
-| `vk_hash` | Hash of the Zeko verification key used by the proof. |
-| `state_before` | Eight zkApp state slots before the transition. |
-| `state_after` | Eight zkApp state slots after the transition. |
-| `action_state_before` | Action state required by the zkApp account precondition. |
+| `proof_valid` | Whether the Kimchi proof verified. |
+| `vk_hash` | Hash of the supplied Zeko verification key. |
+| `state_before[8]` | Checked app-state preconditions from the first account update. Ignored slots become zero. |
+| `state_after[8]` | Explicit app-state updates from the first account update. Kept slots become zero. |
+| `action_state_before` | Checked action-state precondition. An ignored precondition becomes zero. |
 
-### Ethereum Settlement Contract
+Only app-state slot `3` is currently interpreted as the rollup root by the
+Ethereum contract. Because `Keep` and ignored values are emitted as zero, the
+settled transition must explicitly constrain `state_before[3]` and explicitly
+set `state_after[3]`.
 
-`contracts/src/ZekoProofVerifier.sol` verifies the SP1 proof and enforces Ethereum-side state continuity.
+### 4. Ethereum settlement checks
 
-It checks:
+`contracts/src/ZekoSettlement.sol` first asks the configured SP1 verifier to
+verify the proof under `programVKey`. It then checks:
 
-- the SP1 proof verifies under `programVKey`
-- `proof_valid == true`
-- the proof's `vk_hash` equals the stored `vkHash`
-- the proof's `action_state_before` equals the stored `actionState`
-- `state_before[3]` equals the stored `currentRoot`
+```text
+publicValues.proof_valid           == true
+publicValues.vk_hash               == vkHash
+publicValues.action_state_before   == actionState
+publicValues.state_before[3]       == currentRoot
+```
 
-If all checks pass, it updates `currentRoot` to `state_after[3]`.
+If all checks pass:
 
-## Bridge
+```text
+currentRoot = publicValues.state_after[3]
+```
 
-The bridge circuit lives in `program/bridge`.
+The contract also records the accepted `action_state_before` as an indexed L2
+action-state checkpoint. These checkpoints are later used to authorize
+withdraw transitions.
 
-It proves that a batch of deposits recorded on Ethereum maps to a valid Zeko action-state transition.
+Important: settlement does not derive or advance `actionState` from the proof.
+An account with `ADMIN_ROLE` updates it through `setActionState`. The value is
+used as a guard for future settlement proofs and as a checkpoint source for
+withdraw verification.
 
-### Bridge Inputs
+## Deposit Bridge Flow
+
+The deposit bridge proves that an ordered range of deposits from the
+Ethereum-side accumulator produces the expected Zeko deposit actions.
+
+### 1. Deposits on Ethereum
+
+Users call `deposit` for ERC20 tokens or `depositETH` for native ETH on
+`EthereumZekoBridge.sol`.
+
+For each deposit, the contract:
+
+1. Checks that the token is allowed and the amount is non-zero.
+2. Locks the funds. Fee-on-transfer ERC20 tokens are rejected.
+3. Normalizes the Ethereum amount to the configured Zeko decimals.
+4. Increments `depositNonce`.
+5. Computes a deposit leaf.
+6. Appends the leaf to `currentDepositState`.
+7. Stores the accumulator checkpoint in `depositStateByNonce`.
+
+The contract validates that packed Zeko addresses contain a valid Pasta Fp
+x-coordinate. The highest bit stores the public-key parity flag.
+
+### 2. Bridge proof input
 
 `BridgeTransitionInput` contains:
 
 | Field | Meaning |
 | --- | --- |
-| `ethereum.chain_id` | Ethereum chain id used in deposit leaf domain separation. |
-| `ethereum.bridge_address` | L1 bridge address, also used as `holderAccountL1` for the Zeko action. |
-| `ethereum.deposit_nonce` | Last processed Ethereum deposit nonce. |
-| `ethereum.deposit_state` | Current Ethereum deposit accumulator state. |
-| `zeko.action_state` | Current Zeko action state. |
-| `deposits[]` | Batch of deposits to apply. |
+| `ethereum.chain_id` | Chain ID included in every deposit leaf. |
+| `ethereum.bridge_address` | Bridge address included in leaves and used as the Zeko `holderAccountL1`. |
+| `ethereum.deposit_nonce` | Nonce immediately before the batch. |
+| `ethereum.deposit_state` | Deposit accumulator immediately before the batch. |
+| `zeko.action_state` | Zeko action state immediately before the batch. |
+| `deposits[]` | Ordered deposits to replay. |
 
-Each deposit contains:
+Each `BridgeDeposit` contains `token`, `amount`, `zeko_amount`,
+`zeko_recipient`, and `timeout`. The guest uses `zeko_amount`; the original
+Ethereum `amount` is informational and is not included in the proof
+calculation.
 
-| Field | Meaning |
-| --- | --- |
-| `token` | L1 token address, or zero address for native ETH in contract semantics. |
-| `amount` | Original Ethereum-side amount. |
-| `zeko_amount` | Amount normalized to Zeko decimals. |
-| `zeko_recipient` | Packed Zeko address. |
-| `timeout` | Deposit timeout used by the Zeko action. |
+The prover must construct the batch from the same ordered deposit data emitted
+by the Ethereum contract. A proof cannot change the final on-chain deposit
+accumulator because the contract checks its final nonce and state.
 
-Human-readable JSON accepts hex strings and decimal strings for fixed-width values.
+### 3. Deposit leaf and accumulator
 
-### Deposit Leaf
-
-The bridge computes the same deposit leaf as `EthereumZekoBridge.sol`:
+For each deposit, the guest increments the nonce and computes values equivalent
+to Solidity `keccak256(abi.encode(...))`:
 
 ```text
-keccak256(
-  ZEKO_BRIDGE_DEPOSIT_LEAF_V1,
+deposit_leaf = keccak256(
+  keccak256("ZEKO_BRIDGE_DEPOSIT_LEAF_V1"),
   chain_id,
   bridge_address,
   token,
@@ -120,24 +176,20 @@ keccak256(
   timeout,
   nonce
 )
-```
 
-The Ethereum deposit accumulator is:
-
-```text
-keccak256(
-  ZEKO_BRIDGE_DEPOSIT_STATE_V1,
-  previous_deposit_state,
+deposit_state_after = keccak256(
+  keccak256("ZEKO_BRIDGE_DEPOSIT_STATE_V1"),
+  deposit_state_before,
   deposit_leaf
 )
 ```
 
-### Zeko Action
+### 4. Zeko deposit action
 
-The bridge action payload matches the Zeko deposit format:
+The guest unpacks `zeko_recipient` into `(x, isOdd)` and computes:
 
 ```text
-Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
+action = Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
   Field(0),
   holderAccountL1,
   zekoAmount,
@@ -147,69 +199,193 @@ Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
 ])
 ```
 
-The packed `ZekoAddress` stores:
+Each deposit is wrapped in its own Mina action list and appended to the action
+state with the same domain-separated Poseidon operations used by o1js:
 
-- lower 255 bits: recipient `x`
-- top bit: `isOdd`
+```text
+event_hash       = hashWithPrefix("MinaZkappEvent******", [action])
+action_list_hash = hashWithPrefix("MinaZkappSeqEvents**", [empty_list, event_hash])
+action_state     = hashWithPrefix("MinaZkappSeqEvents**", [action_state, action_list_hash])
+```
 
-The circuit validates that `x` is below the Pasta Fp field order before using it.
-
-### Zeko Action State
-
-For every deposit, the bridge creates one action list and appends it to the Zeko action-state sequence.
-
-The Poseidon helper intentionally mirrors o1js `Poseidon.hashWithPrefix()` semantics:
-
-1. `Poseidon.update(initial_state, [prefix])`
-2. `Poseidon.update(prefixed_state, input)`
-3. padding by rate-2 blocks
-
-This matters because a generic sponge absorb of `prefix + input` does not produce the same value.
-
-### Bridge Public Values
+### 5. Bridge public values and contract checks
 
 `BridgeTransitionPublicValues` contains:
 
 | Field | Meaning |
 | --- | --- |
-| `ethereum_state_before` | Ethereum deposit accumulator before the batch. |
-| `ethereum_state_after` | Ethereum deposit accumulator after the batch. |
-| `ethereum_nonce_before` | Starting nonce. |
-| `ethereum_nonce_after` | Final nonce. |
-| `zeko_action_state_before` | Zeko action state before the batch. |
-| `zeko_action_state_after` | Zeko action state after the batch. |
-| `deposit_count` | Number of deposits applied. |
-| `resolved_deposits` | Per-deposit leaf, action hash, action-list hash, and action-state checkpoint. |
+| `ethereum_state_before` | Deposit accumulator before the batch. |
+| `ethereum_state_after` | Deposit accumulator after the batch. |
+| `ethereum_nonce_before` | Deposit nonce before the batch. |
+| `ethereum_nonce_after` | Deposit nonce after the batch. |
+| `zeko_action_state_before` | Supplied Zeko action state before the batch. |
+| `zeko_action_state_after` | Computed Zeko action state after the batch. |
+| `deposit_count` | Number of replayed deposits. |
 
-## Ethereum Bridge Contract
+`submitBridgeTransition` verifies the SP1 proof and enforces:
 
-`contracts/src/EthereumZekoBridge.sol` is the Ethereum-side deposit contract.
-
-It:
-
-- stores allowed token configurations
-- normalizes Ethereum token amounts into Zeko decimals
-- rejects fee-on-transfer ERC20 deposits
-- stores an append-only deposit accumulator by nonce
-- emits every deposit leaf and accumulator checkpoint
-
-Withdrawals are not implemented in the current contract.
-
-## Useful Commands
-
-Run the bridge circuit without proving:
-
-```sh
-cargo run --release --bin bridge -- --execute
+```text
+depositStateByNonce[ethereum_nonce_before] == ethereum_state_before
+ethereum_nonce_after                       == depositNonce
+ethereum_state_after                       == currentDepositState
+ethereum_nonce_after                       == ethereum_nonce_before + deposit_count
+zeko_action_state_after                    has not already been processed
 ```
 
-Generate a bridge core proof:
+This binds the proven deposit batch to the current Ethereum deposit history.
+The contract emits `BridgeTransitionAccepted` and marks the final Zeko action
+state as processed.
+
+The deposit transition currently does **not** require its before or after Zeko
+action state to be a checkpoint recorded by `ZekoSettlement`. Consumers must
+not interpret the event alone as proof that Zeko accepted the actions.
+
+## Withdrawal Flow
+
+The withdrawal program proves that an ordered batch of Zeko withdrawal actions
+produces a specific Ethereum withdrawal accumulator.
+
+### 1. Withdraw proof calculation
+
+`WithdrawTransitionInput` contains the chain ID, bridge address, current
+withdraw accumulator, starting Zeko action state, and an ordered list of
+withdrawals.
+
+Each withdrawal contains:
+
+| Field | Meaning |
+| --- | --- |
+| `token` | Zeko field encoding an Ethereum token address in its low 160 bits. Zero means native ETH. |
+| `recipient` | Zeko field encoding the Ethereum recipient in its low 160 bits. |
+| `amount` | Amount expressed using the token's configured Zeko decimals. |
+
+For every withdrawal, the guest computes:
+
+```text
+withdraw_leaf = keccak256(
+  keccak256("ZEKO_BRIDGE_WITHDRAW_LEAF_V1"),
+  chain_id,
+  bridge_address,
+  token,
+  recipient,
+  amount
+)
+
+withdraw_state_after = keccak256(
+  keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1"),
+  withdraw_state_before,
+  withdraw_leaf
+)
+```
+
+It also computes and appends the matching Zeko action:
+
+```text
+action = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
+  Field(0),
+  amount,
+  recipient
+])
+```
+
+### 2. Accepting a withdraw transition
+
+`WithdrawTransitionPublicValues` contains:
+
+| Field | Meaning |
+| --- | --- |
+| `zeko_action_state_before` | Zeko action state before the batch. |
+| `zeko_action_state_after` | Zeko action state after the batch. |
+| `ethereum_withdraw_state_before` | Ethereum withdrawal accumulator before the batch. |
+| `ethereum_withdraw_state_after` | Ethereum withdrawal accumulator after the batch. |
+| `withdraw_count` | Number of withdrawals in the batch. |
+
+`submitWithdrawTransition` verifies the SP1 proof and requires:
+
+- the starting withdrawal accumulator equals `currentWithdrawState`
+- the final action state has not already been processed
+- both action states are checkpoints recorded by `ZekoSettlement`
+- the old checkpoint matches `currentWithdrawActionStateIndex`
+- the new checkpoint index is exactly the old index plus one
+
+For a non-empty batch, the final withdrawal accumulator becomes a valid claim
+state. The bridge records the old action-state index used to scope withdrawal
+nullifiers, then advances `currentWithdrawState` and
+`currentWithdrawActionStateIndex`.
+
+### 3. Claiming a withdrawal
+
+To claim, a caller supplies:
+
+- the accumulator state before the batch
+- an accepted accumulator state after the batch
+- the clear withdrawal being claimed
+- its index in the batch
+- the full ordered list of withdrawal leaf hashes
+
+The contract replaces the hash at the claimed index with the leaf recomputed
+from the clear withdrawal, replays the complete accumulator sequence, and
+requires the result to equal the accepted final state.
+
+It then computes a nullifier from the old action-state index, withdrawal index,
+and leaf. A spent nullifier cannot be claimed again. Finally, the contract
+validates the token and recipient field encodings, converts the Zeko amount
+back to Ethereum decimals, and transfers the locked ETH or ERC20 tokens.
+
+## Trust Boundaries
+
+The proofs and contracts deliberately prove different parts of the system:
+
+- Settlement proves Kimchi validity and binds the extracted root transition to
+  Ethereum's stored root, verification-key hash, and configured action state.
+- A deposit bridge proof proves the deterministic transformation from supplied
+  deposits to an Ethereum accumulator and Zeko action state. The Ethereum
+  contract binds the final accumulator to deposits recorded on-chain.
+- A withdraw proof proves the deterministic transformation from supplied
+  withdrawals to an accumulator and Zeko action state. The Ethereum contract
+  accepts it only between consecutive settlement-recorded action checkpoints.
+- SP1 verification does not prove that an arbitrary off-chain input originated
+  from Ethereum or Zeko. Contract-side continuity checks provide that binding.
+- Administrative roles can change settlement parameters, token availability,
+  pause the bridge, perform emergency withdrawals, and authorize upgrades.
+
+Both contracts are UUPS implementations and must be deployed behind
+`ERC1967Proxy` proxies. `PROVER_ROLE` can submit proofs, while `ADMIN_ROLE` and
+`UPGRADER_ROLE` control administration and upgrades.
+
+## Commands
+
+Execute the programs without generating proofs:
+
+```sh
+cargo run --release --bin zkapp -- --execute
+cargo run --release --bin bridge -- --execute
+cargo run --release --bin withdraw -- --execute
+```
+
+Use larger bridge fixtures:
+
+```sh
+cargo run --release --bin bridge -- --execute --input proofs/bridge-input-200.json
+cargo run --release --bin withdraw -- --execute --input proofs/withdraw-input-200.json
+```
+
+Generate local core proofs:
 
 ```sh
 cargo run --release --bin bridge -- --prove
+cargo run --release --bin withdraw -- --prove
 ```
 
-Run the Zeko action-state o1js fixture:
+Run regression and contract tests:
+
+```sh
+cargo test -p bridge-program fixture_deposit_matches_zeko_action_state
+cargo test -p withdraw-program
+cd contracts && forge test
+```
+
+The o1js fixture reproduces the deposit action-state update:
 
 ```sh
 cd tools/zeko-action-state
@@ -217,34 +393,12 @@ npm install
 npm start
 ```
 
-Run the bridge action-state regression test:
+## Fixture Checkpoint
 
-```sh
-cargo test -p bridge-program fixture_deposit_matches_zeko_action_state
-```
-
-Run the host-side bridge check:
-
-```sh
-cargo check -p zeko_sp1_lib -p bridge-program -p zkapp-script --bin bridge
-```
-
-## Current Fixture
-
-The current `proofs/bridge-input.json` fixture has three deposits and starts from the Zeko empty action state:
+`proofs/bridge-input.json` contains three deposits. Its expected action-state
+transition is:
 
 ```text
-0x3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9
+before: 0x3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9
+after : 0x3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf
 ```
-
-Expected final Zeko action state:
-
-```text
-0x3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf
-```
-
-## Trust Boundaries
-
-The settlement proof verifies Zeko/o1 validity and extracts state transition data. The Ethereum contract then checks continuity against its own tracked state.
-
-The bridge proof does not prove that Ethereum events happened by itself; it proves that a supplied batch of deposits transforms the Ethereum deposit accumulator and Zeko action state correctly. The Ethereum contract accumulator and the verifier integration are what bind those public values to on-chain deposit history.
