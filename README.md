@@ -12,13 +12,27 @@ The goal is to let Ethereum verify succinct SP1 proofs instead of directly verif
 
 ## Documentation
 
-GitHub Pages documentation lives in [`docs/index.md`](docs/index.md).
+The Jekyll documentation lives in [`docs/index.md`](docs/index.md).
 
-To publish it with GitHub Pages, configure the repository Pages source to:
+### Cloudflare Pages
 
-- Source: `Deploy from a branch`
-- Branch: your deployment branch
-- Folder: `/docs`
+Import this GitHub repository from **Workers & Pages > Create application >
+Pages > Import an existing Git repository**, then use:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `bridge` (or the branch used for production) |
+| Root directory | `docs` |
+| Build command | `bundle exec jekyll build` |
+| Build output directory | `_site` |
+
+Cloudflare Pages installs the dependencies from `docs/Gemfile` and uses the
+Ruby version pinned in `docs/.ruby-version`. Each push to the production branch
+publishes a new production deployment; pushes to other branches create preview
+deployments.
+
+To publish it with GitHub Pages instead, configure the repository Pages source
+to deploy the `/docs` folder from your deployment branch.
 
 ## Repository Layout
 
