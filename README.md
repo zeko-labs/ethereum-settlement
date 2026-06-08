@@ -1,8 +1,8 @@
-# Zeko Ethereum L2 Gateway
+# Zeko Ethereum L2
 
 This repository contains SP1 programs and Ethereum contracts used to settle Zeko state transitions on Ethereum.
 
-The project has two verification paths:
+The project has three verification paths:
 
 - **Settlement circuit**: verifies a Zeko/o1 proof for a zkApp command and commits the rollup state transition that Ethereum should accept.
 - **Bridge circuit**: verifies the Ethereum-to-Zeko bridge transition by replaying deposits, updating the Ethereum deposit accumulator, and computing the Zeko action state expected by the Zeko bridge account.
@@ -12,7 +12,7 @@ The goal is to let Ethereum verify succinct SP1 proofs instead of directly verif
 
 ## Documentation
 
-The Jekyll documentation lives in [`docs/index.md`](docs/index.md).
+The VitePress documentation lives in [`docs/content`](docs/content).
 
 ### Cloudflare Pages
 
@@ -23,16 +23,12 @@ Pages > Import an existing Git repository**, then use:
 | --- | --- |
 | Production branch | `bridge` (or the branch used for production) |
 | Root directory | `docs` |
-| Build command | `bundle exec jekyll build` |
-| Build output directory | `_site` |
+| Build command | `pnpm build` |
+| Build output directory | `.vitepress/dist` |
 
-Cloudflare Pages installs the dependencies from `docs/Gemfile` and uses the
-Ruby version pinned in `docs/.ruby-version`. Each push to the production branch
-publishes a new production deployment; pushes to other branches create preview
-deployments.
-
-To publish it with GitHub Pages instead, configure the repository Pages source
-to deploy the `/docs` folder from your deployment branch.
+Cloudflare Pages installs the dependencies from `docs/package.json`. Each push
+to the production branch publishes a new production deployment; pushes to
+other branches create preview deployments.
 
 ## Repository Layout
 

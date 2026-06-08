@@ -21,3 +21,4 @@ pgo-data.profdata
 # Node examples
 **/node_modules
 tools/zeko-action-state/dist
+.pnpm-store
