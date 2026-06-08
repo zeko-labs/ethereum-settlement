@@ -3,21 +3,7 @@
 The system separates expensive proof computation from Ethereum-side state
 continuity checks.
 
-```text
-                         Zeko zkApp proof
-                                |
-                                v
-                     settlement SP1 program
-                                |
-                                v
-                       ZekoSettlement.sol
-                      root + action checkpoints
-                                |
-                                v
-Ethereum deposits --> bridge SP1 program ----\
-                                              > EthereumZekoBridge.sol
-Zeko withdrawals -> withdraw SP1 program ----/  deposits + withdrawals
-```
+![Zeko Ethereum L2 architecture showing settlement, deposit bridge, and withdrawal flows](/architecture-flow.png)
 
 ## SP1 programs
 
