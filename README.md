@@ -239,6 +239,14 @@ deposit_count     : 3
 
 ## Legacy SP1 Template Notes
 
+## Proof API
+
+The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
+checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
+Network, simulates contract submission, and broadcasts valid transactions.
+
+See [`api/README.md`](api/README.md) and [`.env.api.example`](.env.api.example).
+
 # SP1 Project Template
 
 This is a template for creating an end-to-end [SP1](https://github.com/succinctlabs/sp1) project
