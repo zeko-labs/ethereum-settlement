@@ -1,14 +1,13 @@
 # Withdrawals
 
 The withdrawal program proves that an ordered batch of Zeko withdrawal actions
-produces both a specific Ethereum sequential withdrawal accumulator and a
-fixed-depth withdrawal Merkle root.
+produces a fixed-depth withdrawal Merkle root and the corresponding Ethereum
+withdrawal state transition.
 
 ## Proof input
 
 `WithdrawTransitionInput` contains the chain ID, bridge address, current
-withdraw accumulator, starting Zeko action state, and an ordered withdrawal
-list.
+withdrawal state, starting Zeko action state, and an ordered withdrawal list.
 
 | Field | Meaning |
 | --- | --- |
@@ -21,7 +20,7 @@ program rejects every withdrawal whose `token` field is not zero.
 
 ## Withdraw accumulator
 
-For every withdrawal, the guest computes:
+For every withdrawal, the guest computes a withdrawal leaf:
 
 ```text
 withdraw_leaf = keccak256(
@@ -31,12 +30,6 @@ withdraw_leaf = keccak256(
   token,
   recipient,
   amount
-)
-
-withdraw_state_after = keccak256(
-  keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1"),
-  withdraw_state_before,
-  withdraw_leaf
 )
 ```
 
@@ -62,6 +55,21 @@ node = keccak256(
 )
 ```
 
+After building the root, the guest computes the next withdrawal state once for
+the complete batch:
+
+```text
+withdraw_state_after = keccak256(
+  keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1"),
+  withdraw_state_before,
+  withdrawal_root,
+  withdraw_count
+)
+```
+
+The withdrawal count is included because unused tree leaves are padded with
+`bytes32(0)`.
+
 ## Public values
 
 | Field | Meaning |
@@ -77,7 +85,9 @@ node = keccak256(
 
 `submitWithdrawTransition` verifies the SP1 proof and requires:
 
-- the starting withdrawal accumulator equals `currentWithdrawState`
+- the starting withdrawal state equals `currentWithdrawState`
+- the final withdrawal state equals the V1 hash of the starting state, root,
+  and withdrawal count
 - the final action state has not already been processed
 - both action states are checkpoints recorded by `ZekoSettlement`
 - the old checkpoint matches `currentWithdrawActionStateIndex`
@@ -86,7 +96,7 @@ node = keccak256(
 For a non-empty batch, the final withdrawal accumulator becomes a valid claim
 transition and the Merkle root becomes a valid claim root. The bridge stores
 one withdrawal batch record under the old Zeko action state bound by the SP1
-proof. That record contains the Merkle root, sequential states, checkpoint
+proof. That record contains the Merkle root, withdrawal states, checkpoint
 index, and withdrawal count. The same Merkle root may safely appear in
 different action-state transitions.
 

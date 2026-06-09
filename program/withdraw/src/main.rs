@@ -26,7 +26,6 @@ fn process_withdraw_transition(input: &WithdrawTransitionInput) -> WithdrawTrans
         "too many withdrawals"
     );
 
-    let mut ethereum_withdraw_state = input.ethereum.withdraw_state;
     let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
     let mut ethereum_withdraw_leaves = Vec::with_capacity(input.withdraws.len());
 
@@ -45,8 +44,6 @@ fn process_withdraw_transition(input: &WithdrawTransitionInput) -> WithdrawTrans
         );
 
         ethereum_withdraw_leaves.push(ethereum_withdraw_leaf);
-        ethereum_withdraw_state =
-            compute_ethereum_withdraw_state(ethereum_withdraw_state, ethereum_withdraw_leaf);
 
         let zeko_action_hash =
             compute_zeko_withdraw_action_hash(withdraw.recipient, withdraw.amount);
@@ -54,13 +51,20 @@ fn process_withdraw_transition(input: &WithdrawTransitionInput) -> WithdrawTrans
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
     }
 
+    let withdrawal_root = compute_withdrawal_root(&ethereum_withdraw_leaves);
+    let withdraw_count = input.withdraws.len() as u32;
+
     WithdrawTransitionPublicValues {
         zeko_action_state_before: fp_to_bytes(fp_from_bytes(input.zeko.action_state)),
         zeko_action_state_after: fp_to_bytes(zeko_action_state),
         ethereum_withdraw_state_before: input.ethereum.withdraw_state,
-        ethereum_withdraw_state_after: ethereum_withdraw_state,
-        withdrawal_root: compute_withdrawal_root(&ethereum_withdraw_leaves),
-        withdraw_count: input.withdraws.len() as u32,
+        ethereum_withdraw_state_after: compute_ethereum_withdraw_state(
+            input.ethereum.withdraw_state,
+            withdrawal_root,
+            withdraw_count,
+        ),
+        withdrawal_root,
+        withdraw_count,
     }
 }
 
@@ -81,11 +85,16 @@ fn compute_ethereum_withdraw_leaf(
     keccak256(encoded).0
 }
 
-fn compute_ethereum_withdraw_state(previous_state: Bytes32, withdraw_leaf: Bytes32) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(96);
+fn compute_ethereum_withdraw_state(
+    previous_state: Bytes32,
+    withdrawal_root: Bytes32,
+    withdraw_count: u32,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(128);
     encoded.extend_from_slice(&keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1".as_bytes()).0);
     encoded.extend_from_slice(&previous_state);
-    encoded.extend_from_slice(&withdraw_leaf);
+    encoded.extend_from_slice(&withdrawal_root);
+    encoded.extend_from_slice(&u32_word(withdraw_count));
     keccak256(encoded).0
 }
 
@@ -213,6 +222,12 @@ fn u64_word(value: u64) -> Bytes32 {
     word
 }
 
+fn u32_word(value: u32) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[28..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
 fn address_word(address: Address) -> Bytes32 {
     let mut word = [0u8; 32];
     word[12..32].copy_from_slice(&address);
@@ -302,6 +317,14 @@ mod tests {
         let public_values = process_withdraw_transition(&input);
         let encoded = bincode::serialize(&public_values).expect("serialize public values");
 
+        assert_eq!(
+            public_values.ethereum_withdraw_state_after,
+            compute_ethereum_withdraw_state(
+                public_values.ethereum_withdraw_state_before,
+                public_values.withdrawal_root,
+                public_values.withdraw_count,
+            )
+        );
         assert_eq!(encoded.len(), 164);
         assert_eq!(&encoded[128..160], &public_values.withdrawal_root);
         assert_eq!(&encoded[160..164], &1u32.to_le_bytes());

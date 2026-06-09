@@ -174,10 +174,10 @@ contract EthereumZekoBridge is
     /// @notice Current Ethereum deposit accumulator state.
     bytes32 public currentDepositState;
 
-    /// @notice Current Ethereum withdraw accumulator state.
+    /// @notice Current Ethereum withdrawal state.
     bytes32 public currentWithdrawState;
 
-    /// @notice L2 action-state index matched by the current withdraw accumulator.
+    /// @notice L2 action-state index matched by the current withdrawal state.
     uint64 public currentWithdrawActionStateIndex;
 
     /// @notice Historical deposit state by nonce.
@@ -533,7 +533,7 @@ contract EthereumZekoBridge is
             );
     }
 
-    /// @notice Computes the canonical withdraw leaf used by the withdraw accumulator.
+    /// @notice Computes the canonical withdraw leaf used by the withdrawal tree.
     function computeWithdrawLeaf(
         bytes32 token,
         bytes32 recipient,
@@ -552,17 +552,19 @@ contract EthereumZekoBridge is
             );
     }
 
-    /// @notice Computes the next withdraw accumulator state from an old state and a withdraw leaf.
+    /// @notice Computes the next withdraw state from an old state and a withdrawal batch commitment.
     function computeNextWithdrawState(
         bytes32 oldWithdrawState,
-        bytes32 withdrawLeaf
+        bytes32 withdrawalRoot,
+        uint32 withdrawCount
     ) public pure returns (bytes32) {
         return
             keccak256(
                 abi.encode(
                     WITHDRAW_STATE_DOMAIN,
                     oldWithdrawState,
-                    withdrawLeaf
+                    withdrawalRoot,
+                    withdrawCount
                 )
             );
     }
@@ -686,6 +688,16 @@ contract EthereumZekoBridge is
             );
         }
         if (decoded.withdrawCount > MAX_WITHDRAW_COUNT) {
+            revert InvalidWithdrawProof();
+        }
+        if (
+            decoded.ethereumWithdrawStateAfter !=
+            computeNextWithdrawState(
+                decoded.ethereumWithdrawStateBefore,
+                decoded.withdrawalRoot,
+                decoded.withdrawCount
+            )
+        ) {
             revert InvalidWithdrawProof();
         }
 

@@ -6,7 +6,7 @@ The project has three verification paths:
 
 - **Settlement circuit**: verifies a Zeko/o1 proof for a zkApp command and commits the rollup state transition that Ethereum should accept.
 - **Bridge circuit**: verifies the Ethereum-to-Zeko bridge transition by replaying deposits, updating the Ethereum deposit accumulator, and computing the Zeko action state expected by the Zeko bridge account.
-- **Withdraw circuit**: verifies the Zeko-to-Ethereum withdraw transition by replaying withdrawals, updating the Ethereum withdraw accumulator, computing a fixed-depth withdrawal Merkle root, and computing the Zeko action state for the withdraw batch.
+- **Withdraw circuit**: verifies the Zeko-to-Ethereum withdraw transition by computing a fixed-depth withdrawal Merkle root, deriving the Ethereum withdrawal state from that root, and computing the Zeko action state for the withdraw batch.
 
 The goal is to let Ethereum verify succinct SP1 proofs instead of directly verifying the full Zeko/o1 proof system or re-executing bridge action-state logic on-chain.
 
@@ -36,7 +36,7 @@ other branches create preview deployments.
 | --- | --- |
 | `program/settlement` | SP1 guest program that verifies a Zeko/o1 proof and extracts canonical settlement public values. |
 | `program/bridge` | SP1 guest program that verifies bridge deposits and computes Ethereum/Zeko deposit accumulator transitions. |
-| `program/withdraw` | SP1 guest program that verifies bridge withdrawals and computes Ethereum/Zeko withdraw accumulator transitions. |
+| `program/withdraw` | SP1 guest program that verifies bridge withdrawals and computes Ethereum/Zeko withdrawal-state transitions. |
 | `lib` | Shared Rust input/output types used by guests and host scripts. |
 | `script` | Host-side proof generation and execution binaries. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
@@ -144,7 +144,7 @@ The bridge public output includes:
 
 ## Withdraw Circuit
 
-The withdraw program in `program/withdraw` proves that a batch of Zeko withdrawals maps to the expected Ethereum withdraw accumulator and Zeko action-state transition.
+The withdraw program in `program/withdraw` proves that a batch of Zeko withdrawals maps to a fixed-depth withdrawal Merkle root, the corresponding Ethereum withdrawal state, and the expected Zeko action-state transition.
 
 For each withdraw, the program:
 
@@ -161,13 +161,15 @@ keccak256(
 )
 ```
 
-2. Updates the Ethereum withdraw accumulator:
+2. Builds the fixed-depth withdrawal Merkle root, then updates the Ethereum
+   withdrawal state once for the complete batch:
 
 ```text
 keccak256(
   ZEKO_BRIDGE_WITHDRAW_STATE_V1,
   previous_withdraw_state,
-  withdraw_leaf
+  withdrawal_root,
+  withdraw_count
 )
 ```
 
