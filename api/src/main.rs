@@ -27,6 +27,7 @@ struct AppState {
     ethereum: ethereum::Ethereum,
     settlement_vk: Arc<str>,
     proof_system: Arc<str>,
+    execute_only: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -100,9 +101,9 @@ async fn main() -> Result<()> {
         required_env("RPC_URL")?,
         required_env("SETTLEMENT_CONTRACT_ADDRESS")?,
         required_env("BRIDGE_CONTRACT_ADDRESS")?,
-        env::var("SETTLEMENT_PRIVATE_KEY").unwrap_or_else(|_| default_key.clone()),
-        env::var("BRIDGE_PRIVATE_KEY").unwrap_or_else(|_| default_key.clone()),
-        env::var("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
+        nonempty_env("SETTLEMENT_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
+        nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
+        nonempty_env("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
     )?;
     let settlement_vk: Arc<str> = std::fs::read_to_string(required_env("SETTLEMENT_VK_PATH")?)?
         .trim()
@@ -111,6 +112,7 @@ async fn main() -> Result<()> {
     let proof_system: Arc<str> = env::var("PROOF_SYSTEM")
         .unwrap_or_else(|_| "groth16".to_owned())
         .into();
+    let execute_only = bool_env("API_EXECUTE_ONLY")?;
     let bind: SocketAddr = env::var("API_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse()
@@ -139,6 +141,7 @@ async fn main() -> Result<()> {
         ethereum,
         settlement_vk,
         proof_system,
+        execute_only,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
@@ -161,7 +164,7 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!(%bind, "proof API listening");
+    tracing::info!(%bind, execute_only, "proof API listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -363,6 +366,19 @@ async fn process_job(state: &AppState, job: ClaimedJob) {
     let result = async {
         let preflight = prover::preflight(&job.kind, &job.input, &state.settlement_vk).await?;
         validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+        if state.execute_only {
+            sqlx::query(
+                "UPDATE proof_jobs SET status = 'executed', public_values = $2,
+                        completed_at = NOW(), updated_at = NOW()
+                 WHERE id = $1",
+            )
+            .bind(job.id)
+            .bind(format!("0x{}", hex::encode(preflight.public_values())))
+            .execute(&state.pool)
+            .await?;
+            return Result::<()>::Ok(());
+        }
+
         set_status(&state.pool, job.id, "proving").await?;
 
         let request_id = match job.proof_request_id {
@@ -428,7 +444,7 @@ async fn validate_preflight(
 ) -> Result<()> {
     let local_vkey = prover::program_vkey(kind).await?;
     match preflight {
-        prover::Preflight::Settlement(values) => {
+        prover::Preflight::Settlement { values, .. } => {
             let chain = state.ethereum.settlement_state().await?;
             ensure_hex_eq(
                 &local_vkey,
@@ -443,7 +459,7 @@ async fn validate_preflight(
             )?;
             ensure_bytes_eq(values.state_before[3], chain.current_root, "current root")?;
         }
-        prover::Preflight::Bridge(values) => {
+        prover::Preflight::Bridge { values, .. } => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;
             let chain_id = state.ethereum.chain_id().await?;
             anyhow::ensure!(input.ethereum.chain_id == chain_id, "chain id mismatch");
@@ -485,7 +501,7 @@ async fn validate_preflight(
                 "current deposit state",
             )?;
         }
-        prover::Preflight::Withdraw(values) => {
+        prover::Preflight::Withdraw { values, .. } => {
             let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
             let chain_id = state.ethereum.chain_id().await?;
             anyhow::ensure!(input.ethereum.chain_id == chain_id, "chain id mismatch");
@@ -569,4 +585,20 @@ fn api_error(status: StatusCode, message: &str) -> Response {
 
 fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
+}
+
+fn nonempty_env(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn bool_env(name: &str) -> Result<bool> {
+    match nonempty_env(name)
+        .unwrap_or_else(|| "false".to_owned())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        value => anyhow::bail!("{name} must be a boolean, got {value}"),
+    }
 }

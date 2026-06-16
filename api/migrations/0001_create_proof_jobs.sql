@@ -4,6 +4,7 @@ CREATE TYPE proof_status AS ENUM (
     'validating',
     'proving',
     'submitting',
+    'executed',
     'confirmed',
     'failed'
 );

@@ -1,0 +1,38 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - API_BIND=0.0.0.0:8080
+      - API_EXECUTE_ONLY
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/zeko_proofs
+    ports:
+      - "8080:8080"
+    volumes:
+      - type: bind
+        source: ./.env.api
+        target: /app/.env
+        read_only: true
+
+  db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zeko_proofs
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zeko_proofs"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:

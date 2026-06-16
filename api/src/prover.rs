@@ -18,9 +18,28 @@ pub struct ProofOutput {
 }
 
 pub enum Preflight {
-    Settlement(ZkappPublicValues),
-    Bridge(BridgeTransitionPublicValues),
-    Withdraw(WithdrawTransitionPublicValues),
+    Settlement {
+        values: ZkappPublicValues,
+        public_values: Vec<u8>,
+    },
+    Bridge {
+        values: BridgeTransitionPublicValues,
+        public_values: Vec<u8>,
+    },
+    Withdraw {
+        values: WithdrawTransitionPublicValues,
+        public_values: Vec<u8>,
+    },
+}
+
+impl Preflight {
+    pub fn public_values(&self) -> &[u8] {
+        match self {
+            Preflight::Settlement { public_values, .. }
+            | Preflight::Bridge { public_values, .. }
+            | Preflight::Withdraw { public_values, .. } => public_values,
+        }
+    }
 }
 
 pub async fn preflight(kind: &str, input: &Value, settlement_vk: &str) -> Result<Preflight> {
@@ -34,14 +53,20 @@ pub async fn preflight(kind: &str, input: &Value, settlement_vk: &str) -> Result
             .execute(elf, stdin)
             .run()
             .context("execute SP1 preflight")?;
+        let public_values = output.as_slice().to_vec();
         match kind.as_str() {
-            "settlement" => Ok(Preflight::Settlement(bincode::deserialize(
-                output.as_slice(),
-            )?)),
-            "bridge" => Ok(Preflight::Bridge(bincode::deserialize(output.as_slice())?)),
-            "withdraw" => Ok(Preflight::Withdraw(bincode::deserialize(
-                output.as_slice(),
-            )?)),
+            "settlement" => Ok(Preflight::Settlement {
+                values: bincode::deserialize(output.as_slice())?,
+                public_values,
+            }),
+            "bridge" => Ok(Preflight::Bridge {
+                values: bincode::deserialize(output.as_slice())?,
+                public_values,
+            }),
+            "withdraw" => Ok(Preflight::Withdraw {
+                values: bincode::deserialize(output.as_slice())?,
+                public_values,
+            }),
             _ => anyhow::bail!("unsupported proof kind: {kind}"),
         }
     })
@@ -147,7 +172,7 @@ mod tests {
             serde_json::from_str(include_str!("../../proofs/bridge-input.json")).unwrap();
         assert!(matches!(
             preflight("bridge", &input, "").await.unwrap(),
-            Preflight::Bridge(_)
+            Preflight::Bridge { .. }
         ));
     }
 
@@ -158,7 +183,7 @@ mod tests {
             serde_json::from_str(include_str!("../../proofs/withdraw-input.json")).unwrap();
         assert!(matches!(
             preflight("withdraw", &input, "").await.unwrap(),
-            Preflight::Withdraw(_)
+            Preflight::Withdraw { .. }
         ));
     }
 }

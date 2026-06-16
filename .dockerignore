@@ -1,0 +1,12 @@
+.git
+.env
+.env.api
+.dockerignore
+Dockerfile
+compose.yaml
+target
+docs
+contracts
+proofs/*
+!proofs/vk.txt
+**/node_modules

@@ -245,7 +245,9 @@ The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
 checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
 Network, simulates contract submission, and broadcasts valid transactions.
 
-See [`api/README.md`](api/README.md) and [`.env.api.example`](.env.api.example).
+It can run with Docker Compose using a read-only environment-file mount and a
+persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and
+[`.env.api.example`](.env.api.example).
 
 # SP1 Project Template
 

@@ -14,7 +14,7 @@ submitting them to Ethereum.
 
 All `/v1` endpoints require `x-api-key`. `POST` requests may also send an
 `Idempotency-Key` header. A submission returns HTTP `202`; poll the returned
-status URL until the job is `confirmed` or `failed`.
+status URL until the job is `confirmed`, `executed`, or `failed`.
 
 ```sh
 curl -X POST http://127.0.0.1:8080/v1/proofs/bridge \
@@ -45,11 +45,54 @@ Bridge and withdraw bodies use `BridgeTransitionInput` and
 
 ## Run
 
+### Docker
+
+Docker Compose runs the API and PostgreSQL together. The API configuration is
+mounted from `.env.api` in read-only mode, while PostgreSQL data is persisted in
+the `postgres-data` named volume.
+
+```sh
+cp .env.api.example .env.api
+docker compose up --build -d
+curl http://127.0.0.1:8080/health
+```
+
+`compose.yaml` overrides `DATABASE_URL` and `API_BIND` so the API can reach the
+database container and accept connections outside its container. Keep secrets
+in `.env.api`; the file is ignored by Git and is not copied into the image.
+
+Run the API without network proving or Ethereum submission by enabling local
+execution-only mode in `.env.api`, or by passing it at Compose startup:
+
+```sh
+API_EXECUTE_ONLY=true docker compose up --build -d
+```
+
+Stop the services without deleting the database:
+
+```sh
+docker compose down
+```
+
+Delete the persisted database only when explicitly needed:
+
+```sh
+docker compose down --volumes
+```
+
+### Local
+
 ```sh
 createdb zeko_proofs
 cp .env.api.example .env.api
 set -a; source .env.api; set +a
 cargo run --release -p zeko-proof-api
+```
+
+For local execution-only mode:
+
+```sh
+API_EXECUTE_ONLY=true cargo run --release -p zeko-proof-api
 ```
 
 The API stores job inputs and results in PostgreSQL. Ethereum and SP1 private
@@ -62,3 +105,6 @@ Before requesting a paid proof, it executes the SP1 program locally and checks
 the resulting public values against Ethereum. SP1 request IDs are persisted
 immediately, allowing interrupted jobs to resume the existing network request
 after a restart.
+
+When `API_EXECUTE_ONLY=true`, the worker stops after local SP1 execution and
+Ethereum validation, stores `publicValues`, and marks the job `executed`.

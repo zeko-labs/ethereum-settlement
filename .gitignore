@@ -17,6 +17,7 @@ pgo-data.profdata
 
 # Env
 .env
+.env.api
 
 # Node examples
 **/node_modules
