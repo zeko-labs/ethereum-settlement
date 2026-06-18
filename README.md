@@ -14,6 +14,25 @@ The goal is to let Ethereum verify succinct SP1 proofs instead of directly verif
 
 The VitePress documentation lives in [`docs/content`](docs/content).
 
+## Launching A Zeko Rollup
+
+The project includes a dedicated Docker Compose stack for running the Zeko
+rollup services described in the Zeko operator guide.
+
+```sh
+docker compose -f compose.rollup.yaml up -d
+docker compose -f compose.rollup.yaml exec init-config /scripts/generate-config-and-keys.sh
+```
+
+Fund the generated sequencer wallet on Mina Devnet, then deploy:
+
+```sh
+docker compose -f compose.rollup.yaml exec init-deploy /scripts/deploy.sh
+```
+
+Detailed steps and optional environment overrides are in
+[`rollup/README.md`](rollup/README.md).
+
 ### Cloudflare Pages
 
 Import this GitHub repository from **Workers & Pages > Create application >

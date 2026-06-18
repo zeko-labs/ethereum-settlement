@@ -1,0 +1,212 @@
+services:
+  init-db:
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    volumes:
+      - rollup-initdb-data:/data/initdb
+      - rollup-circuits-data:/data/circuits
+    entrypoint:
+      - sh
+      - -c
+    command: >
+      "echo 'ALTER DATABASE sequencer OWNER TO sequencer;' > /data/initdb/init.sql &&
+      echo 'Bootstrap complete' && exit 0"
+
+  init-config:
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    working_dir: /data
+    volumes:
+      - rollup-circuits-data:/data/circuits
+      - rollup-keys-data:/data/keys
+      - ./rollup/scripts:/scripts:ro
+    entrypoint:
+      - sh
+      - -c
+    restart: "no"
+    command: >
+      "while [ ! -f /data/keys/.keys_created ];
+        do sleep 2;
+      done; exit 0"
+
+  init-deploy:
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+      da-layer:
+        condition: service_started
+    working_dir: /data
+    volumes:
+      - rollup-circuits-data:/data/circuits
+      - rollup-keys-data:/data/keys
+      - ./rollup/scripts:/scripts:ro
+    entrypoint:
+      - bash
+      - -c
+    restart: "no"
+    command: >
+      "while [ ! -f /data/circuits/.deployed ]; do
+        sleep 2;
+      done; exit 0"
+
+  rollup-postgres:
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sequencer
+      POSTGRES_USER: sequencer
+      POSTGRES_PASSWORD: sequencer
+    volumes:
+      - rollup-postgresql-data:/var/lib/postgresql/data
+      - rollup-initdb-data:/docker-entrypoint-initdb.d
+    ports:
+      - "${ROLLUP_POSTGRES_PORT:-5432}:5432"
+    restart: unless-stopped
+
+  rollup-rabbitmq:
+    image: rabbitmq:latest
+    volumes:
+      - rollup-rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "${ROLLUP_RABBITMQ_PORT:-5672}:5672"
+    restart: unless-stopped
+
+  sequencer-signer:
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    ports:
+      - "${ROLLUP_SEQUENCER_SIGNER_PORT:-9000}:9000"
+    entrypoint: bash -c
+    command: |
+      "export MINA_PRIVATE_KEY=$$(cat /keys/sequencer-sk) && \
+      exec zeko-signer \
+      run \
+      --port 9000 \
+      --allow-zkapp-signing \
+      --max-fee ${ROLLUP_SIGNER_MAX_FEE:-1} \
+      --max-balance-change ${ROLLUP_SIGNER_MAX_BALANCE_CHANGE:-0}"
+    volumes:
+      - rollup-keys-data:/keys:ro
+    restart: always
+
+  da-signer:
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    image: docker.io/zekolabs/zeko-da:${ZEKO_DA_IMAGE_TAG:-latest}
+    ports:
+      - "${ROLLUP_DA_SIGNER_PORT:-9001}:9001"
+    entrypoint: bash -c
+    command: |
+      "export MINA_PRIVATE_KEY=$$(cat /keys/da-layer-sk) && \
+      exec zeko-signer \
+      run \
+      --port 9001 \
+      --allow-field-signing"
+    volumes:
+      - rollup-keys-data:/keys:ro
+    restart: always
+
+  da-layer:
+    depends_on:
+      da-signer:
+        condition: service_started
+    image: docker.io/zekolabs/zeko-da:${ZEKO_DA_IMAGE_TAG:-latest}
+    ports:
+      - "${ROLLUP_DA_LAYER_PORT:-1924}:1924"
+    environment:
+      ZEKO_SIGNATURE_KIND: "${ZEKO_SIGNATURE_KIND:-testnet}"
+    entrypoint: bash -c
+    command: |
+      "exec zeko-da \
+      run-node \
+      --port 1924 \
+      --db-dir /data/db \
+      --signer da-signer:9001 \
+      --network-id ${ZEKO_NETWORK_ID:-testnet}"
+    volumes:
+      - rollup-da-layer-data:/data
+    restart: always
+
+  prover:
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    depends_on:
+      rollup-rabbitmq:
+        condition: service_started
+      init-config:
+        condition: service_completed_successfully
+    environment:
+      ZEKO_SIGNATURE_KIND: "${ZEKO_SIGNATURE_KIND:-testnet}"
+      ZEKO_CIRCUITS_CONFIG: "/circuits/${ZEKO_ROLLUP_NAME:-betternet}-config.json"
+      RABBITMQ_USER: "guest"
+      RABBITMQ_PASSWORD: "guest"
+    volumes:
+      - rollup-circuits-data:/circuits:ro
+    entrypoint: bash -c
+    command: |
+      "exec zeko-prover \
+      run-server \
+      --mq-host rollup-rabbitmq:5672"
+    restart: on-failure
+
+  sequencer:
+    image: docker.io/zekolabs/zeko:${ZEKO_IMAGE_TAG:-latest}
+    depends_on:
+      init-deploy:
+        condition: service_completed_successfully
+      sequencer-signer:
+        condition: service_started
+      rollup-rabbitmq:
+        condition: service_started
+      prover:
+        condition: service_started
+      rollup-postgres:
+        condition: service_started
+      da-layer:
+        condition: service_started
+    environment:
+      ZEKO_PROGRESS_STYLE: "percent"
+      ZEKO_SIGNATURE_KIND: "${ZEKO_SIGNATURE_KIND:-testnet}"
+      ZEKO_CIRCUITS_CONFIG: "/circuits/${ZEKO_ROLLUP_NAME:-betternet}-config.json"
+      POSTGRES_URI: "postgres://sequencer:sequencer@rollup-postgres:5432/sequencer"
+      RABBITMQ_USER: "guest"
+      RABBITMQ_PASSWORD: "guest"
+    volumes:
+      - rollup-sequencer-data:/data
+      - rollup-circuits-data:/circuits:ro
+      - rollup-keys-data:/keys:ro
+    ports:
+      - "${ROLLUP_SEQUENCER_PORT:-1923}:1923"
+    entrypoint:
+      - bash
+      - -c
+    command: |
+      "export DA_LAYER_KEY=$$(cat /keys/da-layer-pk) && \
+      exec zeko-run \
+      -p 1923 \
+      --l1-uri ${ZEKO_L1_URI:-https://gateway.mina.devnet.zeko.io} \
+      --archive-uri ${ZEKO_ARCHIVE_URI:-https://gateway.mina.archive.devnet.zeko.io} \
+      --max-pool-size ${ROLLUP_MAX_POOL_SIZE:-10} \
+      --commitment-period ${ROLLUP_COMMITMENT_PERIOD:-300} \
+      --signer sequencer-signer:9000 \
+      --da-node da-layer:1924 \
+      --da-quorum ${ROLLUP_DA_QUORUM:-1} \
+      --da-key $$DA_LAYER_KEY \
+      --mq-host rollup-rabbitmq:5672 \
+      --db-dir /data/db \
+      --checkpoints-dir /data/checkpoints \
+      --postgres-uri postgresql://sequencer:sequencer@rollup-postgres:5432/sequencer \
+      --fee-modifier ${ROLLUP_FEE_MODIFIER:-0.1}"
+    restart: on-failure
+
+volumes:
+  rollup-initdb-data:
+  rollup-postgresql-data:
+  rollup-rabbitmq-data:
+  rollup-circuits-data:
+  rollup-sequencer-data:
+  rollup-da-layer-data:
+  rollup-keys-data:
