@@ -1,0 +1,224 @@
+name: zeko
+
+services:
+  init-db:
+    image: docker.io/zekolabs/zeko:latest
+    container_name: init-db
+    volumes:
+      - initdb_data:/data/initdb
+      - circuits_data:/data/circuits
+    entrypoint:
+      - sh
+      - -c
+    command: >
+      "echo 'ALTER DATABASE sequencer OWNER TO sequencer;' > /data/initdb/init.sql &&
+      echo 'Bootstrap complete' && exit 0"
+  init-config:
+    image: docker.io/zekolabs/zeko:latest
+    container_name: init-config
+    working_dir: /data
+    volumes:
+      - circuits_data:/data/circuits
+      - keys_data:/data/keys
+    entrypoint:
+      - sh
+      - -c
+    restart: "no"
+    command: >
+      "while [ ! -f /data/keys/.keys_created ];
+        do sleep 2;
+      done; exit 0"
+  init-deploy:
+    image: docker.io/zekolabs/zeko:latest
+    container_name: init-deploy
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+      da-layer:
+        condition: service_started
+    working_dir: /data
+    volumes:
+      - circuits_data:/data/circuits
+      - keys_data:/data/keys
+    entrypoint:
+      - bash
+      - -c
+    restart: "no"
+    command: >
+      "while [ ! -f /data/circuits/.deployed ]; do
+        sleep 2;
+      done; exit 0"
+  postgres:
+    depends_on:
+      init-db:
+        condition: service_completed_successfully
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: sequencer
+      POSTGRES_USER: sequencer
+      POSTGRES_PASSWORD: sequencer
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+      - initdb_data:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+  rabbitmq:
+    image: rabbitmq:latest
+    container_name: rabbitmq
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+    restart: unless-stopped
+  sequencer-signer:
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    image: docker.io/zekolabs/zeko:latest
+    container_name: sequencer-signer
+    ports:
+      - "9000:9000"
+    entrypoint: bash -c
+    command: |
+      "export MINA_PRIVATE_KEY=$(cat /keys/sequencer-sk) && \\
+      export ZEKO_SIGNER_AUTH_TOKEN=$(cat /keys/sequencer-signer/signer-auth-token) && \\
+      exec zeko-signer \\
+      run \\
+      --port 9000 \\
+      --allow-zkapp-signing \\
+      --max-fee 1 \\
+      --max-balance-change 0 \\
+      --tls-cert-file /keys/sequencer-signer/signer-tls.crt \\
+      --tls-key-file /keys/sequencer-signer/signer-tls.key"
+    volumes:
+      - keys_data:/keys:ro
+    restart: always
+  da-signer:
+    depends_on:
+      init-config:
+        condition: service_completed_successfully
+    image: docker.io/zekolabs/zeko-da:latest
+    container_name: da-signer
+    ports:
+      - "9001:9001"
+    entrypoint: bash -c
+    command: |
+      "export MINA_PRIVATE_KEY=$(cat /keys/da-layer-sk) && \\
+      export ZEKO_SIGNER_AUTH_TOKEN=$(cat /keys/da-signer/signer-auth-token) && \\
+      exec zeko-signer \\
+      run \\
+      --port 9001 \\
+      --allow-field-signing \\
+      --tls-cert-file /keys/da-signer/signer-tls.crt \\
+      --tls-key-file /keys/da-signer/signer-tls.key"
+    volumes:
+      - keys_data:/keys:ro
+    restart: always
+  da-layer:
+    depends_on:
+      da-signer:
+        condition: service_started
+    image: docker.io/zekolabs/zeko-da:latest
+    container_name: da-layer
+    ports:
+      - "1924:1924"
+    environment:
+      ZEKO_SIGNATURE_KIND: "testnet"
+    entrypoint: bash -c
+    command: |
+      "export ZEKO_SIGNER_AUTH_TOKEN=$(cat /keys/da-signer/signer-auth-token) && \\
+      export ZEKO_SIGNER_TLS_CA_FILE=/keys/da-signer/signer-tls.crt && \\
+      exec zeko-da \\
+      run-node \\
+      --port 1924 \\
+      --db-dir /data/db \\
+      --signer da-signer:9001 \\
+      --network-id testnet"
+    volumes:
+      - da-layer_data:/data
+      - keys_data:/keys:ro
+    restart: always
+  prover:
+    image: docker.io/zekolabs/zeko:latest
+    container_name: prover
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      init-config:
+        condition: service_completed_successfully
+    environment:
+      ZEKO_SIGNATURE_KIND: "testnet"
+      ZEKO_CIRCUITS_CONFIG: "/circuits/betternet-config.json"
+      RABBITMQ_USER: "guest"
+      RABBITMQ_PASSWORD: "guest"
+    volumes:
+      - circuits_data:/circuits:ro
+    entrypoint: bash -c
+    command: |
+      "exec zeko-prover \\
+      run-server \\
+      --mq-host rabbitmq:5672"
+    restart: on-failure
+  sequencer:
+    image: docker.io/zekolabs/zeko:latest
+    container_name: sequencer
+    depends_on:
+      init-deploy:
+        condition: service_completed_successfully
+      sequencer-signer:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      prover:
+        condition: service_started
+      postgres:
+        condition: service_started
+      da-layer:
+        condition: service_started
+    environment:
+      ZEKO_PROGRESS_STYLE: "percent"
+      ZEKO_SIGNATURE_KIND: "testnet"
+      ZEKO_CIRCUITS_CONFIG: "/circuits/betternet-config.json"
+      POSTGRES_URI: "postgres://sequencer:sequencer@postgres:5432/sequencer"
+      RABBITMQ_USER: "guest"
+      RABBITMQ_PASSWORD: "guest"
+    volumes:
+      - sequencer_data:/data
+      - circuits_data:/circuits:ro
+      - keys_data:/keys:ro
+    ports:
+      - "1923:1923"
+    entrypoint:
+      - bash
+      - -c
+    command: |
+      "export DA_LAYER_KEY=$(cat /keys/da-layer-pk) && \\
+      export ZEKO_SIGNER_AUTH_TOKEN=$(cat /keys/sequencer-signer/signer-auth-token) && \\
+      export ZEKO_SIGNER_TLS_CA_FILE=/keys/sequencer-signer/signer-tls.crt && \\
+      exec zeko-run \\
+      -p 1923 \\
+      --l1-uri https://gateway.mina.devnet.zeko.io \\
+      --archive-uri https://gateway.mina.archive.devnet.zeko.io \\
+      --max-pool-size 10 \\
+      --commitment-period 300 \\
+      --signer sequencer-signer:9000 \\
+      --da-node da-layer:1924 \\
+      --da-quorum 1 \\
+      --da-key $$DA_LAYER_KEY \\
+      --mq-host rabbitmq:5672 \\
+      --db-dir /data/db \\
+      --checkpoints-dir /data/checkpoints \\
+      --postgres-uri postgresql://sequencer:sequencer@postgres:5432/sequencer \\
+      --fee-modifier 0.1"
+    restart: on-failure
+
+volumes:
+  initdb_data:
+  postgresql_data:
+  rabbitmq_data:
+  circuits_data:
+  sequencer_data:
+  da-layer_data:
+  keys_data:
