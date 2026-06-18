@@ -19,19 +19,14 @@ The VitePress documentation lives in [`docs/content`](docs/content).
 The project includes a dedicated Docker Compose stack for running the Zeko
 rollup services described in the Zeko operator guide.
 
-```sh
-docker compose -f compose.rollup.yaml up -d
-docker compose -f compose.rollup.yaml exec init-config /scripts/generate-config-and-keys.sh
-```
-
-Fund the generated sequencer wallet on Mina Devnet, then deploy:
+[https://docs.zeko.io/operators/guides/launch-rollup.html](https://docs.zeko.io/operators/guides/launch-rollup.html)
 
 ```sh
-docker compose -f compose.rollup.yaml exec init-deploy /scripts/deploy.sh
+docker compose -f docker-compose.yaml up -d
+docker compose -f docker-compose.yaml exec -it init-config bash
+docker compose -f docker-compose.yaml exec -it init-deploy bash
+docker compose -f docker-compose.yaml logs -f
 ```
-
-Detailed steps and optional environment overrides are in
-[`rollup/README.md`](rollup/README.md).
 
 ### Cloudflare Pages
 
