@@ -208,6 +208,34 @@ The withdraw public output includes:
 
 The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatches the same deposit actions, so the SP1 bridge output can be compared against a real action-state update.
 
+## Testing
+
+Run the bridge unit tests (includes real on-chain data replay against testnet state):
+
+```sh
+cargo test --manifest-path program/bridge/Cargo.toml
+```
+
+Run the withdraw unit tests (same real L2 inner-action data):
+
+```sh
+cargo test --manifest-path program/withdraw/Cargo.toml
+```
+
+Run a specific test:
+
+```sh
+cargo test --manifest-path program/bridge/Cargo.toml real_l1_outer_witness
+cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
+cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
+```
+
+The real-data tests replay on-chain state transitions from:
+- L2 inner actions (withdrawals): `https://testnet.zeko.io/graphql` — contract `B62qjDedeP9617oTUeN8JGhdiqWg4t64NtQkHaoZB9wyvgSjAyupPU1`
+- L1 outer witness actions (deposits): `https://testnet.api.actions.zeko.io/graphql` — contract `B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2`
+
+See [`proofs/queries.md`](proofs/queries.md) for the exact GraphQL queries and the full state-transition tables.
+
 ## Running The Bridge Fixture
 
 Execute the bridge program without proving:
