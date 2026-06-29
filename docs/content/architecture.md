@@ -1,7 +1,6 @@
 # Architecture
 
-The system separates expensive proof computation from Ethereum-side state
-continuity checks.
+SP1 guest programs run the heavy cryptographic work off-chain and commit a compact public output that Ethereum contracts verify on-chain.
 
 ![Zeko Ethereum L2 architecture showing settlement, deposit bridge, and withdrawal flows](/architecture-flow.png)
 

@@ -8,7 +8,7 @@ Create a Pages project connected to the GitHub repository and configure:
 
 | Setting | Value |
 | --- | --- |
-| Production branch | `bridge` |
+| Production branch | `main` |
 | Root directory | `docs` |
 | Build command | `pnpm build` |
 | Build output directory | `.vitepress/dist` |

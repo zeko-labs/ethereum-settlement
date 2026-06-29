@@ -35,7 +35,7 @@ Pages > Import an existing Git repository**, then use:
 
 | Setting | Value |
 | --- | --- |
-| Production branch | `bridge` (or the branch used for production) |
+| Production branch | `main` (or the branch used for production) |
 | Root directory | `docs` |
 | Build command | `pnpm build` |
 | Build output directory | `.vitepress/dist` |
