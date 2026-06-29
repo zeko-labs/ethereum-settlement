@@ -108,5 +108,6 @@ fn fp_to_bytes(fp: Fp) -> [u8; 32] {
     let mut bytes = [0u8; 32];
     fp.serialize_uncompressed(&mut bytes[..])
         .expect("serialize field element");
+    bytes.reverse(); // ark-serialize is LE; convert to BE to match circuit convention
     bytes
 }

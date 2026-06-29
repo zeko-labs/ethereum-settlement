@@ -16,6 +16,11 @@ use zeko_sp1_lib::{
 fn main() {
     let input: BridgeTransitionInput = sp1_zkvm::io::read();
 
+    assert!(
+        input.deposits.len() <= u32::MAX as usize,
+        "too many deposits"
+    );
+
     let mut ethereum_state = input.ethereum.deposit_state;
     let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
     let mut next_nonce = input.ethereum.deposit_nonce;

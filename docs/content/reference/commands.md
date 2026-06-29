@@ -5,7 +5,7 @@
 Execute the programs without generating proofs:
 
 ```sh
-cargo run --release --bin zkapp -- --execute
+cargo run --release --bin zkapp -- --execute   # settlement program
 cargo run --release --bin bridge -- --execute
 cargo run --release --bin withdraw -- --execute
 ```
@@ -19,9 +19,30 @@ cargo run --release --bin withdraw -- --execute --input proofs/withdraw-input-20
 
 ## Generate proofs
 
+Generate a local proof without submitting to the network:
+
 ```sh
 cargo run --release --bin bridge -- --prove
 cargo run --release --bin withdraw -- --prove
+```
+
+Generate EVM-compatible proofs (Groth16 or PLONK) for on-chain submission:
+
+```sh
+cargo run --release --bin evm -- --system groth16
+cargo run --release --bin evm -- --system plonk
+```
+
+Retrieve the settlement program verification key:
+
+```sh
+cargo run --release --bin vkey
+```
+
+To use the Succinct Prover Network instead of local proving:
+
+```sh
+SP1_PROVER=network NETWORK_PRIVATE_KEY=<key> cargo run --release --bin evm
 ```
 
 ## Run tests

@@ -14,6 +14,7 @@ withdrawal state, starting Zeko action state, and an ordered withdrawal list.
 | `token` | Zeko field encoding an Ethereum token address in its low 160 bits. Zero means native ETH. |
 | `recipient` | Zeko field encoding the Ethereum recipient in its low 160 bits. |
 | `amount` | Amount expressed using the token's configured Zeko decimals. |
+| `children_digest` | Poseidon hash of the zkapp call forest attached to this withdrawal action on Zeko. Constant for standard same-bridge transactions. |
 
 Zeko currently supports only the native token in withdrawal actions. The SP1
 program rejects every withdrawal whose `token` field is not zero.
@@ -33,14 +34,37 @@ withdraw_leaf = keccak256(
 )
 ```
 
-It also computes and appends the matching Zeko action:
+It also computes and appends the matching Zeko action. First, an auxiliary hash
+is derived from the withdrawal fields:
 
 ```text
-action = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
+aux = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
   Field(0),
   amount,
   recipient
 ])
+```
+
+This aux is then placed into a 3-field inner action, which is the format the
+Zeko L2 bridge account dispatches:
+
+```text
+action_fields = [0, aux, children_digest]
+```
+
+- `field[0] = 0` — discriminant identifying this as a withdrawal commit (vs. 1 for outer witness)
+- `field[1]` — aux hash above
+- `field[2]` — `children_digest` from the input
+
+Each withdrawal is wrapped in its own Mina action list and appended to the
+running action state using the same domain-separated Poseidon operations as
+o1js:
+
+```text
+empty         = Poseidon.emptyHashWithPrefix("MinaZkappActionsEmpty")
+event_hash    = Poseidon.hashWithPrefix("MinaZkappEvent******", action_fields)
+action_list   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [empty, event_hash])
+state_after   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [state_before, action_list])
 ```
 
 The same ordered withdrawal leaves are committed into a depth-16 Keccak Merkle
