@@ -45,9 +45,13 @@ fn process_withdraw_transition(input: &WithdrawTransitionInput) -> WithdrawTrans
 
         ethereum_withdraw_leaves.push(ethereum_withdraw_leaf);
 
-        let zeko_action_hash =
-            compute_zeko_withdraw_action_hash(withdraw.recipient, withdraw.amount);
-        let zeko_action_list_hash = action_list_add(empty_action_list_hash, zeko_action_hash);
+        // L2 inner action: [discriminant=0, aux, children_digest]
+        let action_fields = compute_zeko_inner_action_fields(
+            withdraw.recipient,
+            withdraw.amount,
+            fp_from_bytes(withdraw.children_digest),
+        );
+        let zeko_action_list_hash = action_list_add_fields(empty_action_list_hash, &action_fields);
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
     }
 
@@ -140,19 +144,30 @@ fn hash_merkle_node(left: Bytes32, right: Bytes32) -> Bytes32 {
     keccak256(encoded).0
 }
 
-fn compute_zeko_withdraw_action_hash(recipient: Bytes32, amount: Bytes32) -> Fp {
-    let fields = [
-        Fp::from(0u8),
-        fp_from_bytes(amount),
-        fp_from_bytes(recipient),
-    ];
-
-    hash_with_prefix("Withdrawal_params - qFB3jXP*)", &fields)
+fn compute_withdrawal_aux(recipient: Bytes32, amount: Bytes32) -> Fp {
+    hash_with_prefix(
+        "Withdrawal_params - qFB3jXP*)",
+        &[Fp::from(0u8), fp_from_bytes(amount), fp_from_bytes(recipient)],
+    )
 }
 
-fn action_list_add(hash: Fp, action: Fp) -> Fp {
-    let event_hash = hash_with_prefix("MinaZkappEvent******", &[action]);
-    hash_with_prefix("MinaZkappSeqEvents**", &[hash, event_hash])
+// Returns the 3 action fields for an L2 inner (withdrawal) action:
+// [discriminant=0, aux, children_digest]
+fn compute_zeko_inner_action_fields(
+    recipient: Bytes32,
+    amount: Bytes32,
+    children_digest: Fp,
+) -> [Fp; 3] {
+    [
+        Fp::from(0u8), // discriminant: inner action
+        compute_withdrawal_aux(recipient, amount),
+        children_digest,
+    ]
+}
+
+fn action_list_add_fields(list_hash: Fp, action_fields: &[Fp]) -> Fp {
+    let event_hash = hash_with_prefix("MinaZkappEvent******", action_fields);
+    hash_with_prefix("MinaZkappSeqEvents**", &[list_hash, event_hash])
 }
 
 fn merkle_actions_add(hash: Fp, actions_hash: Fp) -> Fp {
@@ -241,22 +256,118 @@ mod tests {
         BridgeWithdraw, EthereumBridgeState, WithdrawTransitionInput, ZekoBridgeState,
     };
 
+    fn fp_from_decimal(s: &str) -> Fp {
+        let mut out = [0u8; 32];
+        for digit in s.bytes() {
+            let d = digit - b'0';
+            let mut carry = d as u16;
+            for byte in out.iter_mut().rev() {
+                let next = (*byte as u16) * 10 + carry;
+                *byte = next as u8;
+                carry = next >> 8;
+            }
+        }
+        Fp::from_be_bytes_mod_order(&out)
+    }
+
+    fn fp_to_decimal(x: Fp) -> String {
+        let mut buf = [0u8; 32];
+        x.serialize_uncompressed(&mut buf[..]).unwrap();
+        buf.reverse();
+        let mut digits = vec![0u8];
+        for byte in &buf {
+            let mut carry = *byte as u16;
+            for d in digits.iter_mut().rev() {
+                let cur = (*d as u16) * 256 + carry;
+                *d = (cur % 10) as u8;
+                carry = cur / 10;
+            }
+            while carry > 0 {
+                digits.insert(0, (carry % 10) as u8);
+                carry /= 10;
+            }
+        }
+        digits.iter().map(|d| (b'0' + d) as char).collect()
+    }
+
     #[test]
-    fn withdrawal_hash_matches_zeko_aux_shape() {
+    fn withdrawal_aux_matches_zeko_prefix() {
         let recipient = hex32("0000000000000000000000000000000000000000000000000000000001020304");
         let amount = hex32("000000000000000000000000000000000000000000000000000000003b9aca00");
 
-        let action_hash = compute_zeko_withdraw_action_hash(recipient, amount);
+        let aux = compute_withdrawal_aux(recipient, amount);
         let expected = hash_with_prefix(
             "Withdrawal_params - qFB3jXP*)",
-            &[
-                Fp::from(0u8),
-                fp_from_bytes(amount),
-                fp_from_bytes(recipient),
-            ],
+            &[Fp::from(0u8), fp_from_bytes(amount), fp_from_bytes(recipient)],
         );
 
-        assert_eq!(action_hash, expected);
+        assert_eq!(aux, expected);
+    }
+
+    /// Replays 8 real L2 inner actions from testnet.zeko.io and verifies the
+    /// 3-field inner action formula [discriminant=0, aux, children_digest]
+    /// reproduces the on-chain state transitions.
+    /// Contract: B62qjDedeP9617oTUeN8JGhdiqWg4t64NtQkHaoZB9wyvgSjAyupPU1
+    #[test]
+    fn real_l2_inner_actions_match_onchain_state() {
+        let actions: &[(&str, [&str; 3], &str)] = &[
+            (
+                "5338488511538591704321908497453393465896611676572626889890352515639793324972",
+                ["0", "13445954892259151401062147356414539397053929755454089729686468374072224770524", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "20564005778679112305921383783621393576220961645269793062533625001478041817089",
+            ),
+            (
+                "20564005778679112305921383783621393576220961645269793062533625001478041817089",
+                ["0", "3418969254967426460902743142395488746910205347512382940433097464676038721351", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "14088641427554771616107512497342397932082101784403114407990069911207727165132",
+            ),
+            (
+                "14088641427554771616107512497342397932082101784403114407990069911207727165132",
+                ["0", "3418969254967426460902743142395488746910205347512382940433097464676038721351", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "5592644305669396735852728084598993836947101033485055082318992298663200236730",
+            ),
+            (
+                "5592644305669396735852728084598993836947101033485055082318992298663200236730",
+                ["0", "7290175672191916634614598157462226143709763480793909565940809202163511105802", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "7230675077846107971049681873539601135350652909070232374148538403307839283596",
+            ),
+            (
+                "7230675077846107971049681873539601135350652909070232374148538403307839283596",
+                ["0", "23481682909396816666298220553789953254792289472463233634030406696841084292644", "7293853241236284976483542027714912722616630571844677510574672951635140291085"],
+                "23345261943210583986479677938738582339161417082508992471536919886924203109093",
+            ),
+            (
+                "23345261943210583986479677938738582339161417082508992471536919886924203109093",
+                ["0", "19783371664972363249023705802644483010603479698004347610850670392839625052708", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "18067506367558727641677130278527360334316654990876259625674197924704612602695",
+            ),
+            (
+                "18067506367558727641677130278527360334316654990876259625674197924704612602695",
+                ["0", "19783371664972363249023705802644483010603479698004347610850670392839625052708", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "2746959157610027380951551944033406547038529271116301057152331276522725315733",
+            ),
+            (
+                "2746959157610027380951551944033406547038529271116301057152331276522725315733",
+                ["0", "27834258681202107734246517626480949164201501965735911700310484065477580173610", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                "11066481997049907237147074214507440714257448164444404179272910777489391657254",
+            ),
+        ];
+
+        let empty = empty_hash_with_prefix("MinaZkappActionsEmpty");
+
+        for (i, (before, fields, expected_after)) in actions.iter().enumerate() {
+            let state = fp_from_decimal(before);
+            let fps: Vec<Fp> = fields.iter().map(|s| fp_from_decimal(s)).collect();
+
+            let action_list = action_list_add_fields(empty, &fps);
+            let after = merkle_actions_add(state, action_list);
+
+            assert_eq!(
+                fp_to_decimal(after),
+                *expected_after,
+                "action {i}: 3-field formula mismatch"
+            );
+        }
     }
 
     #[test]
@@ -357,6 +468,7 @@ mod tests {
             token: [0u8; 32],
             recipient,
             amount,
+            children_digest: [0u8; 32],
         }
     }
 

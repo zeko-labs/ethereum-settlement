@@ -92,7 +92,7 @@ At a high level it:
    - action state before
 6. Commits those public values as SP1 public output.
 
-On Ethereum, `ZekoProofVerifier.sol` verifies the SP1 proof and checks that the public output matches the verifier contract's tracked state:
+On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the public output matches the verifier contract's tracked state:
 
 - `vkHash` must match the expected Zeko verification key hash.
 - `actionStateBefore` must match the verifier's stored action state.
@@ -208,7 +208,48 @@ The withdraw public output includes:
 
 The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatches the same deposit actions, so the SP1 bridge output can be compared against a real action-state update.
 
-## Running The Bridge Fixture
+## Testing
+
+Run the settlement unit tests (BE endianness of field encoding, state slot extraction):
+
+```sh
+cargo test --manifest-path program/settlement/Cargo.toml
+```
+
+Run the bridge unit tests (includes real on-chain data replay against testnet state):
+
+```sh
+cargo test --manifest-path program/bridge/Cargo.toml
+```
+
+Run the withdraw unit tests (same real L2 inner-action data):
+
+```sh
+cargo test --manifest-path program/withdraw/Cargo.toml
+```
+
+Run a specific test:
+
+```sh
+cargo test --manifest-path program/settlement/Cargo.toml fq_to_bytes
+cargo test --manifest-path program/bridge/Cargo.toml real_l1_outer_witness
+cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
+cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
+```
+
+The real-data tests replay on-chain state transitions from:
+- L2 inner actions (withdrawals): `https://testnet.zeko.io/graphql` — contract `B62qjDedeP9617oTUeN8JGhdiqWg4t64NtQkHaoZB9wyvgSjAyupPU1`
+- L1 outer witness actions (deposits): `https://testnet.api.actions.zeko.io/graphql` — contract `B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2`
+
+See [`proofs/queries.md`](proofs/queries.md) for the exact GraphQL queries and the full state-transition tables.
+
+## Running Circuits Without Proving
+
+Execute the settlement program without proving:
+
+```sh
+cargo run --release --bin zkapp -- --execute
+```
 
 Execute the bridge program without proving:
 
@@ -251,8 +292,6 @@ nonce_after       : 3
 deposit_count     : 3
 ```
 
-## Legacy SP1 Template Notes
-
 ## Proof API
 
 The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
@@ -263,126 +302,34 @@ It can run with Docker Compose using a read-only environment-file mount and a
 persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and
 [`.env.api.example`](.env.api.example).
 
-# SP1 Project Template
+## Generating Proofs
 
-This is a template for creating an end-to-end [SP1](https://github.com/succinctlabs/sp1) project
-that can generate a proof of any RISC-V program.
-
-## Requirements
-
-- [Rust](https://rustup.rs/)
-- [SP1](https://docs.succinct.xyz/docs/sp1/getting-started/install)
-
-## Running the Project
-
-There are 3 main ways to run this project: execute a program, generate a core proof, and
-generate an EVM-compatible proof.
-
-### Build the Program
-
-The program is automatically built through `script/build.rs` when the script is built.
-
-### Execute the Program
-
-To run the program without generating a proof:
+Generate an EVM-compatible Groth16 proof:
 
 ```sh
-cd script
-cargo run --release -- --execute
-```
-
-Bridge proof
-
-```sh
-cd script
-RUST_LOG=info cargo run --release --bin bridge  -- --execute
-```
-
-Withdraw proof
-
-```sh
-cd script
-RUST_LOG=info cargo run --release --bin withdraw -- --execute
-```
-
-This will execute the program and display the output.
-
-### Generate an SP1 Core Proof
-
-To generate an SP1 [core proof](https://docs.succinct.xyz/docs/sp1/generating-proofs/proof-types#core-default) for your program:
-
-```sh
-cd script
-cargo run --release -- --prove
-```
-
-### Generate an EVM-Compatible Proof
-
-> [!WARNING]
-> You will need at least 16GB RAM to generate a Groth16 or PLONK proof. View the [SP1 docs](https://docs.succinct.xyz/docs/sp1/getting-started/hardware-requirements#local-proving) for more information.
-
-Generating a proof that is cheap to verify on the EVM (e.g. Groth16 or PLONK) is more intensive than generating a core proof.
-
-To generate a Groth16 proof:
-
-```sh
-cd script
 cargo run --release --bin evm -- --system groth16
 ```
 
-To generate a PLONK proof:
+Generate a PLONK proof:
 
 ```sh
 cargo run --release --bin evm -- --system plonk
 ```
 
-These commands will also generate fixtures that can be used to test the verification of SP1 proofs
-inside Solidity.
-
-### Retrieve the Verification Key
-
-To retrieve your `programVKey` for your on-chain contract, run the following command in `script`:
+Retrieve the settlement program verification key:
 
 ```sh
 cargo run --release --bin vkey
 ```
 
-## Using the Prover Network
-
-We highly recommend using the [Succinct Prover Network](https://docs.succinct.xyz/docs/network/introduction) for any non-trivial programs or benchmarking purposes. For more information, see the [key setup guide](https://docs.succinct.xyz/docs/network/developers/key-setup) to get started.
-
-To get started, copy the example environment file:
+To use the [Succinct Prover Network](https://docs.succinct.xyz/docs/network/introduction) instead of local proving:
 
 ```sh
 cp .env.example .env
-```
-
-Then, set the `SP1_PROVER` environment variable to `network` and set the `NETWORK_PRIVATE_KEY`
-environment variable to your whitelisted private key.
-
-For example, to generate an EVM-compatible proof using the prover network, run the following
-command:
-
-```sh
+# set SP1_PROVER=network and NETWORK_PRIVATE_KEY in .env
 SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release --bin evm
 ```
 
+A Groth16 proof for a Zeko rollup command takes under 5 minutes on the prover network (~1.1 PROVE tokens as of May 2025).
 
-### Update ark custom version
-
-```
-cargo update -p ark-ff 
-cargo update -p ark-ec 
-cargo update -p ark-poly 
-cargo update -p ark-serialize 
-RUST_LOG=info cargo run --release -- --execute
-```
-
-
-### Prover Network 
-
-It takes less than 5 minutes to generate a Groth16 proof for 1B5 gas on the prover network.
-
-The current cost to prove a Zeko rollup app command is around 1.1 PROVE tokens. The PROVE token price was $0.26 on May 7, so that comes to around $0.30.
-
-[Request](https://explorer.succinct.xyz/request/0x67eecb92c7ed781f06271e661bcf49543eb2f555a98f80745e266e23d79b0b8a)
+[Example request](https://explorer.succinct.xyz/request/0x67eecb92c7ed781f06271e661bcf49543eb2f555a98f80745e266e23d79b0b8a)

@@ -144,6 +144,13 @@ pub struct BridgeDeposit {
     #[serde(with = "serde_bytes32")]
     pub zeko_recipient: ZekoAddress,
     pub timeout: u64,
+    /// Digest of the zkapp call forest attached to this deposit action (fields[2]).
+    #[serde(with = "serde_bytes32")]
+    pub children_digest: Bytes32,
+    /// Mina slot range lower bound for this deposit batch (fields[3]).
+    pub slot_range_lower: u64,
+    /// Mina slot range upper bound for this deposit batch (fields[4]).
+    pub slot_range_upper: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -154,6 +161,9 @@ pub struct BridgeWithdraw {
     pub recipient: Bytes32,
     #[serde(with = "serde_bytes32")]
     pub amount: Bytes32,
+    /// Digest of the zkapp call forest attached to this withdrawal action (fields[2]).
+    #[serde(with = "serde_bytes32")]
+    pub children_digest: Bytes32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

@@ -338,7 +338,7 @@ contract EthereumZekoBridge is
         uint8 ethereumDecimals
     ) external onlyRole(ADMIN_ROLE) {
         TokenConfig memory existingConfig = allowedToken[token];
-        if (existingConfig.ethereumDecimals != 0) {
+        if (existingConfig.allowed) {
             revert TokenAlreadyAdded(token);
         }
 
@@ -787,10 +787,7 @@ contract EthereumZekoBridge is
             cursor
         );
         cursor += 32;
-        decoded.ethereumWithdrawStateAfter = _readBytes32(
-            publicValues,
-            cursor
-        );
+        decoded.ethereumWithdrawStateAfter = _readBytes32(publicValues, cursor);
         cursor += 32;
         decoded.withdrawalRoot = _readBytes32(publicValues, cursor);
         cursor += 32;
@@ -874,8 +871,7 @@ contract EthereumZekoBridge is
         bytes32 left,
         bytes32 right
     ) internal pure returns (bytes32) {
-        return
-            keccak256(abi.encode(WITHDRAW_MERKLE_NODE_DOMAIN, left, right));
+        return keccak256(abi.encode(WITHDRAW_MERKLE_NODE_DOMAIN, left, right));
     }
 
     function _verifyMerkleProof(
