@@ -44,8 +44,7 @@ export default defineConfig({
         text: "Reference",
         items: [
           { text: "Security Model", link: "/reference/security-model" },
-          { text: "Commands", link: "/reference/commands" },
-          { text: "Cloudflare Deployment", link: "/reference/cloudflare" }
+          { text: "Commands", link: "/reference/commands" }
         ]
       }
     ],
