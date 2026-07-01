@@ -25,6 +25,7 @@ ark-ff = { workspace = true }
 mina-node-native  = { workspace = true }
 mina-p2p-messages = { workspace = true }
 mina-curves       = { workspace = true }
+mina-signer       = { workspace = true }
 juniper           = { workspace = true }
 rsexp             = { workspace = true }
 base64            = { workspace = true }
@@ -42,4 +43,3 @@ criterion = "0.5"
 
 [build-dependencies]
 sp1-build = "6.1.0"
-

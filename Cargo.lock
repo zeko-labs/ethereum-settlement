@@ -13338,6 +13338,7 @@ dependencies = [
  "mina-curves",
  "mina-node-native",
  "mina-p2p-messages",
+ "mina-signer",
  "mina-tree",
  "rsexp",
  "serde",
