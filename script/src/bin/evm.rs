@@ -1,23 +1,7 @@
-//! Zeko SP1 — EVM-compatible zkApp proof verifier
-//!
-//! Generate an EVM-compatible proof with the Succinct Prover Network:
-//! ```shell
-//! export NETWORK_PRIVATE_KEY=...
-//! RUST_LOG=info cargo run --release --bin evm -- --system groth16
-//! ```
-//! or
-//! ```shell
-//! export NETWORK_PRIVATE_KEY=...
-//! RUST_LOG=info cargo run --release --bin evm -- --system plonk
-//! ```
+//! Zeko SP1 EVM-compatible zkApp proof verifier.
 
-use ark_serialize::CanonicalSerialize;
 use clap::{Parser, ValueEnum};
-use kimchi::{circuits::constraints::FeatureFlags, linearization::expr_linearization};
-use mina_curves::pasta::Fq;
-use mina_p2p_messages::v2::{
-    MinaBaseVerificationKeyWireStableV1, PicklesBaseProofsVerifiedStableV1,
-};
+use mina_p2p_messages::v2::MinaBaseVerificationKeyWireStableV1;
 use serde::{Deserialize, Serialize};
 use sp1_sdk::{
     include_elf, network::NetworkMode, utils, Elf, HashableKey, ProveRequest, Prover, ProverClient,
@@ -25,17 +9,13 @@ use sp1_sdk::{
 };
 use std::path::PathBuf;
 use std::time::Instant;
-use zeko_sp1_lib::{SerializableDeferredValues, SerializablePlonk, ZkappPublicValues};
+use zeko_sp1_lib::ZkappPublicValues;
 
 #[path = "../parser.rs"]
 mod parser;
 use parser::parse_graphql_zkapp_file;
 
 use ledger::{
-    proofs::{
-        transaction::endos, verification::compute_deferred_values,
-        verifiers::make_zkapp_verifier_index,
-    },
     scan_state::transaction_logic::{
         verifiable,
         zkapp_command::{verifiable::create, ZkAppCommand},
@@ -76,8 +56,6 @@ struct SP1ProofFixture {
     proof_valid: bool,
     zkapp_command_bytes_len: usize,
     zkapp_stmt_bytes_len: usize,
-    deferred_values_bytes_len: usize,
-    verifier_index_bytes_len: usize,
     vkey: String,
     public_values: String,
     proof: String,
@@ -105,11 +83,11 @@ async fn main() {
         .try_into()
         .expect("wire -> ZkAppCommand");
 
-    eprintln!("✓ parsed");
+    eprintln!("parsed");
 
     let zkapp_cmd_bytes =
         bincode::serialize(&parsed.zkapp_command).expect("serialize zkapp_command wire");
-    eprintln!("✓ zkapp_command: {} bytes", zkapp_cmd_bytes.len());
+    eprintln!("zkapp_command: {} bytes", zkapp_cmd_bytes.len());
 
     // ------------------------------------------------------------------
     // 2. Derive ZkappStatement on the host
@@ -125,91 +103,22 @@ async fn main() {
         other => panic!("expected ValidAssuming, got: {other:?}"),
     };
 
-    eprintln!("✓ zkapp_stmt derived");
+    eprintln!("zkapp_stmt derived");
 
     // ------------------------------------------------------------------
-    // 3. Serialize ZkappStatement
+    // 3. Serialize guest inputs
     // ------------------------------------------------------------------
     let zkapp_stmt_bytes = bincode::serialize(&zkapp_stmt).expect("serialize zkapp_stmt");
-    eprintln!("✓ zkapp_stmt: {} bytes", zkapp_stmt_bytes.len());
+    eprintln!("zkapp_stmt: {} bytes", zkapp_stmt_bytes.len());
 
-    fn fp_to_bytes(fp: mina_curves::pasta::Fp) -> [u8; 32] {
-        let mut buf: [u8; 32] = [0u8; 32];
-        fp.serialize_uncompressed(&mut buf[..]).unwrap();
-        buf
-    }
-
-    let dv = compute_deferred_values(&parsed.proof).expect("compute_deferred_values");
-
-    let serializable_dv = SerializableDeferredValues {
-        plonk: SerializablePlonk {
-            alpha: dv.plonk.alpha,
-            beta: dv.plonk.beta,
-            gamma: dv.plonk.gamma,
-            zeta: dv.plonk.zeta,
-            zeta_to_srs_length: fp_to_bytes(dv.plonk.zeta_to_srs_length.shifted),
-            zeta_to_domain_size: fp_to_bytes(dv.plonk.zeta_to_domain_size.shifted),
-            perm: fp_to_bytes(dv.plonk.perm.shifted),
-            lookup: dv.plonk.lookup,
-            feature_flags_range_check0: dv.plonk.feature_flags.range_check0,
-            feature_flags_range_check1: dv.plonk.feature_flags.range_check1,
-            feature_flags_foreign_field_add: dv.plonk.feature_flags.foreign_field_add,
-            feature_flags_foreign_field_mul: dv.plonk.feature_flags.foreign_field_mul,
-            feature_flags_xor: dv.plonk.feature_flags.xor,
-            feature_flags_rot: dv.plonk.feature_flags.rot,
-            feature_flags_lookup: dv.plonk.feature_flags.lookup,
-            feature_flags_runtime_tables: dv.plonk.feature_flags.runtime_tables,
-        },
-        combined_inner_product: fp_to_bytes(dv.combined_inner_product.shifted),
-        b: fp_to_bytes(dv.b.shifted),
-        xi: dv.xi,
-        bulletproof_challenges: dv
-            .bulletproof_challenges
-            .iter()
-            .map(|fp| fp_to_bytes(*fp))
-            .collect(),
-        branch_data_proofs_verified: match dv.branch_data.proofs_verified {
-            PicklesBaseProofsVerifiedStableV1::N0 => 0,
-            PicklesBaseProofsVerifiedStableV1::N1 => 1,
-            PicklesBaseProofsVerifiedStableV1::N2 => 2,
-        },
-        branch_data_domain_log2: dv.branch_data.domain_log2.0.into(),
-    };
-
-    let deferred_values_bytes =
-        bincode::serialize(&serializable_dv).expect("serialize deferred_values");
-    eprintln!("✓ deferred_values: {} bytes", deferred_values_bytes.len());
-
-    // ------------------------------------------------------------------
-    // 4. Serialize VerifierIndex without SRS
-    // ------------------------------------------------------------------
-    let feature_flags = FeatureFlags::default();
-    let (linearization, powers_of_alpha) = expr_linearization(Some(&feature_flags), true);
-    let (endo_q, _) = endos::<Fq>();
-
-    let mut verifier_index = make_zkapp_verifier_index(&vk);
-    verifier_index.linearization = linearization;
-    verifier_index.powers_of_alpha = powers_of_alpha;
-    verifier_index.endo = endo_q;
-
-    let verifier_index_bytes =
-        bincode::serialize(&verifier_index).expect("serialize verifier_index");
-
-    eprintln!("✓ verifier_index: {} bytes", verifier_index_bytes.len());
-
-    // ------------------------------------------------------------------
-    // 5. Build stdin exactly like the regular main
-    // ------------------------------------------------------------------
     let mut stdin = SP1Stdin::new();
     stdin.write(&vk_wire);
     stdin.write(&parsed.proof);
     stdin.write_slice(&zkapp_stmt_bytes);
-    stdin.write_slice(&deferred_values_bytes);
     stdin.write_slice(&zkapp_cmd_bytes);
-    stdin.write_slice(&verifier_index_bytes);
 
     // ------------------------------------------------------------------
-    // 6. Setup and prove on the Succinct Prover Network
+    // 4. Setup and prove on the Succinct Prover Network
     // ------------------------------------------------------------------
     let client = ProverClient::builder()
         .network_for(NetworkMode::Mainnet)
@@ -218,7 +127,7 @@ async fn main() {
 
     let t_setup = Instant::now();
     let pk = client.setup(ZKAPP_ELF).await.expect("failed to setup ELF");
-    println!("⏱ Setup time: {:?}", t_setup.elapsed());
+    println!("Setup time: {:?}", t_setup.elapsed());
     println!("Proof System: {:?}", args.system);
 
     println!("Generating EVM-compatible proof on Succinct Prover Network...");
@@ -230,7 +139,7 @@ async fn main() {
     }
     .expect("failed to generate proof");
 
-    println!("⏱ Proving time: {:?}", t_prove.elapsed());
+    println!("Proving time: {:?}", t_prove.elapsed());
 
     client
         .verify(&proof, pk.verifying_key(), None)
@@ -243,8 +152,6 @@ async fn main() {
         &args.vk,
         zkapp_cmd_bytes.len(),
         zkapp_stmt_bytes.len(),
-        deferred_values_bytes.len(),
-        verifier_index_bytes.len(),
         args.system,
     );
 }
@@ -256,8 +163,6 @@ fn create_proof_fixture(
     vk_path: &str,
     zkapp_command_bytes_len: usize,
     zkapp_stmt_bytes_len: usize,
-    deferred_values_bytes_len: usize,
-    verifier_index_bytes_len: usize,
     system: ProofSystem,
 ) {
     let public_values: ZkappPublicValues =
@@ -279,8 +184,8 @@ fn create_proof_fixture(
         hex::encode(public_values.action_state_before)
     );
 
-    assert!(public_values.proof_valid, "Kimchi proof invalid");
-    println!("✅ Kimchi proof verified successfully");
+    assert!(public_values.proof_valid, "Pickles proof invalid");
+    println!("Pickles proof verified successfully");
 
     let fixture = SP1ProofFixture {
         system: format!("{:?}", system).to_lowercase(),
@@ -289,8 +194,6 @@ fn create_proof_fixture(
         proof_valid: public_values.proof_valid,
         zkapp_command_bytes_len,
         zkapp_stmt_bytes_len,
-        deferred_values_bytes_len,
-        verifier_index_bytes_len,
         vkey: vk.bytes32().to_string(),
         public_values: format!("0x{}", hex::encode(proof.public_values.as_slice())),
         proof: format!("0x{}", hex::encode(proof.bytes())),
@@ -310,5 +213,5 @@ fn create_proof_fixture(
 
     std::fs::create_dir_all("proofs").expect("create proofs dir");
     proof.save("proofs/evm-proof.bin").expect("save proof");
-    println!("✓ Proof saved → proofs/evm-proof.bin");
+    println!("Proof saved to proofs/evm-proof.bin");
 }

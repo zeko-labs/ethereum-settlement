@@ -1,0 +1,63 @@
+[package]
+name = "poly-commitment"
+description = "Library implementing different polynomial commitments schemes, like IPA and KZG10"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "../README.md"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-poly.workspace = true
+ark-serialize.workspace = true
+
+bytemuck.workspace = true
+crypto-bigint.workspace = true
+sp1-lib.workspace = true
+
+blake2.workspace = true
+hex.workspace = true
+itertools.workspace = true
+num-bigint.workspace = true
+once_cell.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+rayon.workspace = true
+rmp-serde.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+thiserror.workspace = true
+
+groupmap.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+o1-utils.workspace = true
+
+ocaml = { workspace = true, optional = true }
+ocaml-gen = { workspace = true, optional = true }
+
+bincode = "1.3.3"
+
+[dev-dependencies]
+criterion.workspace = true
+rand_chacha.workspace = true
+ark-bn254.workspace = true
+
+[features]
+ocaml_types = ["ocaml", "ocaml-gen"]
+
+[[bench]]
+name = "poly_comm"
+harness = false
+
+[[bench]]
+name = "ipa"
+harness = false
+
+[[bench]]
+name = "msm"
+harness = false

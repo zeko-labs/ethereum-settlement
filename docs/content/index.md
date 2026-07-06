@@ -18,7 +18,7 @@ hero:
 
 features:
   - title: Zeko Settlement
-    details: Verify Zeko and o1 Kimchi proofs inside SP1, then settle the resulting rollup root on Ethereum.
+    details: Verify Zeko Pickles proofs inside SP1, then settle the resulting rollup root on Ethereum.
     link: /protocol/settlement
 
   - title: Ethereum to Zeko
@@ -30,6 +30,6 @@ features:
     link: /protocol/withdrawals
 
   - title: Succinct Ethereum Verification
-    details: Ethereum verifies compact SP1 proofs instead of executing Kimchi verification and action-state hashing on-chain.
+    details: Ethereum verifies compact SP1 proofs instead of executing Pickles verification and action-state hashing on-chain.
     link: /reference/security-model
 ---

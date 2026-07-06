@@ -1,0 +1,27 @@
+@use 'mina-rust';
+
+.circle {
+  width: 10px;
+  height: 10px;
+  border-radius: 12px;
+
+  &.red {
+    background-color: mina-rust.$warn-primary;
+  }
+
+  &.gray {
+    background-color: mina-rust.$base-tertiary;
+  }
+
+  &.white {
+    background-color: mina-rust.$base-primary;
+  }
+
+  &.blue {
+    background-color: mina-rust.$selected-primary;
+  }
+
+  &.green {
+    background-color: mina-rust.$success-primary;
+  }
+}

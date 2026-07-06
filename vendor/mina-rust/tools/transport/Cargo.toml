@@ -1,0 +1,19 @@
+[package]
+name = "mina-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake2 = { workspace = true }
+hex = { workspace = true }
+libp2p = { workspace = true, features = [
+  "tokio",
+  "noise",
+  "pnet",
+  "tcp",
+  "yamux",
+  "dns",
+  "gossipsub",
+] }
+log = { workspace = true }
+pin-project-lite = { workspace = true }

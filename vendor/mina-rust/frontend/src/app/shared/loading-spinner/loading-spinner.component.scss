@@ -1,0 +1,23 @@
+@use 'mina-rust';
+
+:host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading {
+  display: block;
+  border-radius: 50%;
+  border-top-color: transparent !important;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,38 @@
+<ng-container #minaTable></ng-container>
+
+<ng-template #rowTemplate let-row="row">
+  <span class="fx-row-vert-cent text-capitalize" [ngClass]="row.message">
+    @if (row.active || row.status === BlockProductionWonSlotsStatus.Committed) {
+      <mina-loading-spinner></mina-loading-spinner>
+    } @else {
+      @if (row.status === BlockProductionWonSlotsStatus.Scheduled) {
+        <span class="schedule mina-icon icon-200 f-20">schedule</span>
+      } @else {
+        <span class="mina-icon icon-200 f-big">circle</span>
+      }
+    }
+    {{ row.percentage !== undefined ? row.percentage + '%' : '' }}
+    {{ row.message }}
+  </span>
+  <span>{{ row.age }}</span>
+  <span>{{ row.height ?? '-' }}</span>
+  <span>{{ row.globalSlot }}</span>
+  <span>{{ row.slotInEpoch ?? '-' }}</span>
+  <span
+    [tooltipDisabled]="true"
+    [tooltip]="
+      row.payments +
+      ' payments, ' +
+      row.delegations +
+      ' delegations, ' +
+      row.zkapps +
+      ' zkapps'
+    "
+  >
+    {{ row.transactionsTotal ?? '-' }}
+  </span>
+  <span>{{ row.completedWorksCount ?? '-' }}</span>
+  <span>{{ row.snarkFees ?? '-' }}</span>
+  <span>{{ row.coinbaseRewards ?? '-' }}</span>
+  <span>{{ row.txFeesRewards ?? '-' }}</span>
+</ng-template>

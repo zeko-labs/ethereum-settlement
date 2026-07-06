@@ -31,7 +31,7 @@ against state already stored on Ethereum.
 
 ### Settlement
 
-The settlement path verifies a Zeko/o1 Kimchi proof inside SP1. Ethereum then
+The settlement path verifies a Zeko Pickles proof inside SP1. Ethereum then
 checks that the extracted verification-key hash, action-state precondition, and
 root transition match its stored state.
 

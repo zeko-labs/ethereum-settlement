@@ -1,0 +1,135 @@
+/// Copy-pasted from https://github.com/MinaProtocol/mina/blob/cf2a732ae39f4e784707e1fc32832da805bb7d09/src/lib/crypto/kimchi_bindings/stubs/src/urs_utils.rs
+use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
+use ark_ff::{batch_inversion, One, PrimeField, UniformRand, Zero};
+use poly_commitment::{
+    commitment::{b_poly_coefficients, CommitmentCurve},
+    ipa::SRS,
+};
+use rayon::prelude::*;
+
+// TODO: Not compatible with variable rounds
+pub fn batch_dlog_accumulator_check<G>(urs: &SRS<G>, comms: &[G], chals: &[G::ScalarField]) -> bool
+where
+    G: CommitmentCurve + AffineRepr,
+    G::BaseField: PrimeField,
+    G::ScalarField: PrimeField,
+{
+    let k = comms.len();
+
+    if k == 0 {
+        assert_eq!(chals.len(), 0);
+        return true;
+    }
+
+    let rounds = chals.len() / k;
+    assert_eq!(chals.len() % rounds, 0);
+
+    #[cfg(target_os = "zkvm")]
+    let rs = {
+        assert_eq!(k, 1, "zkVM accumulator check only supports one proof");
+        vec![G::ScalarField::one()]
+    };
+
+    #[cfg(not(target_os = "zkvm"))]
+    let rs = {
+        let r = G::ScalarField::rand(&mut rand::rngs::OsRng);
+        let mut rs = vec![G::ScalarField::one(); k];
+        for i in 1..k {
+            rs[i] = r * rs[i - 1];
+        }
+        rs
+    };
+
+    let mut points = urs.g.clone();
+    let n = points.len();
+    points.extend(comms);
+
+    let mut scalars = vec![G::ScalarField::zero(); n];
+    scalars.extend(&rs[..]);
+
+    let chal_invs = {
+        let mut cs = chals.to_vec();
+        batch_inversion(&mut cs);
+        cs
+    };
+
+    #[cfg(target_os = "zkvm")]
+    let termss: Vec<_> = chals
+        .iter()
+        .zip(chal_invs)
+        .collect::<Vec<_>>()
+        .chunks(rounds)
+        .zip(rs)
+        .map(|(chunk, r)| {
+            let chals: Vec<_> = chunk.iter().map(|(c, _)| **c).collect();
+            let mut s = b_poly_coefficients(&chals);
+            s.iter_mut().for_each(|c| *c *= &r);
+            s
+        })
+        .collect();
+
+    #[cfg(not(target_os = "zkvm"))]
+    let termss: Vec<_> = chals
+        .par_iter()
+        .zip(chal_invs)
+        .chunks(rounds)
+        .zip(rs)
+        .map(|(chunk, r)| {
+            let chals: Vec<_> = chunk.iter().map(|(c, _)| **c).collect();
+            let mut s = b_poly_coefficients(&chals);
+            s.iter_mut().for_each(|c| *c *= &r);
+            s
+        })
+        .collect();
+
+    for terms in termss {
+        assert_eq!(terms.len(), n);
+        for i in 0..n {
+            scalars[i] -= &terms[i];
+        }
+    }
+
+    #[cfg(target_os = "zkvm")]
+    {
+        // The settlement guest only uses this path for Vesta accumulator checks.
+        // Arkworks' generic MSM currently emits unsupported SP1 instructions.
+        poly_commitment::sp1_msm::sp1_vesta_msm_ark(&points, &scalars)
+    }
+
+    #[cfg(not(target_os = "zkvm"))]
+    {
+        <G::Group as VariableBaseMSM>::msm(&points, &scalars).unwrap() == G::Group::zero()
+    }
+}
+
+#[allow(unused)]
+pub fn batch_dlog_accumulator_generate<G: CommitmentCurve>(
+    urs: &SRS<G>,
+    num_comms: usize,
+    chals: &Vec<G::ScalarField>,
+) -> Vec<G> {
+    let k = num_comms;
+
+    if k == 0 {
+        assert_eq!(chals.len(), 0);
+        return vec![];
+    }
+
+    let rounds = chals.len() / k;
+    assert_eq!(chals.len() % rounds, 0);
+
+    let comms: Vec<_> = chals
+        .into_par_iter()
+        .chunks(rounds)
+        .map(|chals| {
+            let chals: Vec<G::ScalarField> = chals.into_iter().copied().collect();
+            let scalars: Vec<_> = b_poly_coefficients(&chals);
+            let points: Vec<_> = urs.g.clone();
+            <G::Group as VariableBaseMSM>::msm(&points, &scalars)
+                .unwrap() // Not sure have safe this unwrap is but function is unused
+                .into_affine()
+        })
+        .collect();
+
+    comms
+}

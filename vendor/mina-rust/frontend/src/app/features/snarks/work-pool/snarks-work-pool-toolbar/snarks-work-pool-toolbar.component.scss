@@ -1,0 +1,13 @@
+@use 'mina-rust';
+
+.filter {
+  &:hover:not(.active) {
+    background-color: mina-rust.$base-divider;
+    color: mina-rust.$base-secondary !important;
+  }
+
+  &.active {
+    background-color: mina-rust.$selected-container;
+    color: mina-rust.$selected-primary !important;
+  }
+}

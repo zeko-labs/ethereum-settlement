@@ -10,26 +10,26 @@ The settlement host binary reads:
 - a base64-encoded Zeko verification key from `proofs/vk.txt`
 - a GraphQL zkApp command and proof from `proofs/graphql.txt`
 
-The host derives the zkApp statement, computes deferred proof values, builds
-the verifier index, and serializes all required inputs for the SP1 guest.
+The host derives the zkApp statement and serializes only the verification key,
+proof, statement, and original zkApp command for the SP1 guest. Deferred proof
+values and the verifier index are derived inside the guest.
 
 ## Guest verification
 
 `program/settlement` performs the following work inside SP1:
 
-1. Deserializes the verification key, o1 proof, zkApp statement, deferred
-   values, zkApp command, and verifier index.
+1. Deserializes the verification key, o1 proof, zkApp statement, and zkApp command.
 2. Binds the statement to the first account update by checking the
    account-update digest and calls hash.
-3. Loads the embedded Pasta SRS from `srs_rkyv.bin`.
-4. Restores omitted verifier-index fields, including linearization data,
-   powers of alpha, and the endomorphism constant.
-5. Checks selected verifier-index commitments against the Zeko verification key.
-6. Reconstructs the Kimchi public inputs and verifies the o1 proof.
-7. Extracts app-state preconditions, app-state updates, and the action-state precondition.
-8. Commits the result as SP1 public values.
+3. Loads the embedded Pallas Kimchi SRS and derives the verifier index from the
+   verification key.
+4. Loads the embedded Vesta accumulator SRS and verifies the Pickles accumulator.
+5. Recomputes deferred proof values, runs Mina's proof-shape checks, reconstructs
+   the Kimchi public inputs, and verifies the outer Kimchi proof.
+6. Extracts app-state preconditions, app-state updates, and the action-state precondition.
+7. Commits the result as SP1 public values.
 
-The guest aborts if Kimchi verification fails. A successfully verified SP1
+The guest aborts if any Pickles verification layer fails. A successfully verified SP1
 proof therefore always contains `proof_valid = true`.
 
 ## Public values
@@ -38,7 +38,7 @@ proof therefore always contains `proof_valid = true`.
 
 | Field | Meaning |
 | --- | --- |
-| `proof_valid` | Whether the Kimchi proof verified. |
+| `proof_valid` | Whether the Pickles proof verified. |
 | `vk_hash` | Hash of the supplied Zeko verification key. |
 | `state_before[8]` | Checked app-state preconditions. Ignored slots become zero. |
 | `state_after[8]` | Explicit app-state updates. Kept slots become zero. |

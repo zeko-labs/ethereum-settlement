@@ -22,7 +22,7 @@ ark-poly = { workspace = true }
 ark-ec = { workspace = true }
 ark-ff = { workspace = true }
 
-mina-node-native  = { workspace = true }
+mina-node-native  = { workspace = true, default-features = false }
 mina-p2p-messages = { workspace = true }
 mina-curves       = { workspace = true }
 juniper           = { workspace = true }
@@ -42,4 +42,3 @@ criterion = "0.5"
 
 [build-dependencies]
 sp1-build = "6.1.0"
-

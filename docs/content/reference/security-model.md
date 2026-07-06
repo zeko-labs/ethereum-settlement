@@ -4,7 +4,7 @@ The proofs and contracts deliberately verify different parts of the system.
 
 ## Proof guarantees
 
-- Settlement proves Kimchi validity and extracts a Zeko state transition.
+- Settlement proves Pickles validity, including the outer Kimchi proof, and extracts a Zeko state transition.
 - A deposit bridge proof proves the deterministic transformation from supplied
   deposits to an Ethereum accumulator and Zeko action state.
 - A withdrawal proof proves the deterministic transformation from supplied

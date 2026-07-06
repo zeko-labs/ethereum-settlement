@@ -1,0 +1,14 @@
+@use 'mina-rust';
+
+.breadcrumb {
+  color: mina-rust.$selected-primary;
+
+  &:hover:not(:last-child) {
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  &:last-child {
+    color: mina-rust.$base-secondary;
+  }
+}

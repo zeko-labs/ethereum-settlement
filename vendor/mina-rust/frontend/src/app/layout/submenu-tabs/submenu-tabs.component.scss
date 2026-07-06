@@ -1,0 +1,35 @@
+@use 'mina-rust';
+
+.submenus {
+  .a-wrap {
+    min-width: 116px;
+  }
+
+  a {
+    background-color: transparent;
+    color: mina-rust.$base-secondary;
+    border-radius: 6px;
+    position: relative;
+    height: 24px;
+    line-height: 24px;
+
+    &:hover {
+      background-color: mina-rust.$base-container;
+    }
+
+    &.active {
+      color: mina-rust.$selected-primary;
+      background-color: mina-rust.$selected-container;
+    }
+
+    @media (max-width: 700px) {
+      height: 40px;
+      line-height: 40px;
+    }
+  }
+
+  .bar {
+    width: 8px;
+    height: 20px;
+  }
+}

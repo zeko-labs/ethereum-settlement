@@ -1,0 +1,122 @@
+generate_comments = true
+blank_lines = true
+git_prefix = "https://github.com/MinaProtocol/mina/blob/"
+wrap_internal_types = true
+
+preamble = '''
+use binprot_derive::{BinProtRead, BinProtWrite};
+use derive_more::Deref;
+use serde::{Deserialize, Serialize};
+_blank_!();
+use crate::{array::ArrayN16, list::List, pseq::PaddedSeq};
+_blank_!();
+use super::manual::*;
+_blank_!();
+'''
+
+type_preamble = "#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]"
+
+newtype_preamble = "#[derive(Deref)]"
+
+poly_var_preamble = "#[polymorphic_variant]"
+
+versioned_type = "crate::versioned::Versioned"
+
+phantom_type = "crate::phantom::Phantom"
+
+skip = [
+  "TransactionSnarkScanStateStableV1VersionedV1PolyV1PolyV1TreesArg0V1",
+  "TransactionSnarkScanStateStableV2TreesA",
+  "TransactionSnarkScanStateStableV2ScanStateTreesA",
+  "MinaBaseFeeExcessStableV1",
+  "MinaBaseFeeExcessStableV1Fee",
+  "MinaTransactionLogicZkappCommandLogicLocalStateValueStableV1SignedAmount",
+  "MinaBaseSignedCommandMemoStableV1",
+]
+
+rec_tuple_type = 'PaddedSeq'
+
+[type_preambles]
+'Consensus_vrf.Output.Truncated.Stable.V1' = "#[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]"
+'Pickles__Proof.Proofs_verified_2.Repr.Stable.V2.statement.fp' = "#[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]"
+'Sgn.Stable.V1' = "#[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]"
+'Protocol_version.Make_str.Stable.V1' = "#[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]"
+
+[base_types.float]
+rust_id = 'crate::number::Float64'
+args_num = 'None'
+
+[base_types.kimchi_backend_bigint_32_V1]
+rust_id = 'crate::bigint::BigInt'
+args_num = 'None'
+
+[base_types.zexe_backend_bigint_32]
+rust_id = 'crate::bigint::BigInt'
+args_num = 'None'
+
+[base_types.unit]
+rust_id = '()'
+args_num = 'None'
+
+[base_types.option]
+rust_id = 'Option'
+args_num = 'Single'
+
+[base_types.array]
+rust_id = 'Vec'
+args_num = 'Single'
+
+[base_types.string]
+rust_id = 'crate::string::ByteString'
+args_num = 'None'
+
+[base_types.bool]
+rust_id = 'bool'
+args_num = 'None'
+
+[base_types.int]
+rust_id = 'crate::number::UInt64'
+args_num = 'None'
+
+[base_types.int32]
+rust_id = 'crate::number::UInt32'
+args_num = 'None'
+
+[base_types.int64]
+rust_id = 'crate::number::UInt64'
+args_num = 'None'
+
+[base_types.char]
+rust_id = 'crate::char::Char'
+args_num = 'None'
+
+[base_types.list]
+rust_id = 'List'
+args_num = 'Single'
+
+[base_types."Bounded_types.String.t"]
+rust_id = 'crate::string::ByteString'
+args_num = 'None'
+
+[base_types."Bounded_types.Array.t"]
+rust_id = 'ArrayN16'
+args_num = 'Single'
+
+[ocaml_mod_mapping]
+Make_str = ''
+
+[rust_ref_mapping]
+'Non_zero_curve_point.Uncompressed.Stable.V1' = 'NonZeroCurvePoint'
+'Mina_base__Token_id.Stable.V2' = 'TokenIdKeyHash'
+'Mina_base__Epoch_seed.Stable.V1' = 'EpochSeed'
+'Data_hash_lib__State_hash.Stable.V1' = 'StateHash'
+'Mina_base__State_body_hash.Stable.V1' = 'StateBodyHash'
+'Mina_base__Ledger_hash0.Stable.V1' = 'LedgerHash'
+'Mina_base__Staged_ledger_hash.Make_str.Aux_hash.Stable.V1' = 'StagedLedgerHashAuxHash'
+'Mina_base__Staged_ledger_hash.Make_str.Pending_coinbase_aux.Stable.V1' = 'StagedLedgerHashPendingCoinbaseAux'
+'Mina_base__Pending_coinbase.Make_str.Hash_versioned.Stable.V1' = 'PendingCoinbaseHash'
+'Mina_base__Pending_coinbase.Make_str.Coinbase_stack.Stable.V1' = 'CoinbaseStackData'
+'Mina_base__Pending_coinbase.Make_str.Stack_hash.Stable.V1' = 'CoinbaseStackHash'
+'Mina_transaction_logic__Zkapp_command_logic.Local_state.Value.Stable.V1.signed_amount' = 'SignedAmount'
+'Mina_base__Fee_excess.Stable.V1.fee' = 'SignedAmount'
+'Mina_base__Signature.Stable.V1' = 'Signature'

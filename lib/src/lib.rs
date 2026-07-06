@@ -191,37 +191,6 @@ pub struct ZkappPublicValues {
     pub action_state_before: [u8; 32],
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct SerializablePlonk {
-    pub alpha: [u64; 2],
-    pub beta: [u64; 2],
-    pub gamma: [u64; 2],
-    pub zeta: [u64; 2],
-    pub zeta_to_srs_length: [u8; 32], // Fp serialisé
-    pub zeta_to_domain_size: [u8; 32],
-    pub perm: [u8; 32],
-    pub lookup: Option<[u64; 2]>,
-    pub feature_flags_range_check0: bool,
-    pub feature_flags_range_check1: bool,
-    pub feature_flags_foreign_field_add: bool,
-    pub feature_flags_foreign_field_mul: bool,
-    pub feature_flags_xor: bool,
-    pub feature_flags_rot: bool,
-    pub feature_flags_lookup: bool,
-    pub feature_flags_runtime_tables: bool,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct SerializableDeferredValues {
-    pub plonk: SerializablePlonk,
-    pub combined_inner_product: [u8; 32], // Fp serialisé
-    pub b: [u8; 32],
-    pub xi: [u64; 2],
-    pub bulletproof_challenges: Vec<[u8; 32]>, // Vec<Fp> serialisé
-    pub branch_data_proofs_verified: u8,       // 0, 1, ou 2
-    pub branch_data_domain_log2: u8,
-}
-
 pub type Bytes32 = [u8; 32];
 pub type Address = [u8; 20];
 pub type ZekoAddress = Bytes32;

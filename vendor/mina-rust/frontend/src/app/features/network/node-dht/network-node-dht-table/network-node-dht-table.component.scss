@@ -1,0 +1,36 @@
+@use 'mina-rust';
+
+.circle {
+  width: 10px;
+  height: 10px !important;
+  border-radius: 12px;
+  background-color: mina-rust.$base-tertiary;
+
+  &.Connected:not(.Not) {
+    background-color: mina-rust.$success-primary;
+  }
+
+  &.Cannot.Connect {
+    background-color: mina-rust.$warn-primary;
+  }
+}
+
+.origin {
+  color: mina-rust.$special-selected-alt-1-primary !important;
+
+  .circle {
+    background-color: mina-rust.$base-surface !important;
+    border: 2px solid mina-rust.$special-selected-alt-1-primary;
+  }
+}
+
+:host ::ng-deep mina-table .row.active {
+  .circle {
+    background-color: mina-rust.$selected-primary !important;
+  }
+
+  .origin .circle {
+    border: 2px solid mina-rust.$selected-primary;
+    background-color: initial !important;
+  }
+}

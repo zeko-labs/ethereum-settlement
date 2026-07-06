@@ -1,0 +1,44 @@
+@use 'mina-rust';
+
+.th-group {
+  display: grid;
+  grid-template-columns: 480px 390px 1fr;
+
+  > span {
+    border-bottom: 1px solid mina-rust.$base-tertiary;
+
+    &:last-child {
+      min-width: 510px;
+    }
+  }
+}
+
+.secondary {
+  text-wrap: nowrap;
+}
+
+.status {
+  padding: 2px 5px;
+  border-radius: 4px;
+
+  &.Synced {
+    background-color: mina-rust.$success-container;
+    color: mina-rust.$success-primary;
+  }
+
+  &.Bootstrap,
+  &.Catchup {
+    background-color: mina-rust.$aware-container;
+    color: mina-rust.$aware-primary;
+  }
+
+  &.Offline {
+    background-color: mina-rust.$warn-container;
+    color: mina-rust.$warn-primary;
+  }
+
+  &.Pending {
+    background-color: mina-rust.$base-container;
+    color: mina-rust.$base-secondary;
+  }
+}

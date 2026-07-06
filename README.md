@@ -80,10 +80,10 @@ The settlement program in `program/settlement` verifies a Zeko/o1 proof inside S
 
 At a high level it:
 
-1. Reads the Zeko verification key, o1 proof, zkApp statement, zkApp command, deferred values, and verifier index.
-2. Rebuilds the verifier index with the embedded SRS.
+1. Reads the Zeko verification key, o1 proof, zkApp statement, and zkApp command.
+2. Builds the verifier index inside SP1 from the verification key and embedded Pallas SRS.
 3. Checks that the zkApp command is bound to the statement being verified.
-4. Runs Kimchi verification for the supplied proof.
+4. Runs the Pickles verification path: Vesta accumulator check, deferred-value recomputation, proof-shape checks, and outer Kimchi verification.
 5. Extracts public values from the first account update:
    - proof validity flag
    - verification-key hash

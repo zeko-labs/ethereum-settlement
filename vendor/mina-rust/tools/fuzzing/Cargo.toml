@@ -1,0 +1,51 @@
+[package]
+name = "transaction_fuzzer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ark-ec = { workspace = true }
+ark-ff = { workspace = true }
+ark-serialize = { workspace = true }
+bitvec = { workspace = true }
+btreemultimap = { workspace = true }
+flate2 = { workspace = true }
+itertools = { workspace = true }
+leb128 = { workspace = true }
+ledger = { workspace = true, features = ["fuzzing"] }
+md5 = { workspace = true }
+mina-core = { workspace = true }
+mina-curves = { workspace = true }
+mina-hasher = { workspace = true }
+mina-p2p-messages = { workspace = true }
+mina-signer = { workspace = true }
+num-bigint = { workspace = true }
+object = { workspace = true }
+once_cell = { workspace = true }
+poseidon = { workspace = true }
+rand = { workspace = true, features = ["small_rng"] }
+ring_buffer = { workspace = true }
+rsprocmaps = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+text-diff = { workspace = true }
+tuple-map = { workspace = true }
+#binprot = "0.1.7"
+binprot = { workspace = true }
+binprot_derive = { workspace = true }
+clap = { workspace = true }
+mina-node = { workspace = true }
+
+[profile.release]
+opt-level = 3
+debug = 2
+debug-assertions = true
+overflow-checks = true
+lto = true
+panic = "abort"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(unstable)'] }
+
+[features]
+nightly = []

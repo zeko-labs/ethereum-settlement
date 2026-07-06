@@ -1,0 +1,113 @@
+@use 'mina-rust';
+
+.mina-icon {
+  font-variation-settings:
+    'FILL' 1,
+    'wght' 300 !important;
+}
+
+.bg-base {
+  transition: 0.3s;
+}
+
+.background-gradient {
+  background: linear-gradient(
+    125deg,
+    mina-rust.$base-background 0%,
+    mina-rust.$base-background 50%,
+    mina-rust.$success-container 60%,
+    mina-rust.$base-surface 85%,
+    mina-rust.$base-surface 100%
+  );
+  background-size: 500%;
+  background-position: 0 50%;
+  transition: background-position 0.7s ease;
+
+  &.complete {
+    background-position: 100% 50%;
+  }
+}
+
+.group {
+  .steps {
+    position: relative;
+    padding-left: 40px;
+    color: mina-rust.$base-tertiary;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: -5px;
+      left: 10px;
+      width: 1px;
+      height: calc(100% + 10px);
+      background-color: mina-rust.$base-divider;
+    }
+
+    .step {
+      position: relative;
+
+      &::before {
+        content: '';
+        position: absolute;
+        top: calc(50% + 0px);
+        left: -29px;
+        width: 20px;
+        height: 1px;
+        background-color: mina-rust.$base-divider;
+      }
+    }
+  }
+
+  &:last-child .steps::before {
+    height: calc(100% - 13px);
+  }
+
+  &.pending {
+    .group-title {
+      color: mina-rust.$base-tertiary;
+    }
+
+    .steps .step {
+      color: mina-rust.$base-tertiary;
+    }
+  }
+
+  &.success {
+    .group-title {
+      color: mina-rust.$success-primary;
+    }
+
+    .steps::before,
+    .steps .step::before {
+      background-color: mina-rust.$base-tertiary;
+    }
+  }
+
+  &.loading {
+    .step {
+      color: mina-rust.$base-secondary;
+    }
+  }
+
+  .pending-icon {
+    width: 20px;
+    height: 20px;
+
+    span {
+      background-color: mina-rust.$base-tertiary;
+      width: 10px;
+      height: 10px;
+      border-radius: 10px;
+    }
+
+    &.success span {
+      background-color: mina-rust.$success-primary;
+    }
+  }
+}
+
+.tooltip-row {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+}

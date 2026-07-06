@@ -1,0 +1,26 @@
+@use 'mina-rust';
+
+.background-gradient {
+  background: linear-gradient(
+    120deg,
+    mina-rust.$base-background 0%,
+    mina-rust.$base-background 20%,
+    mina-rust.$base-background 40%,
+    mina-rust.$success-container 50%,
+    mina-rust.$base-surface 80%,
+    mina-rust.$base-surface 100%
+  );
+  background-size: 500%;
+  background-position: 0 50%;
+  transition: background-position 0.7s ease;
+
+  &.complete {
+    background-position: 80% 50%;
+  }
+}
+
+.mina-icon {
+  font-variation-settings:
+    'FILL' 1,
+    'wght' 300 !important;
+}

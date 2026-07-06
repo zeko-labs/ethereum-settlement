@@ -1,0 +1,230 @@
+@use 'mina-rust';
+
+.wrapper {
+  .chip,
+  .background-wrap {
+    background-color: mina-rust.$base-surface;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border-radius: 6px;
+    }
+  }
+
+  &.Pending {
+    .chip,
+    .background-wrap {
+      div {
+        color: mina-rust.$base-primary;
+      }
+
+      span {
+        color: mina-rust.$base-secondary;
+      }
+
+      &::before {
+        background-color: mina-rust.$base-container;
+      }
+    }
+  }
+
+  &.Offline {
+    .chip,
+    .background-wrap {
+      div {
+        color: mina-rust.$warn-primary;
+      }
+
+      span {
+        color: mina-rust.$warn-secondary;
+
+        &.mina-icon {
+          color: mina-rust.$warn-primary;
+        }
+      }
+
+      &::before {
+        background-color: mina-rust.$warn-container;
+      }
+    }
+  }
+
+  &.Bootstrap,
+  &.Catchup {
+    .chip,
+    .background-wrap {
+      div {
+        color: mina-rust.$aware-primary;
+      }
+
+      span {
+        color: mina-rust.$aware-secondary;
+
+        &.mina-icon {
+          color: mina-rust.$aware-primary;
+        }
+      }
+
+      &::before {
+        background-color: mina-rust.$aware-container;
+      }
+    }
+  }
+
+  &.Synced {
+    .chip,
+    .background-wrap {
+      div {
+        color: mina-rust.$success-primary;
+      }
+
+      span {
+        color: mina-rust.$success-secondary;
+
+        &.mina-icon {
+          color: mina-rust.$success-primary;
+        }
+      }
+
+      &::before {
+        background-color: mina-rust.$success-container;
+      }
+    }
+  }
+
+  .chip {
+    gap: 4px;
+  }
+
+  @media (max-width: 767px) {
+    width: 100%;
+    &.h-sm,
+    .h-sm {
+      height: 32px !important;
+    }
+  }
+}
+
+.node-status {
+  @media (min-width: 768px) {
+    &.can-add-nodes {
+      .chip,
+      .chip::before {
+        border-bottom-right-radius: 0 !important;
+        border-top-right-radius: 0 !important;
+      }
+    }
+
+    .chip {
+      &,
+      &::before {
+        border-top-right-radius: 0 !important;
+        border-bottom-right-radius: 0 !important;
+      }
+    }
+  }
+  @media (max-width: 767px) {
+    font-size: 12px;
+    &,
+    .shine-parent,
+    .chip {
+      width: 100%;
+      margin: 0 !important;
+    }
+    .chip {
+      justify-content: center;
+    }
+  }
+
+  .shine-parent {
+    height: calc(100% + 3px);
+    width: calc(100% - 2px);
+    margin-left: 3px;
+
+    .shining-border {
+      top: -300%;
+      left: -165%;
+      z-index: -1;
+      height: 1100%;
+      width: 405%;
+      transform: rotate(-45deg);
+      background: linear-gradient(
+        to right,
+        transparent 20%,
+        transparent 40%,
+        mina-rust.$base-container 45%,
+        mina-rust.$base-divider 46%,
+        mina-rust.$aware-tertiary 50%,
+        mina-rust.$base-divider 54%,
+        mina-rust.$base-container 55%,
+        transparent 55%,
+        transparent 100%
+      );
+      background-size: 200% auto;
+      animation: shine 5s linear infinite;
+    }
+  }
+
+  .background-wrap {
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+    border-left: 2px solid mina-rust.$base-surface;
+    color: mina-rust.$base-secondary;
+
+    &:not(.switch-forbidden)::before {
+      border-bottom-left-radius: 0;
+      border-top-left-radius: 0;
+    }
+
+    &.hide-stats::before {
+      border-radius: 6px;
+    }
+
+    .strong-text {
+      color: mina-rust.$base-primary;
+      max-width: 125px;
+    }
+
+    .node-switcher {
+      &:not(.border-rad-4) {
+        border-left: 2px solid mina-rust.$base-surface;
+        cursor: pointer;
+        padding-left: 5px !important;
+
+        .mina-icon {
+          width: 16px;
+        }
+
+        &:hover {
+          background-color: mina-rust.$base-container;
+        }
+      }
+    }
+  }
+}
+
+@keyframes shine {
+  to {
+    background-position: 200% center;
+  }
+}
+
+.popup-box-shadow-weak {
+  .Synced {
+    color: mina-rust.$success-primary;
+  }
+
+  .Catchup,
+  .Bootstrap {
+    color: mina-rust.$aware-primary;
+  }
+
+  .Offline {
+    color: mina-rust.$warn-primary;
+  }
+}

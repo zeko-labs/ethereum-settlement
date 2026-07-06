@@ -1,0 +1,24 @@
+[package]
+name = "export_test_vectors"
+description = "Runs the tests vectors for the mina-poseidon crate"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "../README.md"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+ark-ff.workspace = true
+ark-serialize.workspace = true
+clap = { workspace = true, features = ["derive"] }
+hex.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+num-bigint.workspace = true
+o1-utils.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "hash-tool"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bs58 = { workspace = true, features = ["check"] }
+hex = { workspace = true }
+structopt = { workspace = true }

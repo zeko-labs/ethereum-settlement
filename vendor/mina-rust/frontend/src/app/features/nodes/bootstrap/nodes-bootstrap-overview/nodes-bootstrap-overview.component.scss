@@ -1,0 +1,13 @@
+@use 'mina-rust';
+
+.stats span {
+  &:nth-child(even) {
+    color: mina-rust.$base-primary;
+    margin-right: 20px;
+    margin-left: 5px;
+  }
+
+  &:nth-child(odd) {
+    color: mina-rust.$base-tertiary;
+  }
+}

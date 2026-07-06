@@ -1,0 +1,25 @@
+<mina-horizontal-menu
+  [clz]="isMobile ? 'pl-12 pr-12' : ''"
+  [template]="template"
+></mina-horizontal-menu>
+
+<ng-template #template>
+  <div class="submenus fx-row-vert-cent flex-stretch h-100">
+    @for (subMenu of subMenus; track subMenu.route; let i = $index) {
+      <div class="a-wrap fx-row-vert-cent">
+        <a
+          [class.active]="activeSubMenu === subMenu.route"
+          [routerLink]="baseRoute + '/' + subMenu.route"
+          [queryParams]="activeNodeName ? { node: activeNodeName } : null"
+          [class.ml-8]="i > 0"
+          class="text-capitalize f-600 flex-center flex-row flex-grow"
+        >
+          {{ subMenu.name }}
+        </a>
+        @if (i < subMenus.length - 1) {
+          <div class="bar border-right"></div>
+        }
+      </div>
+    }
+  </div>
+</ng-template>

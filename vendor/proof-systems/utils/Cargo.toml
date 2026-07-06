@@ -1,0 +1,42 @@
+[package]
+name = "o1-utils"
+description = "Set of utility extending arkworks"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+version.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
+
+[dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-poly.workspace = true
+ark-serialize.workspace = true
+bcs.workspace = true
+hex.workspace = true
+num-bigint.workspace = true
+num-integer.workspace = true
+rand.workspace = true
+rand_core.workspace = true
+rayon.workspace = true
+rmp-serde.workspace = true
+rustversion.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+ark-ec.workspace = true
+mina-curves.workspace = true
+secp256k1.workspace = true
+
+[features]
+diagnostics = ["tikv-jemalloc-ctl", "tikv-jemallocator"]

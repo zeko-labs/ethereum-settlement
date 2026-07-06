@@ -1,0 +1,252 @@
+---
+title: Environment Configuration
+description: Complete reference for frontend environment configuration files
+sidebar_position: 5
+---
+
+# Environment Configuration
+
+The Mina frontend uses JavaScript configuration files to customize behavior for
+different deployment environments. Each environment file defines specific
+settings, features, and endpoint configurations.
+
+## Configuration File Structure
+
+Environment configuration files are located in
+`frontend/src/assets/environments/` and follow this general structure:
+
+<!-- prettier-ignore-start -->
+
+:::info Complete Type Definitions
+
+For the complete, authoritative set of all configuration parameters, see the
+TypeScript interface definitions at:
+[`frontend/src/app/shared/types/core/environment/mina-env.type.ts`](https://github.com/o1-labs/mina-rust/blob/develop/frontend/src/app/shared/types/core/environment/mina-env.type.ts)
+
+This file contains the `MinaEnv`, `MinaNode`, and `FeaturesConfig` interfaces
+with full JSDoc documentation.
+
+:::
+
+<!-- prettier-ignore-stop -->
+
+## Usage and Integration
+
+<!-- prettier-ignore-start -->
+
+:::note Documentation Maintenance
+
+This section contains code examples copied directly from the source files. If
+you modify any of the following files, please update the corresponding
+documentation:
+
+- `frontend/src/index.html` - Runtime loading logic
+- `frontend/src/app/shared/constants/config.ts` - Angular integration
+- `frontend/src/app/core/services/config.service.ts` - Service integration
+- Environment files in `frontend/src/assets/environments/` - Configuration
+  examples
+
+:::
+
+<!-- prettier-ignore-stop -->
+
+### Loading Process
+
+The environment configuration loading happens in multiple stages:
+
+#### 1. Runtime Loading (index.html)
+
+The environment configuration is loaded dynamically at runtime via JavaScript in
+`frontend/src/index.html`:
+
+```javascript
+async function loadEnvironment() {
+  const possiblePaths = [
+    "/environments/env.js", // Production/CI path
+    "../public/environments/env.js", // Development path
+  ];
+
+  for (const path of possiblePaths) {
+    try {
+      const env = await import(/* @vite-ignore */ path);
+      if (typeof window !== "undefined") {
+        window["env"] = window.env || env.default || env;
+      }
+      return;
+    } catch (error) {
+      continue;
+    }
+  }
+
+  console.error("Failed to load environment configuration");
+}
+```
+
+This script:
+
+- Attempts to load the `env.js` file from multiple possible paths
+- Sets the configuration as `window.env` for global access
+- Handles both production and development paths gracefully
+
+#### 2. Angular Integration (config.ts)
+
+The loaded configuration is integrated into Angular via
+`frontend/src/app/shared/constants/config.ts`:
+
+```typescript
+import { environment } from "@environment/environment";
+
+export const CONFIG: Readonly<MinaEnv> = {
+  ...environment, // Angular build-time environment
+  globalConfig: {
+    ...environment.globalConfig,
+    graphQL: getURL(environment.globalConfig?.graphQL),
+  },
+  configs: !isBrowser()
+    ? []
+    : environment.configs.map(config => ({
+        ...config,
+        url: getURL(config.url),
+        memoryProfiler: getURL(config.memoryProfiler),
+        debugger: getURL(config.debugger),
+      })),
+};
+
+// Make config globally available
+safelyExecuteInBrowser(() => {
+  (window as any).config = CONFIG;
+});
+```
+
+This creates the final merged configuration by:
+
+- Merging Angular build-time environment with runtime JavaScript config
+- Processing and normalizing URLs for different endpoints
+- Making the config available globally as `window.config`
+
+#### 3. Service Integration
+
+The configuration is consumed throughout the application via Angular services:
+
+**ConfigService** (`frontend/src/app/core/services/config.service.ts`):
+
+```typescript
+@Injectable({
+  providedIn: "root",
+})
+export class ConfigService {
+  private node: MinaNode;
+
+  constructor(private store: Store<MinaState>) {
+    this.listenToNodeChanging();
+  }
+
+  get DEBUGGER(): string {
+    return this.node.debugger;
+  }
+}
+```
+
+**Feature Detection Functions**:
+
+```typescript
+export function isFeatureEnabled(
+  config: MinaNode,
+  feature: FeatureType,
+): boolean {
+  return hasValue(getFeaturesConfig(config)[feature]);
+}
+
+export function isSubFeatureEnabled(
+  config: MinaNode,
+  feature: FeatureType,
+  subFeature: string,
+): boolean {
+  const features = getFeaturesConfig(config);
+  return hasValue(features[feature]) && features[feature].includes(subFeature);
+}
+```
+
+### Where Configuration is Used
+
+#### 1. Feature Flags
+
+```typescript
+// Check if a feature is enabled
+if (isFeatureEnabled(config, "block-production")) {
+  // Enable block production features
+}
+
+// Check if a sub-feature is enabled
+if (isSubFeatureEnabled(config, "block-production", "won-slots")) {
+  // Show won slots information
+}
+```
+
+#### 2. Node Connections
+
+```typescript
+// Access configured nodes
+CONFIG.configs.forEach(node => {
+  if (node.isWebNode) {
+    // Handle WebNode configuration
+  } else {
+    // Handle regular node connection to node.url
+  }
+});
+```
+
+#### 3. UI Behavior Control
+
+```typescript
+// Control UI elements based on configuration
+if (CONFIG.canAddNodes) {
+  // Show "Add Node" button
+}
+
+if (CONFIG.hidePeersPill) {
+  // Hide peers status indicator
+}
+```
+
+#### 4. Error Tracking
+
+```typescript
+// Configure Sentry with environment-specific DSN
+if (CONFIG.sentry) {
+  Sentry.init({
+    dsn: CONFIG.sentry.dsn,
+    tracingOrigins: CONFIG.sentry.tracingOrigins,
+  });
+}
+```
+
+### Build-Time vs Runtime Configuration
+
+The system uses a dual-layer configuration approach:
+
+#### Build-Time Configuration (Angular Environments)
+
+- Located in `frontend/src/environments/environment.*.ts`
+- Processed during Angular build process
+- Optimizes bundles and enables/disables features at compile time
+- Used for development tooling and build optimization
+
+#### Runtime Configuration (JavaScript Files)
+
+- Located in `frontend/src/assets/environments/*.js`
+- Loaded dynamically when the application starts
+- Allows the same built application to work in different environments
+- Used for endpoint URLs, feature flags, and service configurations
+
+This dual approach provides:
+
+- **Build optimization** through Angular environments
+- **Deployment flexibility** through runtime JavaScript configuration
+- **Single binary, multiple deployments** capability
+
+### Environment Variables Integration
+
+Environment configurations work alongside build-time Angular environments. The
+JavaScript configuration files provide runtime flexibility, while Angular
+environments control build-time optimizations.

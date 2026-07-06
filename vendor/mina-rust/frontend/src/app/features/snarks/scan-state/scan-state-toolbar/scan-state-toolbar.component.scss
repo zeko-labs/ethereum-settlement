@@ -1,0 +1,92 @@
+@use 'mina-rust';
+
+.pagination-group {
+  background-color: mina-rust.$base-container;
+  color: mina-rust.$base-tertiary;
+
+  button {
+    background-color: transparent;
+    color: mina-rust.$base-tertiary;
+
+    &:hover {
+      background-color: mina-rust.$base-container;
+    }
+  }
+
+  &.selected {
+    background-color: mina-rust.$selected-container;
+    color: mina-rust.$selected-primary;
+
+    button {
+      color: mina-rust.$selected-primary;
+
+      &:hover {
+        background-color: mina-rust.$selected-container;
+      }
+    }
+  }
+}
+
+form {
+  width: 150px;
+  background-color: mina-rust.$base-container;
+  color: mina-rust.$base-tertiary;
+
+  &:hover {
+    background-color: mina-rust.$base-divider;
+  }
+
+  input {
+    outline: none;
+    color: inherit;
+    background-color: unset;
+    padding-left: 35px;
+    padding-right: 25px;
+
+    &::placeholder {
+      font-weight: 400;
+    }
+  }
+
+  .p-absolute:first-child {
+    left: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  .p-absolute:last-child {
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: none;
+  }
+
+  &.active {
+    background-color: mina-rust.$selected-container;
+    color: mina-rust.$selected-primary;
+
+    .p-absolute:last-child {
+      display: block;
+    }
+  }
+}
+
+.condensed {
+  background-color: mina-rust.$base-container;
+
+  .mina-icon {
+    color: mina-rust.$base-tertiary;
+  }
+
+  &:hover:not(.active) .mina-icon {
+    color: mina-rust.$base-primary;
+  }
+
+  &.active {
+    background-color: mina-rust.$selected-container;
+
+    .mina-icon {
+      color: mina-rust.$selected-primary;
+    }
+  }
+}

@@ -836,15 +836,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
-dependencies = [
- "derive_arbitrary",
-]
-
-[[package]]
 name = "arc-swap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -885,7 +876,6 @@ dependencies = [
 [[package]]
 name = "ark-ec"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "ahash",
  "ark-ff 0.5.0",
@@ -945,7 +935,6 @@ dependencies = [
 [[package]]
 name = "ark-ff"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "ark-ff-asm 0.5.0",
  "ark-ff-macros 0.5.0",
@@ -986,7 +975,6 @@ dependencies = [
 [[package]]
 name = "ark-ff-asm"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "quote 1.0.45",
  "syn 2.0.117",
@@ -1020,7 +1008,6 @@ dependencies = [
 [[package]]
 name = "ark-ff-macros"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "num-bigint 0.4.6",
  "num-traits",
@@ -1032,7 +1019,6 @@ dependencies = [
 [[package]]
 name = "ark-poly"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "ahash",
  "ark-ff 0.5.0",
@@ -1068,7 +1054,6 @@ dependencies = [
 [[package]]
 name = "ark-serialize"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "ark-serialize-derive",
  "ark-std 0.5.0",
@@ -1081,7 +1066,6 @@ dependencies = [
 [[package]]
 name = "ark-serialize-derive"
 version = "0.5.0"
-source = "git+https://github.com/zeko-labs/algebra?branch=sp1-msm#693bd5cd39adb2c30e1ca56541da42ed104fe741"
 dependencies = [
  "proc-macro2 1.0.106",
  "quote 1.0.45",
@@ -3531,17 +3515,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_arbitrary"
-version = "1.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
-dependencies = [
- "proc-macro2 1.0.106",
- "quote 1.0.45",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "derive_builder"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4052,20 +4025,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "faster-stun"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc4654a34350a862e0332d314f6a4d27d68142bc947e9afbf03c78023848777"
-dependencies = [
- "bytes",
- "crc",
- "hmac 0.12.1",
- "md-5",
- "num_enum 0.6.1",
- "sha-1",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4161,16 +4120,6 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
-name = "flate2"
-version = "1.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
-dependencies = [
- "miniz_oxide",
- "zlib-rs",
-]
 
 [[package]]
 name = "flume"
@@ -4643,7 +4592,6 @@ dependencies = [
 [[package]]
 name = "groupmap"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -5323,7 +5271,6 @@ dependencies = [
 [[package]]
 name = "internal-tracing"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 
 [[package]]
 name = "ipnet"
@@ -5623,7 +5570,6 @@ dependencies = [
 [[package]]
 name = "kimchi"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -5975,7 +5921,6 @@ dependencies = [
 [[package]]
 name = "mina-core"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "argon2",
  "ark-ff 0.5.0",
@@ -5993,7 +5938,6 @@ dependencies = [
  "libp2p-identity",
  "md5",
  "mina-curves",
- "mina-fuzzer",
  "mina-hasher",
  "mina-macros",
  "mina-p2p-messages",
@@ -6020,7 +5964,6 @@ dependencies = [
 [[package]]
 name = "mina-curves"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -6030,21 +5973,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mina-fuzzer"
-version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
-dependencies = [
- "lazy_static",
- "rand 0.8.6",
- "rand_distr",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "mina-hasher"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ff 0.5.0",
  "bitvec",
@@ -6057,7 +5987,6 @@ dependencies = [
 [[package]]
 name = "mina-macros"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "proc-macro2 1.0.106",
  "quote 1.0.45",
@@ -6067,7 +5996,6 @@ dependencies = [
 [[package]]
 name = "mina-node"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "ark-ff 0.5.0",
@@ -6114,7 +6042,6 @@ dependencies = [
 [[package]]
 name = "mina-node-account"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "bs58 0.4.0",
@@ -6134,7 +6061,6 @@ dependencies = [
 [[package]]
 name = "mina-node-common"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "ark-ff 0.5.0",
@@ -6177,7 +6103,6 @@ dependencies = [
 [[package]]
 name = "mina-node-native"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -6217,14 +6142,11 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
- "utoipa-scalar",
- "utoipa-swagger-ui",
 ]
 
 [[package]]
 name = "mina-p2p"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6241,7 +6163,6 @@ dependencies = [
  "curve25519-dalek",
  "derive_more 0.99.20",
  "ed25519-dalek",
- "faster-stun",
  "getrandom 0.2.17",
  "gloo-timers",
  "gloo-utils",
@@ -6254,7 +6175,6 @@ dependencies = [
  "libp2p-identity",
  "local-ip-address",
  "mina-core",
- "mina-fuzzer",
  "mina-macros",
  "mina-p2p-messages",
  "mio",
@@ -6293,7 +6213,6 @@ dependencies = [
 [[package]]
 name = "mina-p2p-messages"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
@@ -6330,7 +6249,6 @@ dependencies = [
 [[package]]
 name = "mina-poseidon"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -6350,7 +6268,6 @@ dependencies = [
 [[package]]
 name = "mina-signer"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -6371,7 +6288,6 @@ dependencies = [
 [[package]]
 name = "mina-snark"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -6405,7 +6321,6 @@ dependencies = [
 [[package]]
 name = "mina-tree"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "ark-ec",
@@ -6463,7 +6378,6 @@ dependencies = [
 [[package]]
 name = "mina-vrf"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "anyhow",
  "ark-ec",
@@ -6502,7 +6416,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
- "simd-adler32",
 ]
 
 [[package]]
@@ -6878,15 +6791,6 @@ dependencies = [
 
 [[package]]
 name = "num_enum"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a015b430d3c108a207fd776d2e2196aaf8b1cf8cf93253e3a097ff3085076a1"
-dependencies = [
- "num_enum_derive 0.6.1",
-]
-
-[[package]]
-name = "num_enum"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
@@ -6905,18 +6809,6 @@ dependencies = [
  "proc-macro2 1.0.106",
  "quote 1.0.45",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "num_enum_derive"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96667db765a921f7b295ffee8b60472b686a51d4f21c2ee4ffdb94c7013b65a6"
-dependencies = [
- "proc-macro-crate 1.1.3",
- "proc-macro2 1.0.106",
- "quote 1.0.45",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -6962,7 +6854,6 @@ dependencies = [
 [[package]]
 name = "o1-utils"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -7753,7 +7644,6 @@ dependencies = [
 [[package]]
 name = "poly-commitment"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ec",
  "ark-ff 0.5.0",
@@ -7813,7 +7703,6 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "poseidon"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "ark-ff 0.5.0",
  "ark-serialize 0.5.0",
@@ -8317,16 +8206,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_distr"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
-dependencies = [
- "num-traits",
- "rand 0.8.6",
-]
-
-[[package]]
 name = "rand_xorshift"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8440,7 +8319,6 @@ dependencies = [
 [[package]]
 name = "redux"
 version = "0.1.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "enum_dispatch",
  "linkme",
@@ -8843,40 +8721,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48fd7bd8a6377e15ad9d42a8ec25371b94ddc67abe7c8b9127bec79bebaaae18"
 
 [[package]]
-name = "rust-embed"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04113cb9355a377d83f06ef1f0a45b8ab8cd7d8b1288160717d66df5c7988d27"
-dependencies = [
- "rust-embed-impl",
- "rust-embed-utils",
- "walkdir",
-]
-
-[[package]]
-name = "rust-embed-impl"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0902e4c7c8e997159ab384e6d0fc91c221375f6894346ae107f47dd0f3ccaa"
-dependencies = [
- "proc-macro2 1.0.106",
- "quote 1.0.45",
- "rust-embed-utils",
- "syn 2.0.117",
- "walkdir",
-]
-
-[[package]]
-name = "rust-embed-utils"
-version = "8.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bcdef0be6fe7f6fa333b1073c949729274b05f123a0ad7efcb8efd878e5c3b1"
-dependencies = [
- "sha2 0.10.9",
- "walkdir",
-]
-
-[[package]]
 name = "rust-format"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9081,7 +8925,6 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 [[package]]
 name = "salsa-simple"
 version = "0.19.0"
-source = "git+https://github.com/zeko-labs/mina-rust?branch=sp1-msm#e84e2b16b3d35d6b584a77a129c89a5c8b87fbfc"
 dependencies = [
  "generic-array 0.14.7",
  "hex",
@@ -9465,6 +9308,7 @@ name = "settlement-program"
 version = "0.1.0"
 dependencies = [
  "ark-ff 0.5.0",
+ "ark-poly",
  "ark-serialize 0.5.0",
  "bincode",
  "bytemuck",
@@ -9480,17 +9324,6 @@ dependencies = [
  "sp1-lib",
  "sp1-zkvm",
  "zeko_sp1_lib",
-]
-
-[[package]]
-name = "sha-1"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5058ada175748e33390e40e872bd0fe59a19f265d0158daa551c5a88a76009c"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -9609,12 +9442,6 @@ dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
 ]
-
-[[package]]
-name = "simd-adler32"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
 name = "simd_cesu8"
@@ -11814,7 +11641,6 @@ dependencies = [
 [[package]]
 name = "turshi"
 version = "0.3.0"
-source = "git+https://github.com/zeko-labs/proof-systems?branch=sp1-msm#53f6d586e8f1202447ba1fca78a266e3dbf930d2"
 dependencies = [
  "ark-ff 0.5.0",
  "hex",
@@ -12044,36 +11870,6 @@ dependencies = [
  "proc-macro2 1.0.106",
  "quote 1.0.45",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "utoipa-scalar"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59559e1509172f6b26c1cdbc7247c4ddd1ac6560fe94b584f81ee489b141f719"
-dependencies = [
- "axum 0.8.9",
- "serde",
- "serde_json",
- "utoipa",
-]
-
-[[package]]
-name = "utoipa-swagger-ui"
-version = "9.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d047458f1b5b65237c2f6dc6db136945667f40a7668627b3490b9513a3d43a55"
-dependencies = [
- "axum 0.8.9",
- "base64 0.22.1",
- "mime_guess",
- "regex",
- "rust-embed",
- "serde",
- "serde_json",
- "url",
- "utoipa",
- "zip",
 ]
 
 [[package]]
@@ -13303,20 +13099,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zip"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12598812502ed0105f607f941c386f43d441e00148fce9dec3ca5ffb0bde9308"
-dependencies = [
- "arbitrary",
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "zopfli",
-]
-
-[[package]]
 name = "zkapp-script"
 version = "0.1.0"
 dependencies = [
@@ -13377,28 +13159,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "zlib-rs"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3be3d40e40a133f9c916ee3f9f4fa2d9d63435b5fbe1bfc6d9dae0aa0ada1513"
-
-[[package]]
 name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
-
-[[package]]
-name = "zopfli"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05cd8797d63865425ff89b5c4a48804f35ba0ce8d125800027ad6017d2b5249"
-dependencies = [
- "bumpalo",
- "crc32fast",
- "log",
- "simd-adler32",
-]
 
 [[package]]
 name = "zstd"

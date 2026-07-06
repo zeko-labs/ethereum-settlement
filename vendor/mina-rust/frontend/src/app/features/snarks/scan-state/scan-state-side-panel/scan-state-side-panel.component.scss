@@ -1,0 +1,18 @@
+@use 'mina-rust';
+
+.job {
+  min-width: 110px;
+
+  &.error-job {
+    background-color: mina-rust.$warn-container;
+    color: mina-rust.$warn-secondary;
+
+    &:hover {
+      color: mina-rust.$warn-primary;
+    }
+  }
+
+  &:last-child {
+    margin-right: 0 !important;
+  }
+}

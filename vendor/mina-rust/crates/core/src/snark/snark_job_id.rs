@@ -1,0 +1,185 @@
+use std::str::FromStr;
+
+use mina_p2p_messages::{
+    binprot::macros::{BinProtRead, BinProtWrite},
+    v2::{
+        LedgerHash, MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
+        TransactionSnarkWorkTStableV2Proofs,
+    },
+};
+use serde::{ser::SerializeStruct, Deserialize, Serialize};
+
+pub type SnarkJobId = LedgerHashTransition;
+
+#[derive(BinProtWrite, BinProtRead, Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
+pub struct LedgerHashTransition {
+    pub source: LedgerHashTransitionPasses,
+    pub target: LedgerHashTransitionPasses,
+}
+
+#[derive(
+    BinProtWrite, BinProtRead, Serialize, Deserialize, Debug, Ord, PartialOrd, Eq, PartialEq, Clone,
+)]
+pub struct LedgerHashTransitionPasses {
+    pub first_pass_ledger: LedgerHash,
+    pub second_pass_ledger: LedgerHash,
+}
+
+impl std::fmt::Display for LedgerHashTransition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", &self.source, &self.target)
+    }
+}
+
+impl std::str::FromStr for LedgerHashTransition {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (source, target) = s.split_once('-').ok_or(())?;
+        Ok(Self {
+            source: source.parse()?,
+            target: target.parse()?,
+        })
+    }
+}
+
+impl std::fmt::Display for LedgerHashTransitionPasses {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}_{}",
+            &self.first_pass_ledger, &self.second_pass_ledger
+        )
+    }
+}
+
+impl FromStr for LedgerHashTransitionPasses {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (first_pass, second_pass) = s.split_once('_').ok_or(())?;
+        Ok(Self {
+            first_pass_ledger: first_pass.parse().or(Err(()))?,
+            second_pass_ledger: second_pass.parse().or(Err(()))?,
+        })
+    }
+}
+
+impl Serialize for LedgerHashTransition {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if serializer.is_human_readable() {
+            self.to_string().serialize(serializer)
+        } else {
+            let mut s = serializer.serialize_struct("LedgerHashTransition", 2)?;
+            s.serialize_field("source", &self.source)?;
+            s.serialize_field("target", &self.target)?;
+            s.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LedgerHashTransition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        if deserializer.is_human_readable() {
+            let s: String = Deserialize::deserialize(deserializer)?;
+            Self::from_str(&s).map_err(|_| Error::custom("decode from str failed"))
+        } else {
+            #[derive(Deserialize)]
+            struct LedgerHashTransition {
+                pub source: LedgerHashTransitionPasses,
+                pub target: LedgerHashTransitionPasses,
+            }
+            let v: LedgerHashTransition = Deserialize::deserialize(deserializer)?;
+            Ok(Self {
+                source: v.source,
+                target: v.target,
+            })
+        }
+    }
+}
+
+impl From<&TransactionSnarkWorkTStableV2Proofs> for SnarkJobId {
+    fn from(value: &TransactionSnarkWorkTStableV2Proofs) -> Self {
+        let (first, second) = match value {
+            TransactionSnarkWorkTStableV2Proofs::One(j) => (j, j),
+            TransactionSnarkWorkTStableV2Proofs::Two((j1, j2)) => (j1, j2),
+        };
+
+        (&first.0.statement.source, &second.0.statement.target).into()
+    }
+}
+
+impl
+    From<(
+        &MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
+        &MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
+    )> for SnarkJobId
+{
+    fn from(
+        (source, target): (
+            &MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
+            &MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
+        ),
+    ) -> Self {
+        let source = LedgerHashTransitionPasses {
+            first_pass_ledger: source.first_pass_ledger.clone(),
+            second_pass_ledger: source.second_pass_ledger.clone(),
+        };
+        let target = LedgerHashTransitionPasses {
+            first_pass_ledger: target.first_pass_ledger.clone(),
+            second_pass_ledger: target.second_pass_ledger.clone(),
+        };
+
+        LedgerHashTransition { source, target }
+    }
+}
+
+// ===== OpenAPI ToSchema impls =====
+//
+// LedgerHashTransition (aka SnarkJobId) and LedgerHashTransitionPasses serialize to strings
+// in human-readable format. Manual impls to avoid cascading ToSchema requirement on LedgerHash.
+#[cfg(feature = "openapi")]
+const _: () = {
+    use utoipa::{PartialSchema, ToSchema};
+
+    impl PartialSchema for LedgerHashTransitionPasses {
+        fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+            <String as PartialSchema>::schema()
+        }
+    }
+    impl ToSchema for LedgerHashTransitionPasses {
+        fn name() -> std::borrow::Cow<'static, str> {
+            std::borrow::Cow::Borrowed("LedgerHashTransitionPasses")
+        }
+    }
+
+    impl PartialSchema for LedgerHashTransition {
+        fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+            <String as PartialSchema>::schema()
+        }
+    }
+    impl ToSchema for LedgerHashTransition {
+        fn name() -> std::borrow::Cow<'static, str> {
+            std::borrow::Cow::Borrowed("SnarkJobId")
+        }
+    }
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_snark_job_id_to_string_from_string() {
+        let s = "jw9nPCs68UNaKaLZwV6QzdswKWomwQxvTgrpmKWmnFJyswnrn4N_jwhHYWzvJG8esmqtYXbUZy3UGbLSjhKvn1FSxBGL1JDFHqbHMJc-jwiLuRrEqNgASgXEqibGs4VqKwSwiuFEtuPD53v8hiTtVuLfmTr_jwhHYWzvJG8esmqtYXbUZy3UGbLSjhKvn1FSxBGL1JDFHqbHMJc";
+        let decoded = SnarkJobId::from_str(s).unwrap();
+        assert_eq!(decoded.to_string(), s);
+    }
+}

@@ -19,9 +19,10 @@ The target architecture is:
 The current repository has useful PoC pieces:
 
 - `program/settlement` is intended to verify a supplied Zeko/o1 proof inside
-  SP1 and emit public values. It currently builds, parses the fixture inputs,
-  and reaches Kimchi verification, but local SP1 execution does not complete
-  yet. It also does not yet implement the full Pickles verifier path.
+  SP1 and emit public values. It builds the verifier index inside SP1 from the
+  supplied verification key, checks the Pickles accumulator with a Vesta SRS,
+  recomputes deferred values, runs Mina's proof-shape checks, verifies the
+  outer Kimchi proof with a Pallas SRS, and emits settlement public values.
 - `contracts/src/ZekoSettlement.sol` verifies the SP1 proof and checks the
   emitted Zeko verification-key hash.
 - `program/bridge` and `program/withdraw` replay batches into the same
@@ -103,33 +104,25 @@ The reference accumulator check extracts:
 
 and then calls `batch_dlog_accumulator_check` against the Vesta SRS.
 
-This repo does not do that yet. The current SP1 settlement guest:
+Implemented PoC path:
 
-- reads `SerializableDeferredValues` as prover-supplied stdin instead of
-  recomputing deferred values from the proof inside the guest
-- does not call `accumulator_check`
-- does not run the Mina `run_checks` proof-shape/feature-flag/domain checks
-- reconstructs a `SRS<Pallas>` for the Kimchi verifier path, but the reference
-  zkapp accumulator check uses `SRS<Vesta>`
-- therefore should be described as a partial Kimchi-level experiment, not as a
-  valid Pickles verifier
+- the host sends only the verification key, proof, derived zkApp statement, and
+  original zkApp command into SP1
+- the guest derives the verifier index from the verification key and embedded
+  Pallas SRS
+- the guest calls `accumulator_check` with an embedded Vesta SRS
+- the guest recomputes deferred values from the proof and runs Mina's
+  `run_checks`
+- the guest reconstructs the Kimchi public inputs from the recomputed deferred
+  values and verifies the outer Kimchi proof
 
-Required work:
+Remaining hardening work:
 
-- Port the exact Mina Rust `verify_zkapp` flow into the SP1 guest, or call the
-  reference implementation directly once its dependencies are guest-safe.
-- Remove `SerializableDeferredValues` from trusted guest input. The guest may
-  use host-provided bytes as a hint only if it recomputes and compares them
-  against `compute_deferred_values(proof)`.
-- Add a Vesta SRS/URS path for the Pickles accumulator check, separate from the
-  Pallas SRS used by the current Kimchi verifier index.
-- Make `batch_dlog_accumulator_check` SP1-safe: remove Rayon, avoid unsupported
-  arkworks MSM/batch-inversion paths, and replace `OsRng` batch randomness with
-  deterministic transcript-derived batching or a single-proof non-randomized
-  check where applicable.
 - Add negative tests that mutate deferred values, bulletproof challenges,
   `messages_for_next_wrap_proof.challenge_polynomial_commitment`, feature
   flags, and `prev_evals`; all must fail inside the SP1 guest.
+- Replace the current single-proof deterministic accumulator batching with
+  transcript-derived batching before accepting multi-proof settlement batches.
 
 ## Data Availability With Ethereum Blobs
 
@@ -301,16 +294,20 @@ Missing work:
   production role must be deliberately scoped and eventually timelocked or
   governed.
 
-## Stale Code And Artifacts To Remove
+## Stale Code And Artifacts
 
-These have no place in the maintained PoC path:
+Cleanup status:
 
-- Template Fibonacci naming in host scripts.
-- Unused `PoseidonMina.sol` proof wrapper.
-- Unreferenced PLONK/Sui fixture JSON files.
-- Ad hoc root-level `raw.json`, `queryconverted.txt`, and `queryconverter.py`.
-- Template `contracts/README.md`.
-- CI that builds from the wrong directory or floats incompatible toolchains.
+- Template Fibonacci naming in host scripts has been removed.
+- The unused `PoseidonMina.sol` proof wrapper is not present in the maintained
+  path.
+- The ad hoc root-level `raw.json`, `queryconverted.txt`, and
+  `queryconverter.py` artifacts are not present.
+- No unreferenced PLONK/Sui fixture JSON files remain outside vendored
+  dependencies.
+- `contracts/README.md` now describes the actual contracts and should be kept.
+- CI/tooling still needs a full pass so it builds from the right directories
+  with pinned host and SP1 toolchains.
 
 Keep:
 
@@ -352,27 +349,45 @@ SP1:
 
 Current settlement execution status:
 
-- `cargo run --release --bin zkapp -- --execute` currently fails inside the
-  SP1 executor with `Invalid opcode for execute_instruction: UNIMP`.
-- The first repo-local issues found were SRS loading bugs: `include_bytes!`
-  provides byte alignment only, while `rkyv::access_unchecked` needs aligned
-  input; and replacing the deserialized verifier-index placeholder SRS must not
-  drop that placeholder inside the guest. The settlement guest now copies the
-  static SRS into an aligned buffer and installs the real SRS without dropping
-  the placeholder.
-- After those fixes, execution reaches Kimchi verification and then trips over
-  SP1-incompatible dependency code. Diagnostic local patches showed failures in:
-  `PolyComm::multi_scalar_mul` via `ark_ec::VariableBaseMSM::msm_bigint`,
-  `ark_ff::fields::batch_inversion`, and `ark_poly::DensePolynomial::evaluate`.
-  These paths are pulled in with the `parallel` feature and use Rayon-style
-  helpers such as `current_num_threads` / `par_chunks`, or unsupported optimized
-  MSM logic, which is not valid guest code for this SP1 execution path.
-- The next observed failure after serializing those three paths was still inside
-  `kimchi::verifier::oracles`, around `ft_eval0`, so the dependency audit is not
-  complete.
-- `kimchi::batch_verify` also uses `thread_rng()` for IPA batching randomness;
-  that should be replaced with deterministic transcript-derived randomness for a
-  zkVM verifier path.
+- `cargo run --release --bin zkapp -- --execute` now completes successfully,
+  verifies the Pickles proof, emits `proof_valid: true`, and prints
+  `Pickles proof verified successfully`.
+- The latest clean run used `22914842284` cycles and gas
+  `Some(21120324386)`.
+- Static Pallas and Vesta SRS data is embedded as aligned `include_bytes!`
+  payloads. This avoids the previous `rkyv::access_unchecked` alignment bug.
+- The guest now derives the verifier index from the supplied verification key
+  and embedded Pallas SRS. The host no longer supplies deferred values or a
+  serialized verifier index.
+- The guest checks the Pickles Vesta accumulator, recomputes deferred values,
+  runs Mina's proof-shape checks, reconstructs Kimchi public inputs, and verifies
+  the outer Kimchi proof.
+- The invalid-opcode failures found during execution were fixed in the local
+  vendored forks:
+  - serial zkVM paths for batch inversion, dense-polynomial evaluation, and
+    polynomial helper loops
+  - a direct cubic construction for Kimchi's permutation vanishing polynomial,
+    avoiding a generic dense-polynomial multiplication path that emitted `UNIMP`
+  - a SP1-specific Vesta MSM path for the accumulator check, using `sys_bigint`
+    in canonical limb form
+  - deterministic single-proof accumulator batching for the current PoC path
+  - fixed public-value byte encoding with `commit_slice`
+  - an explicit SP1 halt after committing public values, avoiding destructor
+    teardown of large proof-system objects inside the guest
+- Stale diagnostic markers and the obsolete byte-array MSM tests have been
+  removed.
+
+Known limitations:
+
+- The accumulator batching path is intentionally single-proof and deterministic.
+  Multi-proof batching still needs transcript-derived randomness.
+- The SP1 compatibility patches live in local vendored forks. They need to be
+  turned into a real upstreamable `zkvm`/SP1 feature profile.
+- The execution is very expensive and has not been optimized.
+- Negative tests for corrupted Pickles accumulator/deferred/public-input data
+  are still missing.
+- Host parsing still depends on Mina node/native GraphQL types, so the script
+  build pulls more Mina crates than a minimal fixture parser should.
 
 Required upstream/fork work:
 
@@ -381,10 +396,10 @@ Required upstream/fork work:
   verifier paths.
 - Ensure the guest build disables or bypasses arkworks `parallel` feature paths
   for `ark-ec`, `ark-ff`, `ark-poly`, and `ark-std`.
-- Replace or guard MSM, batch inversion, polynomial evaluation, and any later
-  Kimchi verifier helpers reached during settlement proof verification.
-- Re-run `zkapp --execute` after each dependency-level fix until the full
-  Pickles verification completes without `UNIMP`.
+- Keep the local MSM, batch inversion, polynomial evaluation, and Kimchi helper
+  patches auditable and covered by regression tests.
+- Re-run `zkapp --execute` after each dependency-level change to ensure the full
+  Pickles verification still completes without `UNIMP`.
 
 Foundry:
 

@@ -1,0 +1,39 @@
+@use 'mina-rust';
+
+:host .h-md {
+  ::ng-deep mina-copy .mina-icon {
+    opacity: 0;
+  }
+
+  &:hover {
+    background-color: mina-rust.$base-container;
+
+    ::ng-deep mina-copy .mina-icon {
+      opacity: 1;
+    }
+  }
+}
+
+.tab-group {
+  @include mina-rust.flexRowVertCenter();
+
+  .tab {
+    min-width: 90px;
+    max-width: 200px;
+    width: 50%;
+    text-align: center;
+    border-radius: 6px;
+    color: mina-rust.$base-secondary;
+    transition: 0.2s;
+    background-color: transparent;
+
+    &.selected {
+      background-color: mina-rust.$selected-container;
+      color: mina-rust.$selected-primary;
+    }
+
+    &:hover:not(.selected) {
+      background-color: mina-rust.$base-container;
+    }
+  }
+}

@@ -1,0 +1,16 @@
+@use 'mina-rust';
+
+.pagination-group {
+  button {
+    background-color: transparent;
+    color: mina-rust.$selected-primary;
+
+    &:hover {
+      background-color: mina-rust.$selected-container;
+    }
+  }
+
+  .selected-primary {
+    width: 45px;
+  }
+}

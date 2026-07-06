@@ -1,0 +1,107 @@
+@use 'mina-rust';
+
+mat-sidenav {
+  width: 160px;
+  border-right: none;
+  background-color: mina-rust.$base-background;
+  transition: 200ms ease-out !important;
+  visibility: visible !important;
+  display: block !important;
+  transform: translateX(-100%) !important;
+
+  &.collapsed {
+    width: 44px;
+  }
+
+  ::ng-deep .mat-drawer-inner-container {
+    overflow: hidden;
+  }
+
+  &.mobile {
+    width: 75vw;
+    overflow: visible;
+
+    .backdrop {
+      position: absolute;
+      content: '';
+      top: 0;
+      left: 100%;
+      width: 100vw;
+      height: 100vh;
+      background-color: rgba(0, 0, 0, 0.5);
+      visibility: hidden;
+      transition: 200ms ease-out;
+    }
+  }
+
+  &.opened {
+    transform: translateX(0) !important;
+
+    &.mobile .backdrop {
+      visibility: visible;
+    }
+  }
+}
+
+mat-sidenav-content {
+  @media (min-width: 768px) {
+    transition: 200ms ease-out !important;
+  }
+
+  & {
+    overflow: hidden;
+  }
+}
+
+mat-sidenav-container,
+mat-sidenav-content {
+  color: inherit;
+  background-color: mina-rust.$base-background;
+}
+
+#mina-content {
+  $toolbar: 40px;
+  height: calc(100% - #{$toolbar});
+  border-top-left-radius: 6px;
+  background-color: mina-rust.$base-surface;
+
+  &.no-toolbar {
+    height: 100%;
+  }
+
+  &.mobile {
+    $toolbar: 96px;
+    $subMenus: 56px;
+    $tabs: 56px;
+    height: calc(100% - #{$toolbar} - #{$subMenus} - #{$tabs});
+    margin-left: 4px;
+    margin-right: 4px;
+    margin-bottom: 4px;
+    border-top-right-radius: 6px;
+
+    &.uptime {
+      $toolbar: 130px;
+      height: calc(100% - #{$toolbar} - #{$subMenus} - #{$tabs});
+    }
+
+    &.no-submenus {
+      height: calc(100% - #{$toolbar} - #{$tabs});
+
+      &.no-toolbar {
+        height: 100%;
+      }
+
+      &.uptime {
+        height: calc(100% - #{$toolbar} - #{$subMenus});
+      }
+    }
+
+    &.no-toolbar {
+      height: calc(100% - #{$subMenus} - #{$tabs});
+    }
+  }
+}
+
+.mobile-menu {
+  height: 56px;
+}

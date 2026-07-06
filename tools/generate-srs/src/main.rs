@@ -3,15 +3,23 @@
 
 use ark_poly::Radix2EvaluationDomain;
 use ledger::{
-    proofs::{verifiers::make_zkapp_verifier_index, BACKEND_TOCK_ROUNDS_N},
+    proofs::{verifiers::make_zkapp_verifier_index, BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N},
     VerificationKey,
 };
-use mina_curves::pasta::Pallas;
+use mina_curves::pasta::{Pallas, Vesta};
 use mina_p2p_messages::v2::MinaBaseVerificationKeyWireStableV1;
 use poly_commitment::{ipa::SRS, SRS as SRSTrait};
 use zeko_sp1_lib::RkyvSRS;
 
-fn point_to_flat(p: &Pallas) -> [u8; 65] {
+fn pallas_to_flat(p: &Pallas) -> [u8; 65] {
+    let mut out = [0u8; 65];
+    out[..32].copy_from_slice(&bytemuck::bytes_of(&p.x.0 .0));
+    out[32..64].copy_from_slice(&bytemuck::bytes_of(&p.y.0 .0));
+    out[64] = p.infinity as u8;
+    out
+}
+
+fn vesta_to_flat(p: &Vesta) -> [u8; 65] {
     let mut out = [0u8; 65];
     out[..32].copy_from_slice(&bytemuck::bytes_of(&p.x.0 .0));
     out[32..64].copy_from_slice(&bytemuck::bytes_of(&p.y.0 .0));
@@ -20,7 +28,7 @@ fn point_to_flat(p: &Pallas) -> [u8; 65] {
 }
 
 fn main() {
-    println!("Generating rkyv SRS with lagrange bases...");
+    println!("Generating rkyv SRS files...");
 
     // ------------------------------------------------------------------
     // 1. Load VK to get the real domain size
@@ -41,47 +49,84 @@ fn main() {
     );
 
     // ------------------------------------------------------------------
-    // 2. Create SRS and compute lagrange bases
+    // 2. Create Pallas SRS and compute lagrange bases for Kimchi verification
     // ------------------------------------------------------------------
-    let degree = 1 << BACKEND_TOCK_ROUNDS_N;
-    println!("  srs degree:  {}", degree);
+    let pallas_degree = 1 << BACKEND_TOCK_ROUNDS_N;
+    println!("  pallas srs degree: {}", pallas_degree);
 
-    let srs = SRS::<Pallas>::create_parallel(degree);
-    println!("  SRS created ({} points)", srs.g.len());
+    let pallas_srs = SRS::<Pallas>::create_parallel(pallas_degree);
+    println!("  Pallas SRS created ({} points)", pallas_srs.g.len());
 
     let domain = Radix2EvaluationDomain::new(domain_size).unwrap();
-    srs.get_lagrange_basis(domain);
-    println!("  lagrange bases computed");
+    pallas_srs.get_lagrange_basis(domain);
+    println!("  Pallas lagrange bases computed");
 
     // ------------------------------------------------------------------
-    // 3. Convert to rkyv-serializable structs
+    // 3. Create Vesta SRS for the Pickles accumulator check
+    // ------------------------------------------------------------------
+    let vesta_degree = 1 << BACKEND_TICK_ROUNDS_N;
+    println!("  vesta srs degree:  {}", vesta_degree);
+
+    let vesta_srs = SRS::<Vesta>::create_parallel(vesta_degree);
+    println!("  Vesta SRS created ({} points)", vesta_srs.g.len());
+
+    // ------------------------------------------------------------------
+    // 4. Convert to rkyv-serializable structs
     // ------------------------------------------------------------------
     println!("  converting to rkyv format...");
 
-    let bases = srs.get_lagrange_basis_from_domain_size(domain_size);
+    let bases = pallas_srs.get_lagrange_basis_from_domain_size(domain_size);
 
-    let rkyv_srs = RkyvSRS {
-        g_flat: srs.g.iter().map(point_to_flat).collect(),
-        h_flat: point_to_flat(&srs.h),
+    let pallas_rkyv_srs = RkyvSRS {
+        g_flat: pallas_srs.g.iter().map(pallas_to_flat).collect(),
+        h_flat: pallas_to_flat(&pallas_srs.h),
         domain_size,
-        lagrange_flat: bases.iter().map(|c| point_to_flat(&c.chunks[0])).collect(),
+        lagrange_flat: bases.iter().map(|c| pallas_to_flat(&c.chunks[0])).collect(),
     };
 
-    println!("  g points:        {}", rkyv_srs.g_flat.len());
-    println!("  lagrange_bases:  {}", rkyv_srs.lagrange_flat.len());
+    let vesta_rkyv_srs = RkyvSRS {
+        g_flat: vesta_srs.g.iter().map(vesta_to_flat).collect(),
+        h_flat: vesta_to_flat(&vesta_srs.h),
+        domain_size: 0,
+        lagrange_flat: vec![],
+    };
+
+    println!("  pallas g points:       {}", pallas_rkyv_srs.g_flat.len());
+    println!(
+        "  pallas lagrange bases: {}",
+        pallas_rkyv_srs.lagrange_flat.len()
+    );
+    println!("  vesta g points:        {}", vesta_rkyv_srs.g_flat.len());
 
     // ------------------------------------------------------------------
-    // 4. Serialize with rkyv
+    // 5. Serialize with rkyv
     // ------------------------------------------------------------------
-    let rkyv_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&rkyv_srs).expect("rkyv serialize srs");
+    let pallas_rkyv_bytes =
+        rkyv::to_bytes::<rkyv::rancor::Error>(&pallas_rkyv_srs).expect("rkyv serialize pallas srs");
+    let vesta_rkyv_bytes =
+        rkyv::to_bytes::<rkyv::rancor::Error>(&vesta_rkyv_srs).expect("rkyv serialize vesta srs");
 
     // ------------------------------------------------------------------
-    // 5. Write single file to program/src/
+    // 6. Write files to settlement program
     // ------------------------------------------------------------------
     std::fs::create_dir_all("program/settlement/src").expect("create program/settlement/src");
-    std::fs::write("program/src/srs_rkyv.bin", &rkyv_bytes).expect("write srs_rkyv.bin");
+    std::fs::write(
+        "program/settlement/src/srs_pallas_kimchi_rkyv.bin",
+        &pallas_rkyv_bytes,
+    )
+    .expect("write pallas srs");
+    std::fs::write(
+        "program/settlement/src/srs_vesta_accumulator_rkyv.bin",
+        &vesta_rkyv_bytes,
+    )
+    .expect("write vesta srs");
 
-    println!("✓ srs_rkyv.bin: {} bytes", rkyv_bytes.len());
-    println!("Done — commit program/settlement/src/srs_rkyv.bin to the repo.");
-    println!("You can now delete: srs_pallas.bin, lagrange_bases.bin, domain_size.bin");
+    println!(
+        "✓ srs_pallas_kimchi_rkyv.bin: {} bytes",
+        pallas_rkyv_bytes.len()
+    );
+    println!(
+        "✓ srs_vesta_accumulator_rkyv.bin: {} bytes",
+        vesta_rkyv_bytes.len()
+    );
 }
