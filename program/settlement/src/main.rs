@@ -36,7 +36,16 @@ type SpongeParams = mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 type EFqSponge = DefaultFqSponge<PallasParameters, SpongeParams, FULL_ROUNDS>;
 type EFrSponge = DefaultFrSponge<Fq, SpongeParams, FULL_ROUNDS>;
 
-static SRS_RKYV: &[u8] = include_bytes!("srs_rkyv.bin");
+#[repr(align(16))]
+struct AlignedBytes<const N: usize>([u8; N]);
+
+static SRS_RKYV: AlignedBytes<{ include_bytes!("srs_rkyv.bin").len() }> =
+    AlignedBytes(*include_bytes!("srs_rkyv.bin"));
+
+const _: () = {
+    assert!(core::mem::align_of::<ArchivedRkyvSRS>() <= 16);
+    assert!(include_bytes!("srs_rkyv.bin").len() % core::mem::align_of::<ArchivedRkyvSRS>() == 0);
+};
 
 // ---------- Helpers ----------
 
@@ -193,7 +202,7 @@ fn main() {
     // ------------------------------------------------------------------
     println!("cycle-tracker-start: load_static_srs");
 
-    let archived = unsafe { rkyv::access_unchecked::<ArchivedRkyvSRS>(SRS_RKYV) };
+    let archived = unsafe { rkyv::access_unchecked::<ArchivedRkyvSRS>(&SRS_RKYV.0) };
 
     let g: Vec<Pallas> = archived.g_flat.iter().map(|p| flat_to_pallas(p)).collect();
 
@@ -208,16 +217,23 @@ fn main() {
         .collect();
 
     let domain_size = archived.domain_size.to_native();
+
     let mut map = HashMap::new();
     map.insert(domain_size.try_into().unwrap(), lagrange_bases);
+
+    let lagrange_bases = HashMapCache::new_from_hashmap(map);
 
     let srs = SRS::<Pallas> {
         g,
         h,
-        lagrange_bases: HashMapCache::new_from_hashmap(map),
+        lagrange_bases,
     };
+    let srs = Arc::new(srs);
 
-    verifier_index.srs = Arc::new(srs);
+    // The serialized verifier index carries a placeholder SRS. Avoid dropping
+    // it inside the guest when installing the real static SRS.
+    let old_srs = core::mem::replace(&mut verifier_index.srs, srs);
+    core::mem::forget(old_srs);
 
     println!("cycle-tracker-end: load_static_srs");
 

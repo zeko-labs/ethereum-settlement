@@ -18,8 +18,10 @@ The target architecture is:
 
 The current repository has useful PoC pieces:
 
-- `program/settlement` can verify a supplied Zeko/o1 proof inside SP1 and emits
-  public values.
+- `program/settlement` is intended to verify a supplied Zeko/o1 proof inside
+  SP1 and emit public values. It currently builds, parses the fixture inputs,
+  and reaches Kimchi verification, but local SP1 execution does not complete
+  yet. It also does not yet implement the full Pickles verifier path.
 - `contracts/src/ZekoSettlement.sol` verifies the SP1 proof and checks the
   emitted Zeko verification-key hash.
 - `program/bridge` and `program/withdraw` replay batches into the same
@@ -40,14 +42,14 @@ The L1 binding to the OCaml state transition should be by verification-key hash
 and proof verification:
 
 - The expected Zeko verification-key hash is stored in L1 state.
-- The SP1 settlement guest verifies the Mina/Pickles proof.
+- The SP1 settlement guest must verify the Mina/Pickles proof.
 - The SP1 public output includes the Zeko verification-key hash.
 - `ZekoSettlement` compares that hash to the expected L1 value.
 
 There is no need to separately bind the account update in Solidity. The account
-update is already public input to the Pickles proof; once SP1 verifies the proof
-against the expected Zeko verification key, the account update binding belongs
-inside the proof system, not in hand-written Solidity parsing.
+update is already public input to the Pickles proof; once SP1 correctly verifies
+the proof against the expected Zeko verification key, the account update binding
+belongs inside the proof system, not in hand-written Solidity parsing.
 
 ### Missing production work
 
@@ -70,6 +72,64 @@ inside the proof system, not in hand-written Solidity parsing.
 It is acceptable that this is not fully implemented yet, because the original
 scope appears to have been a PoC. It must be implemented before this can be
 treated as a real settlement bridge.
+
+## Pickles Verification Gap
+
+The settlement guest currently calls `kimchi::verifier::verify` directly after
+manually constructing Pickles-style public inputs. That is not a complete
+verification of a Mina/Pickles proof.
+
+Pickles is a recursive layer on top of Kimchi. The Pickles protocol needs the
+outer Kimchi proof verification plus the recursive/deferred computation checks
+and the accumulator check. The accumulator is the `sg` / challenge-polynomial
+commitment carried through the IPA opening proof and Pickles proof state.
+
+The Mina Rust reference path for zkapp proofs is:
+
+- `verify_zkapp(...)`
+- `accumulator_check::accumulator_check(srs, &[sideloaded_proof])`
+- `verify_impl(...)`
+- `compute_deferred_values(proof)`
+- `run_checks(proof, vk.index)`
+- construct the prepared statement/public inputs
+- call Kimchi verification
+- accept only `accumulator_check && verified`
+
+The reference accumulator check extracts:
+
+- `proof.statement.proof_state.messages_for_next_wrap_proof
+  .challenge_polynomial_commitment`
+- `proof.statement.proof_state.deferred_values.bulletproof_challenges`
+
+and then calls `batch_dlog_accumulator_check` against the Vesta SRS.
+
+This repo does not do that yet. The current SP1 settlement guest:
+
+- reads `SerializableDeferredValues` as prover-supplied stdin instead of
+  recomputing deferred values from the proof inside the guest
+- does not call `accumulator_check`
+- does not run the Mina `run_checks` proof-shape/feature-flag/domain checks
+- reconstructs a `SRS<Pallas>` for the Kimchi verifier path, but the reference
+  zkapp accumulator check uses `SRS<Vesta>`
+- therefore should be described as a partial Kimchi-level experiment, not as a
+  valid Pickles verifier
+
+Required work:
+
+- Port the exact Mina Rust `verify_zkapp` flow into the SP1 guest, or call the
+  reference implementation directly once its dependencies are guest-safe.
+- Remove `SerializableDeferredValues` from trusted guest input. The guest may
+  use host-provided bytes as a hint only if it recomputes and compares them
+  against `compute_deferred_values(proof)`.
+- Add a Vesta SRS/URS path for the Pickles accumulator check, separate from the
+  Pallas SRS used by the current Kimchi verifier index.
+- Make `batch_dlog_accumulator_check` SP1-safe: remove Rayon, avoid unsupported
+  arkworks MSM/batch-inversion paths, and replace `OsRng` batch randomness with
+  deterministic transcript-derived batching or a single-proof non-randomized
+  check where applicable.
+- Add negative tests that mutate deferred values, bulletproof challenges,
+  `messages_for_next_wrap_proof.challenge_polynomial_commitment`, feature
+  flags, and `prev_evals`; all must fail inside the SP1 guest.
 
 ## Data Availability With Ethereum Blobs
 
@@ -283,8 +343,48 @@ SP1:
   Mina/proof-system dependencies.
 - `zeko_sp1_lib` includes zkVM-only `__atomic_*` shims for the single-threaded
   guest environment.
+- `no_std` is not the current blocker. The blocker is guest safety of the
+  dependency graph: proof-system code compiled for the SP1 guest must not reach
+  Rayon/threading paths, unsupported optimized arkworks helpers, nondeterminism,
+  or host-only assumptions.
 - Do not mix old SP1 `succinct` toolchains with `sp1-zkvm 6.1.0`; the old
   local `rustc 1.85.0-dev` toolchain is incompatible.
+
+Current settlement execution status:
+
+- `cargo run --release --bin zkapp -- --execute` currently fails inside the
+  SP1 executor with `Invalid opcode for execute_instruction: UNIMP`.
+- The first repo-local issues found were SRS loading bugs: `include_bytes!`
+  provides byte alignment only, while `rkyv::access_unchecked` needs aligned
+  input; and replacing the deserialized verifier-index placeholder SRS must not
+  drop that placeholder inside the guest. The settlement guest now copies the
+  static SRS into an aligned buffer and installs the real SRS without dropping
+  the placeholder.
+- After those fixes, execution reaches Kimchi verification and then trips over
+  SP1-incompatible dependency code. Diagnostic local patches showed failures in:
+  `PolyComm::multi_scalar_mul` via `ark_ec::VariableBaseMSM::msm_bigint`,
+  `ark_ff::fields::batch_inversion`, and `ark_poly::DensePolynomial::evaluate`.
+  These paths are pulled in with the `parallel` feature and use Rayon-style
+  helpers such as `current_num_threads` / `par_chunks`, or unsupported optimized
+  MSM logic, which is not valid guest code for this SP1 execution path.
+- The next observed failure after serializing those three paths was still inside
+  `kimchi::verifier::oracles`, around `ft_eval0`, so the dependency audit is not
+  complete.
+- `kimchi::batch_verify` also uses `thread_rng()` for IPA batching randomness;
+  that should be replaced with deterministic transcript-derived randomness for a
+  zkVM verifier path.
+
+Required upstream/fork work:
+
+- Add a real SP1/zkVM feature profile to the `proof-systems` and `algebra`
+  forks, or add `#[cfg(target_os = "zkvm")]` serial alternatives in the exact
+  verifier paths.
+- Ensure the guest build disables or bypasses arkworks `parallel` feature paths
+  for `ark-ec`, `ark-ff`, `ark-poly`, and `ark-std`.
+- Replace or guard MSM, batch inversion, polynomial evaluation, and any later
+  Kimchi verifier helpers reached during settlement proof verification.
+- Re-run `zkapp --execute` after each dependency-level fix until the full
+  Pickles verification completes without `UNIMP`.
 
 Foundry:
 
@@ -312,8 +412,9 @@ cargo prove build --docker --tag v6.1.0 --locked \
   -p settlement-program -p bridge-program -p withdraw-program
 ```
 
-Settlement execution/proving should be rechecked after the public-values schema
-is finalized and after the fixtures are regenerated from OCaml output.
+Settlement execution/proving should be rechecked after the guest dependency
+graph is SP1-safe, after the public-values schema is finalized, and after the
+fixtures are regenerated from OCaml output.
 
 ## Recommended Implementation Order
 
