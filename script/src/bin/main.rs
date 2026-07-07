@@ -90,7 +90,7 @@ fn main() {
     eprintln!("✓ zkapp_command: {} bytes", zkapp_cmd_bytes.len());
 
     // ------------------------------------------------------------------
-    // 2. Derive ZkappStatement — reste sur le host (pas de crypto)
+    // 2. Derive ZkappStatement - todo move it to guest to be more secure
     // ------------------------------------------------------------------
     let cmd_verifiable = create(&cmd, false, |_, _| Ok(VerificationKeyWire::new(vk.clone())))
         .expect("verifiable::create");
@@ -106,7 +106,7 @@ fn main() {
     eprintln!("✓ zkapp_stmt derived");
 
     // ------------------------------------------------------------------
-    // 3. Serialize zkapp_stmt — passé au guest pour validation crypto
+    // 3. Serialize zkapp_stmt - todo move it to guest
     // ------------------------------------------------------------------
     let zkapp_stmt_bytes = bincode::serialize(&zkapp_stmt).expect("serialize zkapp_stmt");
     eprintln!("✓ zkapp_stmt: {} bytes", zkapp_stmt_bytes.len());
