@@ -19,8 +19,8 @@ tikv-jemallocator = { workspace = true, optional = true }
 
 [dependencies]
 ark-bn254 = { workspace = true, optional = true }
-ark-ec= { workspace = true, features = [] }
-ark-ff= { workspace = true, features = [] }
+ark-ec.workspace = true
+ark-ff.workspace = true
 ark-poly.workspace = true
 ark-serialize.workspace = true
 blake2.workspace = true
@@ -47,16 +47,12 @@ wasm-bindgen = { workspace = true, optional = true }
 
 internal-tracing.workspace = true
 
-bincode      = "1.3.3"
-rkyv            = { version = "0.8", features = ["alloc"] }
-
 # Internal dependencies
 groupmap.workspace = true
 mina-curves.workspace = true
 mina-poseidon.workspace = true
 o1-utils.workspace = true
 poly-commitment.workspace = true
-turshi.workspace = true
 
 
 [dev-dependencies]
@@ -96,7 +92,6 @@ ocaml_types = [
   "mina-poseidon/ocaml_types",
   "internal-tracing/ocaml_types",
 ]
-debug-log = ["mina-poseidon/debug-log"]
 bn254 = ["ark-bn254"]
 wasm_types = ["wasm-bindgen"]
 check_feature_flags = []

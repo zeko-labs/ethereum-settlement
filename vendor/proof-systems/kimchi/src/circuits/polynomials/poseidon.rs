@@ -1,7 +1,7 @@
 //! This module implements the Poseidon constraint polynomials.
 
 //~ The poseidon gate encodes 5 rounds of the poseidon permutation.
-//~ A state is represents by 3 field elements. For example,
+//~ A state is represented by 3 field elements. For example,
 //~ the first state is represented by `(s0, s0, s0)`,
 //~ and the next state, after permutation, is represented by `(s1, s1, s1)`.
 //~
@@ -231,7 +231,7 @@ impl<F: PrimeField> CircuitGate<F> {
 ///
 /// Will panic if the `circuit` has `INITIAL_ARK`.
 #[allow(clippy::assertions_on_constants)]
-pub fn generate_witness<const FULL_ROUNDS: usize, F: PrimeField>(
+pub fn generate_witness<const FULL_ROUNDS: usize, F: Field>(
     row: usize,
     params: &'static ArithmeticSpongeParams<F, FULL_ROUNDS>,
     witness_cols: &mut [Vec<F>; COLUMNS],

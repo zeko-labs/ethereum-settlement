@@ -48,11 +48,12 @@ other branches create preview deployments.
 
 | Path | Purpose |
 | --- | --- |
-| `program/settlement` | SP1 guest program that verifies a Zeko/o1 proof and extracts canonical settlement public values. |
+| `program/settlement` | SP1 guest program that verifies a Pickles proof using the o1 `pickles-verifier` path and emits settlement public values. |
 | `program/bridge` | SP1 guest program that verifies bridge deposits and computes Ethereum/Zeko deposit accumulator transitions. |
 | `program/withdraw` | SP1 guest program that verifies bridge withdrawals and computes Ethereum/Zeko withdrawal-state transitions. |
 | `lib` | Shared Rust input/output types used by guests and host scripts. |
 | `script` | Host-side proof generation and execution binaries. |
+| `crates/pickles-verifier` | o1 reference Pickles verifier adapted for this workspace. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side bridge contract that records deposits and accepts withdraw states. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
@@ -76,30 +77,43 @@ The initializer grants all four roles to the initial admin. Proof submission is 
 
 ## Settlement Circuit
 
-The settlement program in `program/settlement` verifies a Zeko/o1 proof inside SP1.
+The settlement program in `program/settlement` verifies a Mina/Pickles proof
+inside SP1 using the o1 `o1js-to-zkvm` verifier design.
 
 At a high level it:
 
-1. Reads the Zeko verification key, o1 proof, zkApp statement, and zkApp command.
-2. Builds the verifier index inside SP1 from the verification key and embedded Pallas SRS.
-3. Checks that the zkApp command is bound to the statement being verified.
-4. Runs the Pickles verification path: Vesta accumulator check, deferred-value recomputation, proof-shape checks, and outer Kimchi verification.
-5. Extracts public values from the first account update:
-   - proof validity flag
-   - verification-key hash
-   - zkApp state before
-   - zkApp state after
-   - action state before
-6. Commits those public values as SP1 public output.
+1. Builds a verifier blob at compile time from
+   `proofs/mainnet-blockchain-snark/vk.serde.json` or `SETTLEMENT_VK_JSON`.
+2. Host code reads an o1 fixture directory containing:
+   - `vk.serde.json`
+   - `proof.serde.json`
+   - `public_input_skeleton.json`
+   - `app_statement.json`
+3. Host code converts those OCaml/o1 files into a `VerifiableProof`.
+4. The SP1 guest verifies:
+   - Pickles accumulator / challenge polynomial commitment
+   - deferred value reconstruction
+   - wrap public input reconstruction
+   - outer Kimchi proof
+5. The guest commits SP1 public values using the existing Solidity PoC layout.
 
-On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the public output matches the verifier contract's tracked state:
+The current settlement public output is still PoC-shaped: it contains
+`proof_valid`, a SHA-256 hash of the fixture VK JSON, and zeroed state/action
+fields. The production binding should use the canonical OCaml/Mina
+verification-key hash, and real Zeko outer-state extraction plus Ethereum state
+tracking still need to be wired to the OCaml state-transition public inputs.
+
+On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the
+public output matches the verifier contract's tracked state:
 
 - `vkHash` must match the expected Zeko verification key hash.
 - `actionStateBefore` must match the verifier's stored action state.
 - `stateBefore[3]` must match the verifier's current root.
 - `stateAfter[3]` becomes the new root.
 
-This contract currently updates the settlement root. It stores action state as a guard input but does not derive a new action state from the settlement proof output.
+This contract currently updates the settlement root. It stores action state as
+a guard input but does not derive a new action state from the settlement proof
+output.
 
 ## Bridge Circuit
 
@@ -210,10 +224,10 @@ The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatch
 
 ## Testing
 
-Run the settlement unit tests (BE endianness of field encoding, state slot extraction):
+Run the native o1 Pickles verifier tests over the copied fixture matrix:
 
 ```sh
-cargo test --manifest-path program/settlement/Cargo.toml
+cargo test -p pickles-verifier
 ```
 
 Run the bridge unit tests (includes real on-chain data replay against testnet state):
@@ -237,11 +251,9 @@ cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
 cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
 ```
 
-The real-data tests replay on-chain state transitions from:
+The real-data bridge tests replay on-chain state transitions from:
 - L2 inner actions (withdrawals): `https://testnet.zeko.io/graphql` — contract `B62qjDedeP9617oTUeN8JGhdiqWg4t64NtQkHaoZB9wyvgSjAyupPU1`
 - L1 outer witness actions (deposits): `https://testnet.api.actions.zeko.io/graphql` — contract `B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2`
-
-See [`proofs/queries.md`](proofs/queries.md) for the exact GraphQL queries and the full state-transition tables.
 
 ## Running Circuits Without Proving
 
@@ -249,6 +261,12 @@ Execute the settlement program without proving:
 
 ```sh
 cargo run --release --bin zkapp -- --execute
+```
+
+Use a different o1 fixture directory:
+
+```sh
+cargo run --release --bin zkapp -- --execute --fixture-dir fixtures/nrr
 ```
 
 Execute the bridge program without proving:
@@ -314,6 +332,12 @@ Generate a PLONK proof:
 
 ```sh
 cargo run --release --bin evm -- --system plonk
+```
+
+Use a different settlement fixture:
+
+```sh
+cargo run --release --bin evm -- --system groth16 --fixture-dir fixtures/nrr
 ```
 
 Retrieve the settlement program verification key:

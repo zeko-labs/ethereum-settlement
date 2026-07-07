@@ -1,0 +1,46 @@
+[package]
+name = "pickles-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+# `std` gates the OCaml-serialized fixture wire types + parsing + the
+# host-side conversion (serde_json, hex, blake2s dummy-challenge derivation).
+# The core verifier types + `verify` are `no_std` + `alloc` (SP1-guest-ready);
+# the guest builds with `--no-default-features`.
+std = [
+  "dep:serde_json",
+  "dep:hex",
+  "ark-ff/std",
+]
+
+[dependencies]
+kimchi = { workspace = true }
+poly-commitment = { workspace = true }
+mina-curves = { workspace = true }
+mina-poseidon = { workspace = true }
+groupmap = { workspace = true }
+serde = { workspace = true }
+ark-ff = { workspace = true }
+ark-ec = { workspace = true }
+ark-poly = { version = "0.5", default-features = false }
+ark-serialize = { workspace = true }
+# Deterministic Fiat-Shamir batching RNG for the dlog check (all no_std):
+# blake2s(proof ‖ public_input) -> ChaCha20Rng seed. postcard serializes the
+# (serde-only) ProverProof to bytes for the hash.
+rand_core = { version = "0.6", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+# Pod casts for the SP1-guest verifier blob (`serialize` module).
+bytemuck = { version = "1", default-features = false, features = ["derive"] }
+# serde_with + o1_utils::serialization::SerdeAs to drive `#[serde_as]` on the
+# bare-`Fp`/`Fq` fields of `VerifiableProof` etc., so `sp1_zkvm::io::read::<VerifiableProof>()`
+# works in the guest (arkworks `Fp`/`Fq` don't impl native serde Serialize).
+serde_with = { version = "3", default-features = false, features = ["alloc", "macros"] }
+o1-utils = { workspace = true }
+
+# std-only (fixture wire/parsing + host-side conversion)
+serde_json = { version = "1", optional = true }
+hex = { version = "0.4", optional = true }

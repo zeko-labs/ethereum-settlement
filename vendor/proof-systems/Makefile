@@ -36,9 +36,9 @@ MIPS_LD ?= mips-linux-gnu-ld
 # .github/workflows/wasm.yml) should be changed accordingly.
 # Can be overridden via environment variable, e.g.:
 #   NIGHTLY_RUST_VERSION=nightly make build-web
-NIGHTLY_RUST_VERSION ?= nightly-2024-09-05
-PLONK_WASM_NODEJS_OUTDIR ?= target/nodejs
-PLONK_WASM_WEB_OUTDIR ?= target/web
+NIGHTLY_RUST_VERSION ?= nightly-2025-12-11
+KIMCHI_WASM_NODEJS_OUTDIR ?= target/nodejs
+KIMCHI_WASM_WEB_OUTDIR ?= target/web
 
 # Feature flags for building with all features except no-std.
 # The no-std feature conflicts with std-dependent code.
@@ -57,8 +57,12 @@ WORKSPACE_FEATURES = \
 	mina-curves/asm,\
 	mina-poseidon/ocaml_types,\
 	o1-utils/diagnostics,\
-	o1vm/open_mips,\
 	poly-commitment/ocaml_types
+
+# Additional feature flags for o1vm builds
+O1VM_FEATURES = \
+	$(WORKSPACE_FEATURES),\
+	o1vm/open_mips
 
 # Default target
 .PHONY: all
@@ -118,31 +122,48 @@ clean: ## Clean the project
 		@rm -rf $(O1VM_MIPS_BIN_DIR)
 
 .PHONY: build
-build: ## Build the project
+build: ## Build the project (without o1vm)
 		cargo build \
 			--all-targets \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
+			--workspace
+
+.PHONY: build-all
+build-all: ## Build the project including o1vm
+		cargo build \
+			--all-targets \
+			--features "$(O1VM_FEATURES)" \
+			--exclude kimchi_wasm \
 			--workspace
 
 .PHONY: release
-release: ## Build the project in release mode
+release: ## Build the project in release mode (without o1vm)
 		cargo build \
 			--all-targets \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
+			--release \
+			--workspace
+
+.PHONY: release-all
+release-all: ## Build in release mode including o1vm
+		cargo build \
+			--all-targets \
+			--features "$(O1VM_FEATURES)" \
+			--exclude kimchi_wasm \
 			--release \
 			--workspace
 
 .PHONY: test-doc
-test-doc: ## Test the project's docs comments
+test-doc: ## Test the project's docs comments (without o1vm)
 		cargo test \
 			--features "$(WORKSPACE_FEATURES)" \
 			--doc \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release \
 			--workspace
 
@@ -151,11 +172,11 @@ test-doc-with-coverage:
 		$(COVERAGE_ENV) $(MAKE) test-doc
 
 .PHONY: test
-test: ## Test the project with non-heavy tests and using native cargo test runner
+test: ## Test the project with non-heavy tests (without o1vm)
 		cargo test \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			-- --nocapture \
 			--skip heavy $(BIN_EXTRA_ARGS)
@@ -165,11 +186,11 @@ test-with-coverage:
 		$(COVERAGE_ENV) CARGO_EXTRA_ARGS="$(CARGO_EXTRA_ARGS)" BIN_EXTRA_ARGS="$(BIN_EXTRA_ARGS)" $(MAKE) test
 
 .PHONY: test-heavy
-test-heavy: ## Test the project with heavy tests and using native cargo test runner
+test-heavy: ## Test the project with heavy tests (without o1vm)
 		cargo test \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			-- --nocapture heavy $(BIN_EXTRA_ARGS)
 
@@ -178,11 +199,11 @@ test-heavy-with-coverage:
 		$(COVERAGE_ENV) CARGO_EXTRA_ARGS="$(CARGO_EXTRA_ARGS)" BIN_EXTRA_ARGS="$(BIN_EXTRA_ARGS)" $(MAKE) test-heavy
 
 .PHONY: test-all
-test-all: ## Test the project with all tests and using native cargo test runner
+test-all: ## Test the project with all tests (without o1vm)
 		cargo test \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			-- --nocapture $(BIN_EXTRA_ARGS)
 
@@ -191,12 +212,12 @@ test-all-with-coverage:
 		$(COVERAGE_ENV) CARGO_EXTRA_ARGS="$(CARGO_EXTRA_ARGS)" BIN_EXTRA_ARGS="$(BIN_EXTRA_ARGS)" $(MAKE) test-all
 
 .PHONY: nextest
-nextest: ## Test the project with non-heavy tests and using nextest test runner
+nextest: ## Test with non-heavy tests using nextest (without o1vm)
 		cargo nextest run \
 			--all \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			--profile ci \
 			-E "not test(heavy)" $(BIN_EXTRA_ARGS)
@@ -206,11 +227,11 @@ nextest-with-coverage:
 		$(COVERAGE_ENV) CARGO_EXTRA_ARGS="$(CARGO_EXTRA_ARGS)" BIN_EXTRA_ARGS="$(BIN_EXTRA_ARGS)" $(MAKE) nextest
 
 .PHONY: nextest-heavy
-nextest-heavy: ## Test the project with heavy tests and using nextest test runner
+nextest-heavy: ## Test with heavy tests using nextest (without o1vm)
 		cargo nextest run \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			--profile ci \
 			-E "test(heavy)" $(BIN_EXTRA_ARGS)
@@ -220,11 +241,12 @@ nextest-heavy-with-coverage:
 		$(COVERAGE_ENV) CARGO_EXTRA_ARGS="$(CARGO_EXTRA_ARGS)" BIN_EXTRA_ARGS="$(BIN_EXTRA_ARGS)" $(MAKE) nextest-heavy
 
 .PHONY: nextest-all
-nextest-all: ## Test the project with all tests and using nextest test runner
+nextest-all: ## Test with all tests using nextest (without o1vm)
 		cargo nextest run \
+			--workspace \
 			--features "$(WORKSPACE_FEATURES)" \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--release $(CARGO_EXTRA_ARGS) \
 			--profile ci $(BIN_EXTRA_ARGS)
 
@@ -242,10 +264,30 @@ format: ## Format the code
 		cargo +nightly fmt
 		taplo fmt
 
+.PHONY: check-format-md
+check-format-md: ## Check markdown formatting
+		npx prettier --check '**/*.md'
+
+.PHONY: format-md
+format-md: ## Format markdown files
+		npx prettier --write '**/*.md'
+
 .PHONY: lint
-lint: ## Lint the code
-		cargo clippy --all --features "$(WORKSPACE_FEATURES)" --all-targets --tests \
-			$(CARGO_EXTRA_ARGS) -- -W clippy::all -D warnings
+lint: ## Lint the code (without o1vm)
+		cargo clippy --all \
+			--features "$(WORKSPACE_FEATURES)" \
+			--all-targets --tests \
+			--exclude o1vm \
+			$(CARGO_EXTRA_ARGS) \
+			-- -W clippy::all -D warnings
+
+.PHONY: lint-all
+lint-all: ## Lint the code including o1vm
+		cargo clippy --all \
+			--features "$(O1VM_FEATURES)" \
+			--all-targets --tests \
+			$(CARGO_EXTRA_ARGS) \
+			-- -W clippy::all -D warnings
 
 .PHONY: generate-test-coverage-report
 generate-test-coverage-report: ## Generate the code coverage report
@@ -263,16 +305,17 @@ generate-test-coverage-report: ## Generate the code coverage report
 		@echo ""
 
 .PHONY: generate-doc
-generate-doc: ## Generate the Rust documentation
+generate-doc: ## Generate the Rust documentation (without o1vm)
 		@echo ""
 		@echo "Generating the documentation."
 		@echo ""
-		RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc \
+		RUSTDOCFLAGS="--enable-index-page -Zunstable-options" \
+			cargo +nightly doc \
 			--document-private-items \
 			--features "$(WORKSPACE_FEATURES)" \
 			--no-deps \
-			--exclude plonk_neon \
-			--exclude plonk_wasm \
+			--exclude kimchi_wasm \
+			--exclude o1vm \
 			--workspace
 		@echo ""
 		@echo "The documentation is available at: ./target/doc"
@@ -341,12 +384,12 @@ fclean: clean ## Clean the tooling artefacts in addition to running clean
 build-nodejs: ## Compile the Kimchi library into WebAssembly to be used in NodeJS
 		cargo +$(NIGHTLY_RUST_VERSION) run --package xtask -- build-wasm \
 		--target nodejs \
-		--out-dir ${PLONK_WASM_NODEJS_OUTDIR} \
+		--out-dir ${KIMCHI_WASM_NODEJS_OUTDIR} \
 		--rust-version $(NIGHTLY_RUST_VERSION)
 
 .PHONY: build-web
 build-web: ## Compile the Kimchi library into WebAssembly to be used in the browser
 		cargo +$(NIGHTLY_RUST_VERSION) run --package xtask -- build-wasm \
 		--target web \
-		--out-dir ${PLONK_WASM_WEB_OUTDIR} \
+		--out-dir ${KIMCHI_WASM_WEB_OUTDIR} \
 		--rust-version $(NIGHTLY_RUST_VERSION)

@@ -1,49 +1,37 @@
-pub mod parser;
-
-use anyhow::{anyhow, Context, Result};
-use ledger::{
-    scan_state::transaction_logic::{
-        verifiable,
-        zkapp_command::{verifiable::create, ZkAppCommand},
-        TransactionStatus, WithStatus,
-    },
-    verifier::common::{check, CheckResult},
-    VerificationKey, VerificationKeyWire,
-};
-use mina_p2p_messages::v2::MinaBaseVerificationKeyWireStableV1;
+use anyhow::{Context, Result};
+use pickles_verifier::types::VerifiableProof;
+use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
 use sp1_sdk::{include_elf, Elf, SP1Stdin};
+use std::path::Path;
 
 pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
 pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
 pub const WITHDRAW_ELF: Elf = include_elf!("withdraw-program");
 
-pub fn settlement_stdin(graphql: &str, vk_b64: &str) -> Result<SP1Stdin> {
-    let parsed = parser::parse_graphql_zkapp(graphql)?;
-    let vk_wire = MinaBaseVerificationKeyWireStableV1::from_base64(vk_b64.trim())
-        .context("decode settlement verification key")?;
-    let vk: VerificationKey = (&vk_wire)
-        .try_into()
-        .map_err(|error| anyhow!("convert verification key: {error:?}"))?;
-    let cmd: ZkAppCommand = (&parsed.zkapp_command)
-        .try_into()
-        .map_err(|error| anyhow!("convert zkApp command: {error:?}"))?;
+pub fn settlement_stdin(fixture_dir: &str) -> Result<SP1Stdin> {
+    let verifiable = load_verifiable(Path::new(fixture_dir))?;
+    let mut stdin = SP1Stdin::new();
+    stdin.write(&verifiable);
+    Ok(stdin)
+}
 
-    let cmd_verifiable = create(&cmd, false, |_, _| Ok(VerificationKeyWire::new(vk.clone())))
-        .map_err(|error| anyhow!("create verifiable zkApp command: {error}"))?;
-    let (_, zkapp_stmt, _) = match check(WithStatus {
-        data: verifiable::UserCommand::ZkAppCommand(Box::new(cmd_verifiable)),
-        status: TransactionStatus::Applied,
-    }) {
-        CheckResult::ValidAssuming((_valid, mut values)) => {
-            values.pop().context("missing zkApp statement")?
-        }
-        other => return Err(anyhow!("invalid zkApp statement: {other:?}")),
+fn load_verifiable(fixture_dir: &Path) -> Result<VerifiableProof> {
+    let read = |name: &str| -> Result<String> {
+        let path = fixture_dir.join(name);
+        std::fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))
     };
 
-    let mut stdin = SP1Stdin::new();
-    stdin.write(&vk_wire);
-    stdin.write(&parsed.proof);
-    stdin.write_slice(&bincode::serialize(&zkapp_stmt)?);
-    stdin.write_slice(&bincode::serialize(&parsed.zkapp_command)?);
-    Ok(stdin)
+    let vk_json = read("vk.serde.json")?;
+    let proof_json = read("proof.serde.json")?;
+    let skeleton_json = read("public_input_skeleton.json")?;
+    let app_stmt_json = read("app_statement.json")?;
+
+    let wrap_vk = parse_wrap_vk(&vk_json).context("parse vk.serde.json")?;
+    let wrap_proof = parse_wrap_proof(&proof_json).context("parse proof.serde.json")?;
+    let ocaml = OcamlProof::parse(&skeleton_json).map_err(anyhow::Error::msg)?;
+    let app_stmt = parse_app_statement(&app_stmt_json).map_err(anyhow::Error::msg)?;
+
+    ocaml
+        .into_verifiable(wrap_proof, &wrap_vk, &[app_stmt])
+        .map_err(anyhow::Error::msg)
 }

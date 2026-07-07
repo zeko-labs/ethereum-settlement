@@ -1,12 +1,12 @@
 [workspace]
 members = [
     "api",
+    "crates/pickles-verifier",
     "lib",
     "program/settlement",
     "program/bridge",
     "program/withdraw",
-    "script",
-    "tools/generate-srs"
+    "script"
 ]
 exclude = [
     "vendor/algebra/ec",
@@ -16,13 +16,6 @@ exclude = [
     "vendor/algebra/poly",
     "vendor/algebra/serialize",
     "vendor/algebra/serialize-derive",
-    "vendor/mina-rust/crates/core",
-    "vendor/mina-rust/crates/ledger",
-    "vendor/mina-rust/crates/macros",
-    "vendor/mina-rust/crates/node/native",
-    "vendor/mina-rust/crates/p2p-messages",
-    "vendor/mina-rust/libs/redux",
-    "vendor/mina-rust/poseidon",
     "vendor/proof-systems/curves",
     "vendor/proof-systems/groupmap",
     "vendor/proof-systems/hasher",
@@ -31,8 +24,6 @@ exclude = [
     "vendor/proof-systems/msm",
     "vendor/proof-systems/poly-commitment",
     "vendor/proof-systems/poseidon",
-    "vendor/proof-systems/signer",
-    "vendor/proof-systems/turshi",
     "vendor/proof-systems/utils",
 ]
 resolver = "2"
@@ -52,46 +43,31 @@ ark-poly        = { version = "0.5.0", features = ["std"] }
 # proof-systems — local SP1 PoC patches
 kimchi          = { path = "vendor/proof-systems/kimchi" }
 mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-hasher     = { path = "vendor/proof-systems/hasher" }
 mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-mina-signer     = { path = "vendor/proof-systems/signer" }
 o1-utils        = { path = "vendor/proof-systems/utils" }
 poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
-
-# mina-rust — local SP1 PoC patches
-mina-p2p-messages = { path = "vendor/mina-rust/crates/p2p-messages", default-features = false }
-mina-core         = { path = "vendor/mina-rust/crates/core", default-features = false }
-mina-node-native  = { path = "vendor/mina-rust/crates/node/native", default-features = false }
-ledger            = { path = "vendor/mina-rust/crates/ledger", package = "mina-tree", default-features = false }
+groupmap        = { path = "vendor/proof-systems/groupmap" }
 
 # misc
 alloy-sol-types = "1.0"
 anyhow          = "1.0.81"
-base64          = "0.22"
 bincode         = "1.3.3"
 bytemuck        = "1"
 hex             = "0.4.3"
-juniper         = "0.17"
-rkyv            = { version = "0.8", features = ["alloc"] }
-rsexp           = "0.2.3"
 serde           = { version = "1", features = ["derive", "rc"] }
 serde_json      = "1.0.107"
 
 [patch."https://github.com/o1-labs/proof-systems"]
 kimchi          = { path = "vendor/proof-systems/kimchi" }
 mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-hasher     = { path = "vendor/proof-systems/hasher" }
 mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-mina-signer     = { path = "vendor/proof-systems/signer" }
 o1-utils        = { path = "vendor/proof-systems/utils" }
 poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
 
 [patch."https://github.com/zeko-labs/proof-systems"]
 kimchi          = { path = "vendor/proof-systems/kimchi" }
 mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-hasher     = { path = "vendor/proof-systems/hasher" }
 mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-mina-signer     = { path = "vendor/proof-systems/signer" }
 o1-utils        = { path = "vendor/proof-systems/utils" }
 poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
 
@@ -102,7 +78,6 @@ ark-serialize = { path = "vendor/algebra/serialize" }
 ark-poly      = { path = "vendor/algebra/poly" }
 
 [patch.crates-io]
-core2 = { git = "https://github.com/bbqsrc/core2", rev = "545e84bcb0f235b12e21351e0c69767958efe2a7" }
 crypto-bigint = { git = "https://github.com/sp1-patches/RustCrypto-bigint", tag = "patch-0.5.5-sp1-6.0.0" }
 ark-ff        = { path = "vendor/algebra/ff" }
 ark-ec        = { path = "vendor/algebra/ec" }

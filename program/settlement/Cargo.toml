@@ -4,24 +4,14 @@ name = "settlement-program"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm          = "6.1.0"
-
-ark-serialize     = { workspace = true }
-ark-poly          = { workspace = true }
-ledger            = { workspace = true, default-features = false }
-mina-core         = { workspace = true, default-features = false }
-mina-curves       = { workspace = true }
-mina-p2p-messages = { workspace = true, default-features = false }
-ark-ff            = { workspace = true }
-serde             = { workspace = true }
-zeko_sp1_lib      = { path = "../../lib" }
-kimchi            = { workspace = true, features =[] }
-mina-poseidon     = { workspace = true, features =[] }
-poly-commitment   = { workspace = true }
-bincode = { workspace = true }
-rkyv = { workspace = true }
-bytemuck = { workspace = true }
+sp1-zkvm = "6.1.0"
+pickles-verifier = { path = "../../crates/pickles-verifier", default-features = false }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
-sp1-lib  = "6.1.0"
-bytemuck = "1"
+sp1-lib = "6.1.0"
+
+[build-dependencies]
+mina-curves = { workspace = true }
+pickles-verifier = { path = "../../crates/pickles-verifier" }
+poly-commitment = { workspace = true }
+sha2 = "0.10"

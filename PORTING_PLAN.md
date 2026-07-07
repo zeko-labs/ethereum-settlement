@@ -19,10 +19,11 @@ The target architecture is:
 The current repository has useful PoC pieces:
 
 - `program/settlement` is intended to verify a supplied Zeko/o1 proof inside
-  SP1 and emit public values. It builds the verifier index inside SP1 from the
-  supplied verification key, checks the Pickles accumulator with a Vesta SRS,
-  recomputes deferred values, runs Mina's proof-shape checks, verifies the
-  outer Kimchi proof with a Pallas SRS, and emits settlement public values.
+  SP1 and emit public values. It now uses the o1 `o1js-to-zkvm`
+  `pickles-verifier` path instead of the earlier hand-ported verifier.
+  The guest reads a `VerifiableProof`, verifies the Pickles accumulator,
+  reconstructs deferred values and wrap public inputs, and verifies the outer
+  Kimchi proof.
 - `contracts/src/ZekoSettlement.sol` verifies the SP1 proof and checks the
   emitted Zeko verification-key hash.
 - `program/bridge` and `program/withdraw` replay batches into the same
@@ -74,10 +75,10 @@ It is acceptable that this is not fully implemented yet, because the original
 scope appears to have been a PoC. It must be implemented before this can be
 treated as a real settlement bridge.
 
-## Pickles Verification Gap
+## Pickles Verification Status
 
-The settlement guest currently calls `kimchi::verifier::verify` directly after
-manually constructing Pickles-style public inputs. That is not a complete
+The earlier settlement guest called `kimchi::verifier::verify` directly after
+manually constructing Pickles-style public inputs. That was not a complete
 verification of a Mina/Pickles proof.
 
 Pickles is a recursive layer on top of Kimchi. The Pickles protocol needs the
@@ -104,25 +105,29 @@ The reference accumulator check extracts:
 
 and then calls `batch_dlog_accumulator_check` against the Vesta SRS.
 
-Implemented PoC path:
+Implemented PoC path now:
 
-- the host sends only the verification key, proof, derived zkApp statement, and
-  original zkApp command into SP1
-- the guest derives the verifier index from the verification key and embedded
-  Pallas SRS
-- the guest calls `accumulator_check` with an embedded Vesta SRS
-- the guest recomputes deferred values from the proof and runs Mina's
-  `run_checks`
-- the guest reconstructs the Kimchi public inputs from the recomputed deferred
-  values and verifies the outer Kimchi proof
+- `crates/pickles-verifier` is copied from o1's `o1js-to-zkvm` verifier.
+- `vendor/proof-systems` is replaced with o1's SP1 proof-systems branch
+  `d92e47fa3`, based on Mina's `89edaa3` submodule.
+- the host reads o1 fixture files and sends only `VerifiableProof` into SP1
+- the guest decodes a build-time verifier blob and calls
+  `pickles_verifier::verify`
+- native `cargo test -p pickles-verifier` passes over the full copied o1
+  fixture matrix
 
 Remaining hardening work:
 
+- Re-run SP1 `--execute` only after agreeing on local resource limits; the
+  previous local proving attempt crashed the machine.
 - Add negative tests that mutate deferred values, bulletproof challenges,
   `messages_for_next_wrap_proof.challenge_polynomial_commitment`, feature
   flags, and `prev_evals`; all must fail inside the SP1 guest.
-- Replace the current single-proof deterministic accumulator batching with
-  transcript-derived batching before accepting multi-proof settlement batches.
+- Wire Zeko outer-state extraction into the settlement public values. The
+  current SP1 public values retain the Solidity PoC layout but zero the
+  state/action fields.
+- Regenerate fixtures from the OCaml Zeko state-transition prover, not only the
+  o1 example fixtures.
 
 ## Data Availability With Ethereum Blobs
 
@@ -308,13 +313,17 @@ Cleanup status:
 - `contracts/README.md` now describes the actual contracts and should be kept.
 - CI/tooling still needs a full pass so it builds from the right directories
   with pinned host and SP1 toolchains.
+- The manual Mina-Rust verifier path, RKYV SRS blobs, old GraphQL proof files,
+  and old `tools/generate-srs` helper have been removed.
 
 Keep:
 
 - `contracts/src/fixtures/groth16-fixture.json`, because the Solidity
-  Groth16 fork test uses it.
-- `proofs/*.json`, `proofs/*.bin`, `proofs/graphql.txt`, and `proofs/vk.txt`
-  until replacement fixtures are generated from the OCaml flow.
+  Groth16 fork test uses it. It is stale until a new network proof is generated
+  for the o1 verifier path.
+- `proofs/mainnet-blockchain-snark`, because it is the default settlement VK
+  and proof fixture used by the host scripts.
+- `fixtures`, because it lets the copied o1 native verifier tests run unchanged.
 - `tools/zeko-action-state`, because it is used as an action-state formula
   fixture even though it should eventually be replaced by OCaml-generated tests.
 
@@ -347,47 +356,33 @@ SP1:
 - Do not mix old SP1 `succinct` toolchains with `sp1-zkvm 6.1.0`; the old
   local `rustc 1.85.0-dev` toolchain is incompatible.
 
-Current settlement execution status:
+Current settlement verification status:
 
-- `cargo run --release --bin zkapp -- --execute` now completes successfully,
-  verifies the Pickles proof, emits `proof_valid: true`, and prints
-  `Pickles proof verified successfully`.
-- The latest clean run used `22914842284` cycles and gas
-  `Some(21120324386)`.
-- Static Pallas and Vesta SRS data is embedded as aligned `include_bytes!`
-  payloads. This avoids the previous `rkyv::access_unchecked` alignment bug.
-- The guest now derives the verifier index from the supplied verification key
-  and embedded Pallas SRS. The host no longer supplies deferred values or a
-  serialized verifier index.
-- The guest checks the Pickles Vesta accumulator, recomputes deferred values,
-  runs Mina's proof-shape checks, reconstructs Kimchi public inputs, and verifies
-  the outer Kimchi proof.
-- The invalid-opcode failures found during execution were fixed in the local
-  vendored forks:
-  - serial zkVM paths for batch inversion, dense-polynomial evaluation, and
-    polynomial helper loops
-  - a direct cubic construction for Kimchi's permutation vanishing polynomial,
-    avoiding a generic dense-polynomial multiplication path that emitted `UNIMP`
-  - a SP1-specific Vesta MSM path for the accumulator check, using `sys_bigint`
-    in canonical limb form
-  - deterministic single-proof accumulator batching for the current PoC path
-  - fixed public-value byte encoding with `commit_slice`
-  - an explicit SP1 halt after committing public values, avoiding destructor
-    teardown of large proof-system objects inside the guest
-- Stale diagnostic markers and the obsolete byte-array MSM tests have been
-  removed.
+- `cargo check --offline -p settlement-program -p zkapp-script -p zeko_sp1_lib
+  -p zeko-proof-api` passes.
+- `cargo test --offline -p pickles-verifier` passes: 13 native tests, including
+  full verification over the copied o1 fixture matrix.
+- SP1 `zkapp --execute` has not been rerun after switching to the o1 verifier,
+  because the previous local proving session crashed the machine. The next run
+  should be done deliberately, with resource limits and no local proving.
+- The old static RKYV SRS blobs are gone. The o1 verifier blob is produced at
+  build time from the wrap VK and proof-systems SRS data.
+- The guest checks the Pickles Vesta accumulator, reconstructs deferred values,
+  reconstructs wrap public inputs, and verifies the outer Kimchi proof through
+  `pickles_verifier::verify`.
+- `vendor/proof-systems/kimchi` has one local compatibility helper,
+  `batch_verify_with_rng`, so the copied o1 verifier can provide deterministic
+  Fiat-Shamir batching randomness.
 
 Known limitations:
 
-- The accumulator batching path is intentionally single-proof and deterministic.
-  Multi-proof batching still needs transcript-derived randomness.
+- SP1 cycle count for the o1 verifier path is unknown until `zkapp --execute`
+  is rerun.
+- The settlement public values still zero the Zeko state/action fields.
 - The SP1 compatibility patches live in local vendored forks. They need to be
   turned into a real upstreamable `zkvm`/SP1 feature profile.
-- The execution is very expensive and has not been optimized.
 - Negative tests for corrupted Pickles accumulator/deferred/public-input data
   are still missing.
-- Host parsing still depends on Mina node/native GraphQL types, so the script
-  build pulls more Mina crates than a minimal fixture parser should.
 
 Required upstream/fork work:
 

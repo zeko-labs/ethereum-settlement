@@ -1,27 +1,15 @@
-//! Zeko SP1 zkApp proof verifier.
+//! Zeko SP1 zkApp/Pickles proof verifier.
 
 use clap::Parser;
+use pickles_verifier::types::VerifiableProof;
+use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
     include_elf, Elf, HashableKey, ProvingKey, SP1Stdin,
 };
+use std::path::Path;
 use std::time::Instant;
 use zeko_sp1_lib::ZkappPublicValues;
-
-#[path = "../parser.rs"]
-mod parser;
-use parser::parse_graphql_zkapp_file;
-
-use ledger::{
-    scan_state::transaction_logic::{
-        verifiable,
-        zkapp_command::{verifiable::create, ZkAppCommand},
-        TransactionStatus, WithStatus,
-    },
-    verifier::common::{check, CheckResult},
-    VerificationKey, VerificationKeyWire,
-};
-use mina_p2p_messages::v2::MinaBaseVerificationKeyWireStableV1;
 
 pub const ZKAPP_ELF: Elf = include_elf!("settlement-program");
 
@@ -32,10 +20,8 @@ struct Args {
     execute: bool,
     #[arg(long)]
     prove: bool,
-    #[arg(long, default_value = "proofs/graphql.txt")]
-    graphql: String,
-    #[arg(long, default_value = "proofs/vk.txt")]
-    vk: String,
+    #[arg(long, default_value = "proofs/mainnet-blockchain-snark")]
+    fixture_dir: String,
 }
 
 fn main() {
@@ -48,54 +34,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // ------------------------------------------------------------------
-    // 1. Parse
-    // ------------------------------------------------------------------
-    let vk_b64 =
-        std::fs::read_to_string(&args.vk).unwrap_or_else(|e| panic!("read vk {}: {e}", args.vk));
-    let parsed = parse_graphql_zkapp_file(&args.graphql)
-        .unwrap_or_else(|e| panic!("parse graphql {}: {e}", args.graphql));
-
-    let vk_wire =
-        MinaBaseVerificationKeyWireStableV1::from_base64(vk_b64.trim()).expect("decode vk base64");
-    let vk: VerificationKey = (&vk_wire).try_into().expect("vk wire -> runtime");
-    let cmd: ZkAppCommand = (&parsed.zkapp_command)
-        .try_into()
-        .expect("wire -> ZkAppCommand");
-
-    eprintln!("parsed");
-
-    let zkapp_cmd_bytes =
-        bincode::serialize(&parsed.zkapp_command).expect("serialize zkapp_command wire");
-    eprintln!("zkapp_command: {} bytes", zkapp_cmd_bytes.len());
-
-    // ------------------------------------------------------------------
-    // 2. Derive ZkappStatement on the host
-    // ------------------------------------------------------------------
-    let cmd_verifiable = create(&cmd, false, |_, _| Ok(VerificationKeyWire::new(vk.clone())))
-        .expect("verifiable::create");
-
-    let (_, zkapp_stmt, _) = match check(WithStatus {
-        data: verifiable::UserCommand::ZkAppCommand(Box::new(cmd_verifiable)),
-        status: TransactionStatus::Applied,
-    }) {
-        CheckResult::ValidAssuming((_valid, mut xs)) => xs.pop().expect("empty"),
-        other => panic!("expected ValidAssuming, got: {other:?}"),
-    };
-
-    eprintln!("zkapp_stmt derived");
-
-    // ------------------------------------------------------------------
-    // 3. Serialize guest inputs
-    // ------------------------------------------------------------------
-    let zkapp_stmt_bytes = bincode::serialize(&zkapp_stmt).expect("serialize zkapp_stmt");
-    eprintln!("zkapp_stmt: {} bytes", zkapp_stmt_bytes.len());
-
+    let verifiable = load_verifiable(Path::new(&args.fixture_dir));
     let mut stdin = SP1Stdin::new();
-    stdin.write(&vk_wire);
-    stdin.write(&parsed.proof);
-    stdin.write_slice(&zkapp_stmt_bytes);
-    stdin.write_slice(&zkapp_cmd_bytes);
+    stdin.write(&verifiable);
 
     let client = ProverClient::from_env();
 
@@ -108,7 +49,10 @@ fn main() {
         println!("Program executed successfully");
         println!("  cycles   : {}", report.total_instruction_count());
         println!("  total gas: {:?}", report.gas());
-        for (name, cycles) in &report.cycle_tracker {
+
+        let mut entries: Vec<(&String, &u64)> = report.cycle_tracker.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, cycles) in entries {
             println!("  [{name}] cycles: {cycles}");
         }
 
@@ -144,6 +88,28 @@ fn main() {
         proof.save("proofs/proof.bin").expect("save proof");
         println!("Proof saved to proofs/proof.bin");
     }
+}
+
+fn load_verifiable(fixture_dir: &Path) -> VerifiableProof {
+    let read = |name: &str| {
+        let path = fixture_dir.join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+    };
+
+    let vk_json = read("vk.serde.json");
+    let proof_json = read("proof.serde.json");
+    let skeleton_json = read("public_input_skeleton.json");
+    let app_stmt_json = read("app_statement.json");
+
+    let wrap_vk = parse_wrap_vk(&vk_json).expect("parse vk.serde.json");
+    let wrap_proof = parse_wrap_proof(&proof_json).expect("parse proof.serde.json");
+    let ocaml = OcamlProof::parse(&skeleton_json).expect("parse public_input_skeleton.json");
+    let app_stmt = parse_app_statement(&app_stmt_json).expect("parse app_statement.json");
+
+    ocaml
+        .into_verifiable(wrap_proof, &wrap_vk, &[app_stmt])
+        .expect("OcamlProof::into_verifiable")
 }
 
 fn print_public_values(public_values: &ZkappPublicValues) {

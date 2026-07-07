@@ -1,4 +1,6 @@
 use super::fft::{FftParameters, Fp256Parameters, FpParameters};
+#[cfg(feature = "sp1")]
+use ark_ff::BigInt;
 use ark_ff::{biginteger::BigInteger256 as BigInteger, Fp256};
 
 pub struct FqParameters;
@@ -8,7 +10,71 @@ use ark_ff::fields::{MontBackend, MontConfig};
 #[derive(MontConfig)]
 #[modulus = "28948022309329048855892746252171976963363056481941647379679742748393362948097"]
 #[generator = "5"]
+pub struct FrConfigDerived;
+
+#[cfg(not(feature = "sp1"))]
+pub use FrConfigDerived as FrConfig;
+
+#[cfg(feature = "sp1")]
 pub struct FrConfig;
+
+#[cfg(feature = "sp1")]
+impl MontConfig<4> for FrConfig {
+    const MODULUS: BigInt<4> = <FrConfigDerived as MontConfig<4>>::MODULUS;
+
+    const GENERATOR: Fp256<MontBackend<Self, 4>> =
+        Fp256::new_unchecked(<FrConfigDerived as MontConfig<4>>::GENERATOR.0);
+
+    const TWO_ADIC_ROOT_OF_UNITY: Fp256<MontBackend<Self, 4>> =
+        Fp256::new_unchecked(<FrConfigDerived as MontConfig<4>>::TWO_ADIC_ROOT_OF_UNITY.0);
+
+    #[cfg(target_os = "zkvm")]
+    #[inline(always)]
+    fn mul_assign(a: &mut Fp256<MontBackend<Self, 4>>, b: &Fp256<MontBackend<Self, 4>>) {
+        // R_INV = (2^256)^-1 mod MODULUS, little-endian u64 limbs.
+        const R_INV: [u64; 4] = [
+            0x6119a3dd8e1a6f7f,
+            0xc68de1279dc601eb,
+            0x5790be58c050df13,
+            0x1f7a89dd17647953,
+        ];
+        let mut tmp = [0u64; 4];
+        sp1_zkvm::syscalls::sys_bigint(&mut tmp, 0, &(a.0).0, &(b.0).0, &Self::MODULUS.0);
+        sp1_zkvm::syscalls::sys_bigint(&mut (a.0).0, 0, &tmp, &R_INV, &Self::MODULUS.0);
+    }
+
+    #[cfg(target_os = "zkvm")]
+    #[inline(always)]
+    fn square_in_place(a: &mut Fp256<MontBackend<Self, 4>>) {
+        let b = *a;
+        Self::mul_assign(a, &b);
+    }
+
+    // See fp.rs for the math. M + 1 precompile calls instead of 2M.
+    #[cfg(target_os = "zkvm")]
+    #[inline]
+    fn sum_of_products<const M: usize>(
+        a: &[Fp256<MontBackend<Self, 4>>; M],
+        b: &[Fp256<MontBackend<Self, 4>>; M],
+    ) -> Fp256<MontBackend<Self, 4>> {
+        const R_INV: [u64; 4] = [
+            0x6119a3dd8e1a6f7f,
+            0xc68de1279dc601eb,
+            0x5790be58c050df13,
+            0x1f7a89dd17647953,
+        ];
+        let mut acc = Fp256::<MontBackend<Self, 4>>::new_unchecked(BigInt::new([0u64; 4]));
+        for i in 0..M {
+            let mut tmp = [0u64; 4];
+            sp1_zkvm::syscalls::sys_bigint(&mut tmp, 0, &(a[i].0).0, &(b[i].0).0, &Self::MODULUS.0);
+            acc += Fp256::<MontBackend<Self, 4>>::new_unchecked(BigInt::new(tmp));
+        }
+        let mut result = [0u64; 4];
+        sp1_zkvm::syscalls::sys_bigint(&mut result, 0, &(acc.0).0, &R_INV, &Self::MODULUS.0);
+        Fp256::<MontBackend<Self, 4>>::new_unchecked(BigInt::new(result))
+    }
+}
+
 pub type Fq = Fp256<MontBackend<FrConfig, 4>>;
 
 impl Fp256Parameters for FqParameters {}

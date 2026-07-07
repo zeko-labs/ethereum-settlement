@@ -460,7 +460,8 @@ where
             };
 
             //~~ * Derive the scalar joint combiner $j$ from $j'$ using the endomorphism (TODO: specify)
-            let joint_combiner: G::ScalarField = ScalarChallenge(joint_combiner).to_field(endo_r);
+            let joint_combiner: G::ScalarField =
+                ScalarChallenge::new(joint_combiner).to_field(endo_r);
 
             //~~ * If multiple lookup tables are involved,
             //~~   set the `table_id_combiner` as the $j^i$ with $i$ the maximum width of any used table.
@@ -651,7 +652,7 @@ where
         absorb_commitment(&mut fq_sponge, &z_comm.commitment);
 
         //~ 1. Sample $\alpha'$ with the Fq-Sponge.
-        let alpha_chal = ScalarChallenge(fq_sponge.challenge());
+        let alpha_chal = ScalarChallenge::new(fq_sponge.challenge());
 
         //~ 1. Derive $\alpha$ from $\alpha'$ using the endomorphism (TODO: details)
         let alpha: G::ScalarField = alpha_chal.to_field(endo_r);
@@ -892,7 +893,7 @@ where
         absorb_commitment(&mut fq_sponge, &t_comm.commitment);
 
         //~ 1. Sample $\zeta'$ with the Fq-Sponge.
-        let zeta_chal = ScalarChallenge(fq_sponge.challenge());
+        let zeta_chal = ScalarChallenge::new(fq_sponge.challenge());
 
         //~ 1. Derive $\zeta$ from $\zeta'$ using the endomorphism (TODO: specify)
         let zeta = zeta_chal.to_field(endo_r);
@@ -1401,22 +1402,31 @@ where
             if let Some(runtime_lookup_table_selector) = &lcs.runtime_selector {
                 polynomials.push((
                     evaluations_form(runtime_lookup_table_selector),
-                    non_hiding(1),
+                    non_hiding(num_chunks),
                 ))
             }
             if let Some(xor_lookup_selector) = &lcs.lookup_selectors.xor {
-                polynomials.push((evaluations_form(xor_lookup_selector), non_hiding(1)))
+                polynomials.push((
+                    evaluations_form(xor_lookup_selector),
+                    non_hiding(num_chunks),
+                ))
             }
             if let Some(lookup_gate_selector) = &lcs.lookup_selectors.lookup {
-                polynomials.push((evaluations_form(lookup_gate_selector), non_hiding(1)))
+                polynomials.push((
+                    evaluations_form(lookup_gate_selector),
+                    non_hiding(num_chunks),
+                ))
             }
             if let Some(range_check_lookup_selector) = &lcs.lookup_selectors.range_check {
-                polynomials.push((evaluations_form(range_check_lookup_selector), non_hiding(1)))
+                polynomials.push((
+                    evaluations_form(range_check_lookup_selector),
+                    non_hiding(num_chunks),
+                ))
             }
             if let Some(foreign_field_mul_lookup_selector) = &lcs.lookup_selectors.ffmul {
                 polynomials.push((
                     evaluations_form(foreign_field_mul_lookup_selector),
-                    non_hiding(1),
+                    non_hiding(num_chunks),
                 ))
             }
         }

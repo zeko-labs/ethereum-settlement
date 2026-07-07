@@ -1,1 +1,0 @@
-{ bestChain(maxLength: 1) { transactions { userCommands { amount fee from to } } } }

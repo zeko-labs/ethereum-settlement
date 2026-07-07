@@ -1,7 +1,0 @@
-query {
-  genesisConstants {
-    accountCreationFee
-    genesisTimestamp
-    coinbase
-  }
-}

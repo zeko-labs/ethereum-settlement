@@ -1,7 +1,0 @@
-@use 'mina-rust';
-
-:host ::ng-deep {
-  svg g:not(.links) > * {
-    cursor: pointer;
-  }
-}

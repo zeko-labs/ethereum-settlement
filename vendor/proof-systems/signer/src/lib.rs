@@ -1,4 +1,8 @@
 #![deny(missing_docs)]
+#![deny(unsafe_code)]
+#![deny(clippy::all)]
+#![deny(clippy::pedantic)]
+#![deny(clippy::nursery)]
 #![doc = include_str!("../README.md")]
 #![no_std]
 
@@ -43,8 +47,8 @@ pub enum NetworkId {
 }
 
 impl From<NetworkId> for u8 {
-    fn from(id: NetworkId) -> u8 {
-        id as u8
+    fn from(id: NetworkId) -> Self {
+        id as Self
     }
 }
 
@@ -58,10 +62,11 @@ impl NetworkId {
     /// Returns:
     /// - `"MinaSignatureMainnet"` for `NetworkId::MAINNET`
     /// - `"CodaSignature"` for `NetworkId::TESTNET`
+    #[must_use]
     pub fn into_domain_string(self) -> String {
         match self {
-            NetworkId::MAINNET => "MinaSignatureMainnet".to_string(),
-            NetworkId::TESTNET => "CodaSignature".to_string(),
+            Self::MAINNET => "MinaSignatureMainnet".to_string(),
+            Self::TESTNET => "CodaSignature".to_string(),
         }
     }
 }
@@ -70,6 +75,35 @@ impl DomainParameter for NetworkId {
     fn into_bytes(self) -> Vec<u8> {
         vec![self as u8]
     }
+}
+
+/// Nonce derivation mode for signature generation.
+///
+/// Controls how the deterministic nonce is derived during signing.
+/// Different transaction types require different nonce derivation methods.
+///
+/// These modes correspond to the `Message.Legacy` and `Message.Chunked` modules
+/// in the OCaml Mina implementation (`src/lib/crypto/signature_lib/schnorr.ml`).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum NonceMode {
+    /// Legacy nonce derivation for user commands.
+    ///
+    /// Use this mode for legacy Mina transactions (user commands) such as
+    /// payments and delegations. This corresponds to `Message.Legacy` in
+    /// the OCaml implementation.
+    ///
+    /// Uses direct byte serialization (`ROInput.to_bytes()`) for nonce derivation.
+    Legacy,
+
+    /// Chunked nonce derivation for zkApp transactions.
+    ///
+    /// Use this mode for zkApp transactions. This mode is compatible with
+    /// o1js and uses field packing for nonce derivation. This corresponds
+    /// to `Message.Chunked` in the OCaml implementation.
+    ///
+    /// Uses field packing (`ROInput.to_fields()`) then bit conversion for
+    /// nonce derivation.
+    Chunked,
 }
 
 /// Interface for signed objects
@@ -85,25 +119,14 @@ pub trait Signer<H: Hashable> {
     ///
     /// * `kp` - The keypair to use for signing
     /// * `input` - The message to sign (must implement [`Hashable`])
-    /// * `packed` - Controls nonce derivation method:
-    ///   - `true`: Use OCaml/TypeScript compatible nonce derivation with field
-    ///     packing
-    ///   - `false`: Use standard Rust nonce derivation
+    /// * `nonce_mode` - Controls nonce derivation method:
+    ///   - [`NonceMode::Legacy`]: For user commands (payments, delegations)
+    ///   - [`NonceMode::Chunked`]: For zkApp transactions (o1js compatible)
     ///
     /// # Returns
     ///
     /// A [`Signature`] over the input message.
-    ///
-    /// # Compatibility
-    ///
-    /// Use `packed: true` when compatibility with OCaml and TypeScript
-    /// implementations is required. Use `packed: false` for standard Rust-only
-    /// usage.
-    ///
-    /// **Note**: The standard nonce derivation (`packed: false`) will be
-    /// deprecated in future versions. Use `packed: true` for new code to ensure
-    /// forward compatibility.
-    fn sign(&mut self, kp: &Keypair, input: &H, packed: bool) -> Signature;
+    fn sign(&mut self, kp: &Keypair, input: &H, nonce_mode: NonceMode) -> Signature;
 
     /// Verify that the signature `sig` on `input` (see [`Hashable`]) is signed
     /// with the secret key corresponding to `pub_key`.
@@ -128,7 +151,7 @@ pub fn create_legacy<H: 'static + Hashable>(domain_param: H::D) -> impl Signer<H
     schnorr::create_legacy::<H>(domain_param)
 }
 
-/// Create a kimchi signer context for ZkApp signing (Berkeley upgrade)
+/// Create a kimchi signer context for `ZkApp` signing (Berkeley upgrade)
 /// with domain parameters initialized with `domain_param`
 ///
 /// **Example**

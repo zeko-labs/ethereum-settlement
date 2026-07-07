@@ -12,29 +12,14 @@ path = "src/bin/main.rs"
 sp1-sdk         = { version = "6.1.0", features = ["blocking", "native-gnark", "profiling", "cuda","network"] }
 tokio           = { version = "1", features = ["full"] }
 clap            = { version = "4.0", features = ["derive", "env"] }
-tracing         = "0.1.40"
-alloy-sol-types     = { workspace = true }
-alloy-primitives    = "=0.8.20"
 dotenv          = "0.15.0"
 bincode = { workspace = true }
-ark-serialize = { workspace = true }
-ark-poly = { workspace = true }
-ark-ec = { workspace = true }
-ark-ff = { workspace = true }
-
-mina-node-native  = { workspace = true, default-features = false }
-mina-p2p-messages = { workspace = true }
-mina-curves       = { workspace = true }
-juniper           = { workspace = true }
-rsexp             = { workspace = true }
-base64            = { workspace = true }
 anyhow            = { workspace = true }
 hex               = { workspace = true }
-ledger            = { workspace = true, features = ["network"] }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
 zeko_sp1_lib      = { path = "../lib" }
-kimchi            = { workspace = true, features =[] }
+pickles-verifier = { path = "../crates/pickles-verifier" }
 
 [dev-dependencies]
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }

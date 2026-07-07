@@ -1,36 +1,37 @@
 # Settlement
 
-Settlement proves that a specific Zeko/o1 zkApp proof is valid and exposes the
-state transition encoded by its first account update.
+Settlement proves that a specific Mina/Pickles proof is valid and exposes the
+settlement public values Ethereum should check.
 
 ## Host preparation
 
-The settlement host binary reads:
+The settlement host binary reads an o1-style fixture directory:
 
-- a base64-encoded Zeko verification key from `proofs/vk.txt`
-- a GraphQL zkApp command and proof from `proofs/graphql.txt`
+- `vk.serde.json`
+- `proof.serde.json`
+- `public_input_skeleton.json`
+- `app_statement.json`
 
-The host derives the zkApp statement and serializes only the verification key,
-proof, statement, and original zkApp command for the SP1 guest. Deferred proof
-values and the verifier index are derived inside the guest.
+The host converts those files into `pickles_verifier::types::VerifiableProof`
+and writes that value to SP1 stdin. The settlement guest's verifier blob is
+built at compile time from `SETTLEMENT_VK_JSON` or the default
+`proofs/mainnet-blockchain-snark/vk.serde.json`.
 
 ## Guest verification
 
 `program/settlement` performs the following work inside SP1:
 
-1. Deserializes the verification key, o1 proof, zkApp statement, and zkApp command.
-2. Binds the statement to the first account update by checking the
-   account-update digest and calls hash.
-3. Loads the embedded Pallas Kimchi SRS and derives the verifier index from the
-   verification key.
-4. Loads the embedded Vesta accumulator SRS and verifies the Pickles accumulator.
-5. Recomputes deferred proof values, runs Mina's proof-shape checks, reconstructs
-   the Kimchi public inputs, and verifies the outer Kimchi proof.
-6. Extracts app-state preconditions, app-state updates, and the action-state precondition.
-7. Commits the result as SP1 public values.
+1. Decodes the build-time verifier blob.
+2. Reads a `VerifiableProof` from SP1 stdin.
+3. Runs the o1 Pickles verifier:
+   - accumulator / challenge polynomial commitment check
+   - deferred-value reconstruction
+   - wrap public input reconstruction
+   - outer Kimchi verification
+4. Commits the result as SP1 public values.
 
-The guest aborts if any Pickles verification layer fails. A successfully verified SP1
-proof therefore always contains `proof_valid = true`.
+The guest aborts if any Pickles verification layer fails. A successfully
+verified SP1 proof therefore always contains `proof_valid = true`.
 
 ## Public values
 
@@ -39,15 +40,15 @@ proof therefore always contains `proof_valid = true`.
 | Field | Meaning |
 | --- | --- |
 | `proof_valid` | Whether the Pickles proof verified. |
-| `vk_hash` | Hash of the supplied Zeko verification key. |
-| `state_before[8]` | Checked app-state preconditions. Ignored slots become zero. |
-| `state_after[8]` | Explicit app-state updates. Kept slots become zero. |
-| `action_state_before` | Checked action-state precondition. An ignored precondition becomes zero. |
+| `vk_hash` | PoC SHA-256 hash of the fixture VK JSON. Production should use the canonical OCaml/Mina verification-key hash. |
+| `state_before[8]` | Placeholder zeroes in the current PoC. |
+| `state_after[8]` | Placeholder zeroes in the current PoC. |
+| `action_state_before` | Placeholder zero in the current PoC. |
 
-::: warning Root slot semantics
-Only app-state slot `3` is interpreted as the rollup root by the Ethereum
-contract. The transition must explicitly constrain `state_before[3]` and set
-`state_after[3]`.
+::: warning Outer-state tracking
+The real Zeko outer-state fields still need to be extracted from the OCaml
+state-transition public inputs and emitted here. The current fixture verifier
+only proves Pickles validity and emits the verification-key hash.
 :::
 
 ## Ethereum checks

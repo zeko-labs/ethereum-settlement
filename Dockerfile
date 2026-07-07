@@ -41,7 +41,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=api-builder /src/target/release/zeko-proof-api /usr/local/bin/zeko-proof-api
-COPY proofs/vk.txt /app/proofs/vk.txt
+COPY proofs/mainnet-blockchain-snark /app/proofs/mainnet-blockchain-snark
+COPY fixtures /app/fixtures
 
 EXPOSE 8080
 CMD ["zeko-proof-api"]

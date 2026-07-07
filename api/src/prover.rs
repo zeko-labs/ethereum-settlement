@@ -139,11 +139,13 @@ fn elf_for(kind: &str) -> Result<sp1_sdk::Elf> {
 fn stdin_for(kind: &str, input: &Value, settlement_vk: &str) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
     match kind {
         "settlement" => {
-            let graphql = input
-                .get("graphql")
+            let fixture_dir = input
+                .get("fixtureDir")
+                .or_else(|| input.get("fixture_dir"))
                 .and_then(Value::as_str)
-                .context("settlement graphql is required")?;
-            Ok((SETTLEMENT_ELF, settlement_stdin(graphql, settlement_vk)?))
+                .context("settlement fixtureDir is required")?;
+            let _ = settlement_vk;
+            Ok((SETTLEMENT_ELF, settlement_stdin(fixture_dir)?))
         }
         "bridge" => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;

@@ -1,41 +1,24 @@
-//! Zeko SP1 EVM-compatible zkApp proof verifier.
+//! Zeko SP1 EVM-compatible Pickles proof verifier.
 
 use clap::{Parser, ValueEnum};
-use mina_p2p_messages::v2::MinaBaseVerificationKeyWireStableV1;
+use pickles_verifier::types::VerifiableProof;
+use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
 use serde::{Deserialize, Serialize};
 use sp1_sdk::{
     include_elf, network::NetworkMode, utils, Elf, HashableKey, ProveRequest, Prover, ProverClient,
     ProvingKey, SP1ProofWithPublicValues, SP1Stdin, SP1VerifyingKey,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use zeko_sp1_lib::ZkappPublicValues;
 
-#[path = "../parser.rs"]
-mod parser;
-use parser::parse_graphql_zkapp_file;
-
-use ledger::{
-    scan_state::transaction_logic::{
-        verifiable,
-        zkapp_command::{verifiable::create, ZkAppCommand},
-        TransactionStatus, WithStatus,
-    },
-    verifier::common::{check, CheckResult},
-    VerificationKey, VerificationKeyWire,
-};
-
-/// The ELF for the zkApp SP1 program.
 pub const ZKAPP_ELF: Elf = include_elf!("settlement-program");
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct EVMArgs {
-    #[arg(long, default_value = "proofs/graphql.txt")]
-    graphql: String,
-
-    #[arg(long, default_value = "proofs/vk.txt")]
-    vk: String,
+    #[arg(long, default_value = "proofs/mainnet-blockchain-snark")]
+    fixture_dir: String,
 
     #[arg(long, value_enum, default_value = "groth16")]
     system: ProofSystem,
@@ -51,11 +34,8 @@ enum ProofSystem {
 #[serde(rename_all = "camelCase")]
 struct SP1ProofFixture {
     system: String,
-    graphql_path: String,
-    vk_path: String,
+    fixture_dir: String,
     proof_valid: bool,
-    zkapp_command_bytes_len: usize,
-    zkapp_stmt_bytes_len: usize,
     vkey: String,
     public_values: String,
     proof: String,
@@ -68,58 +48,10 @@ async fn main() {
 
     let args = EVMArgs::parse();
 
-    // ------------------------------------------------------------------
-    // 1. Parse
-    // ------------------------------------------------------------------
-    let vk_b64 =
-        std::fs::read_to_string(&args.vk).unwrap_or_else(|e| panic!("read vk {}: {e}", args.vk));
-    let parsed = parse_graphql_zkapp_file(&args.graphql)
-        .unwrap_or_else(|e| panic!("parse graphql {}: {e}", args.graphql));
-
-    let vk_wire =
-        MinaBaseVerificationKeyWireStableV1::from_base64(vk_b64.trim()).expect("decode vk base64");
-    let vk: VerificationKey = (&vk_wire).try_into().expect("vk wire -> runtime");
-    let cmd: ZkAppCommand = (&parsed.zkapp_command)
-        .try_into()
-        .expect("wire -> ZkAppCommand");
-
-    eprintln!("parsed");
-
-    let zkapp_cmd_bytes =
-        bincode::serialize(&parsed.zkapp_command).expect("serialize zkapp_command wire");
-    eprintln!("zkapp_command: {} bytes", zkapp_cmd_bytes.len());
-
-    // ------------------------------------------------------------------
-    // 2. Derive ZkappStatement on the host
-    // ------------------------------------------------------------------
-    let cmd_verifiable = create(&cmd, false, |_, _| Ok(VerificationKeyWire::new(vk.clone())))
-        .expect("verifiable::create");
-
-    let (_, zkapp_stmt, _) = match check(WithStatus {
-        data: verifiable::UserCommand::ZkAppCommand(Box::new(cmd_verifiable)),
-        status: TransactionStatus::Applied,
-    }) {
-        CheckResult::ValidAssuming((_valid, mut xs)) => xs.pop().expect("empty"),
-        other => panic!("expected ValidAssuming, got: {other:?}"),
-    };
-
-    eprintln!("zkapp_stmt derived");
-
-    // ------------------------------------------------------------------
-    // 3. Serialize guest inputs
-    // ------------------------------------------------------------------
-    let zkapp_stmt_bytes = bincode::serialize(&zkapp_stmt).expect("serialize zkapp_stmt");
-    eprintln!("zkapp_stmt: {} bytes", zkapp_stmt_bytes.len());
-
+    let verifiable = load_verifiable(Path::new(&args.fixture_dir));
     let mut stdin = SP1Stdin::new();
-    stdin.write(&vk_wire);
-    stdin.write(&parsed.proof);
-    stdin.write_slice(&zkapp_stmt_bytes);
-    stdin.write_slice(&zkapp_cmd_bytes);
+    stdin.write(&verifiable);
 
-    // ------------------------------------------------------------------
-    // 4. Setup and prove on the Succinct Prover Network
-    // ------------------------------------------------------------------
     let client = ProverClient::builder()
         .network_for(NetworkMode::Mainnet)
         .build()
@@ -145,24 +77,35 @@ async fn main() {
         .verify(&proof, pk.verifying_key(), None)
         .expect("verify failed");
 
-    create_proof_fixture(
-        &proof,
-        pk.verifying_key(),
-        &args.graphql,
-        &args.vk,
-        zkapp_cmd_bytes.len(),
-        zkapp_stmt_bytes.len(),
-        args.system,
-    );
+    create_proof_fixture(&proof, pk.verifying_key(), &args.fixture_dir, args.system);
+}
+
+fn load_verifiable(fixture_dir: &Path) -> VerifiableProof {
+    let read = |name: &str| {
+        let path = fixture_dir.join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+    };
+
+    let vk_json = read("vk.serde.json");
+    let proof_json = read("proof.serde.json");
+    let skeleton_json = read("public_input_skeleton.json");
+    let app_stmt_json = read("app_statement.json");
+
+    let wrap_vk = parse_wrap_vk(&vk_json).expect("parse vk.serde.json");
+    let wrap_proof = parse_wrap_proof(&proof_json).expect("parse proof.serde.json");
+    let ocaml = OcamlProof::parse(&skeleton_json).expect("parse public_input_skeleton.json");
+    let app_stmt = parse_app_statement(&app_stmt_json).expect("parse app_statement.json");
+
+    ocaml
+        .into_verifiable(wrap_proof, &wrap_vk, &[app_stmt])
+        .expect("OcamlProof::into_verifiable")
 }
 
 fn create_proof_fixture(
     proof: &SP1ProofWithPublicValues,
     vk: &SP1VerifyingKey,
-    graphql_path: &str,
-    vk_path: &str,
-    zkapp_command_bytes_len: usize,
-    zkapp_stmt_bytes_len: usize,
+    fixture_dir: &str,
     system: ProofSystem,
 ) {
     let public_values: ZkappPublicValues =
@@ -189,11 +132,8 @@ fn create_proof_fixture(
 
     let fixture = SP1ProofFixture {
         system: format!("{:?}", system).to_lowercase(),
-        graphql_path: graphql_path.to_owned(),
-        vk_path: vk_path.to_owned(),
+        fixture_dir: fixture_dir.to_owned(),
         proof_valid: public_values.proof_valid,
-        zkapp_command_bytes_len,
-        zkapp_stmt_bytes_len,
         vkey: vk.bytes32().to_string(),
         public_values: format!("0x{}", hex::encode(proof.public_values.as_slice())),
         proof: format!("0x{}", hex::encode(proof.bytes())),

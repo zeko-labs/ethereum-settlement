@@ -7,7 +7,7 @@ use crate::{
         constraints::ConstraintSystem,
         polynomials::{
             complete_add, endomul_scalar, endosclmul, foreign_field_add, foreign_field_mul,
-            poseidon, range_check, rot, turshi, varbasemul, xor,
+            poseidon, range_check, rot, varbasemul, xor,
         },
         wires::*,
     },
@@ -82,6 +82,7 @@ pub enum GateType {
     EndoMulScalar,
     // Lookup
     Lookup,
+    // TODO: remove Cairo gate types
     /// Cairo
     CairoClaim,
     CairoInstruction,
@@ -182,9 +183,7 @@ impl<F: PrimeField> CircuitGate<F> {
             // TODO: implement the verification for the lookup gate
             // See https://github.com/MinaProtocol/mina/issues/14011
             Lookup => Ok(()),
-            CairoClaim | CairoInstruction | CairoFlags | CairoTransition => {
-                self.verify_cairo_gate::<FULL_ROUNDS, G>(row, witness, &index.cs)
-            }
+            CairoClaim | CairoInstruction | CairoFlags | CairoTransition => Ok(()),
             RangeCheck0 | RangeCheck1 => self
                 .verify_witness::<FULL_ROUNDS, G>(row, witness, &index.cs, public)
                 .map_err(|e| e.to_string()),
@@ -283,10 +282,13 @@ impl<F: PrimeField> CircuitGate<F> {
                 // See https://github.com/MinaProtocol/mina/issues/14011
                 vec![]
             }
-            GateType::CairoClaim => turshi::Claim::constraint_checks(&env, &mut cache),
-            GateType::CairoInstruction => turshi::Instruction::constraint_checks(&env, &mut cache),
-            GateType::CairoFlags => turshi::Flags::constraint_checks(&env, &mut cache),
-            GateType::CairoTransition => turshi::Transition::constraint_checks(&env, &mut cache),
+            // TODO: remove Cairo gate types
+            GateType::CairoClaim
+            | GateType::CairoInstruction
+            | GateType::CairoFlags
+            | GateType::CairoTransition => {
+                vec![]
+            }
             GateType::RangeCheck0 => {
                 range_check::circuitgates::RangeCheck0::constraint_checks(&env, &mut cache)
             }

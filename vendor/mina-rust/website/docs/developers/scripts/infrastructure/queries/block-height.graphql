@@ -1,1 +1,0 @@
-{ bestChain(maxLength: 1) { protocolState { consensusState { blockHeight } } } }

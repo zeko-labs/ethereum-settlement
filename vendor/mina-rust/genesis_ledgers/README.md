@@ -1,1 +1,0 @@
-See https://github.com/openmina/openmina-genesis-ledgers

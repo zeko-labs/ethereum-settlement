@@ -113,17 +113,11 @@ pub fn permutation_vanishing_polynomial<F: FftField>(
     domain: D<F>,
     zk_rows: u64,
 ) -> DensePolynomial<F> {
-    let a = domain.group_gen.pow([domain.size - zk_rows]);
-    let b = a * domain.group_gen;
-    let c = domain.group_gen.pow([domain.size - 1]);
-
-    // (x - a)(x - b)(x - c)
-    DensePolynomial::from_coefficients_slice(&[
-        -(a * b * c),
-        (a * b) + (a * c) + (b * c),
-        -(a + b + c),
-        F::one(),
-    ])
+    let constant = |a: F| DensePolynomial::from_coefficients_slice(&[a]);
+    let x = DensePolynomial::from_coefficients_slice(&[F::zero(), F::one()]);
+    let term = domain.group_gen.pow([domain.size - zk_rows]);
+    &(&(&x - &constant(term)) * &(&x - &constant(term * domain.group_gen)))
+        * &(&x - &constant(domain.group_gen.pow([domain.size - 1])))
 }
 
 /// Shifts represent the shifts required in the permutation argument of PLONK.

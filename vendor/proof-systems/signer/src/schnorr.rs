@@ -9,7 +9,9 @@ extern crate alloc;
 use alloc::{boxed::Box, string::String, vec};
 use num_bigint::BigUint;
 
-use crate::{BaseField, CurvePoint, Hashable, Keypair, PubKey, ScalarField, Signature, Signer};
+use crate::{
+    BaseField, CurvePoint, Hashable, Keypair, NonceMode, PubKey, ScalarField, Signature, Signer,
+};
 use ark_ec::{
     AffineRepr, // for generator()
     CurveGroup,
@@ -23,6 +25,12 @@ use core::ops::{Add, Neg};
 use mina_hasher::{self, DomainParameter, Hasher, ROInput};
 use o1_utils::FieldHelpers;
 
+/// `BLAKE2b` output size in bytes for nonce derivation.
+///
+/// Using 256 bits (32 bytes) provides sufficient entropy for deriving
+/// a scalar field element after masking the top 2 bits.
+const BLAKE2B_OUTPUT_SIZE: usize = 32;
+
 /// Schnorr signer context for the Mina signature algorithm
 ///
 /// For details about the signature algorithm please see the
@@ -34,12 +42,44 @@ pub struct Schnorr<H: Hashable> {
     pub domain_param: H::D,
 }
 
-/// The message to be signed/verified
+/// Internal message structure for Schnorr signature hash computation.
+///
+/// This struct combines the user's input message with cryptographic context
+/// (public key and nonce commitment) to create the hash input for computing
+/// the Schnorr signature challenge. It implements [`Hashable`] to be
+/// compatible with Mina's Poseidon-based hashing.
+///
+/// # Schnorr Signature Context
+///
+/// In the Schnorr signature scheme, the challenge `e` is computed as:
+///
+/// ```text
+/// e = H(input || pub_key_x || pub_key_y || rx)
+/// ```
+///
+/// where:
+/// - `input` is the user's message to sign
+/// - `pub_key_x`, `pub_key_y` are the signer's public key coordinates
+/// - `rx` is the x-coordinate of the nonce commitment point `R = k·G`
+///
+/// This binding ensures the signature is tied to a specific message, public
+/// key, and nonce, preventing various attack vectors.
+///
+/// # Fields
+///
+/// - `input`: The original message being signed, implementing [`Hashable`]
+/// - `pub_key_x`: X-coordinate of the signer's public key
+/// - `pub_key_y`: Y-coordinate of the signer's public key
+/// - `rx`: X-coordinate of the nonce commitment point
 #[derive(Clone)]
 pub struct Message<H: Hashable> {
+    /// The original input message to be signed
     input: H,
+    /// X-coordinate of the signer's public key
     pub_key_x: BaseField,
+    /// Y-coordinate of the signer's public key
     pub_key_y: BaseField,
+    /// X-coordinate of the nonce commitment point R = k·G
     rx: BaseField,
 }
 
@@ -60,10 +100,10 @@ impl<H: Hashable> Hashable for Message<H> {
 }
 
 impl<H: 'static + Hashable> Signer<H> for Schnorr<H> {
-    fn sign(&mut self, kp: &Keypair, input: &H, packed: bool) -> Signature {
-        let k: ScalarField = match packed {
-            true => self.derive_nonce_compatible(kp, input),
-            false => self.derive_nonce(kp, input),
+    fn sign(&mut self, kp: &Keypair, input: &H, nonce_mode: NonceMode) -> Signature {
+        let k: ScalarField = match nonce_mode {
+            NonceMode::Chunked => self.derive_nonce_chunked(kp, input),
+            NonceMode::Legacy => self.derive_nonce_legacy(kp, input),
         };
         let r: CurvePoint = CurvePoint::generator()
             .mul_bigint(k.into_bigint())
@@ -71,7 +111,7 @@ impl<H: 'static + Hashable> Signer<H> for Schnorr<H> {
         let k: ScalarField = if r.y.into_bigint().is_even() { k } else { -k };
 
         let e: ScalarField = self.message_hash(&kp.public, r.x, input);
-        let s: ScalarField = k + e * kp.secret.scalar();
+        let s: ScalarField = k + e * kp.secret_key().scalar();
 
         Signature::new(r.x, s)
     }
@@ -115,16 +155,19 @@ pub(crate) fn create_kimchi<H: 'static + Hashable>(domain_param: H::D) -> impl S
 }
 
 impl<H: 'static + Hashable> Schnorr<H> {
-    /// Derives a nonce compatible with OCaml/TypeScript implementations
+    /// Chunked nonce derivation for zkApp transactions.
     ///
-    /// This function implements the deterministic nonce derivation algorithm as
-    /// specified in the Mina signature specification:
-    /// <https://github.com/MinaProtocol/mina/blob/develop/docs/specs/signatures/description.md>
+    /// This function implements the deterministic nonce derivation algorithm used
+    /// by `Message.Chunked` in the OCaml implementation. Use this for zkApp
+    /// transactions that need to be compatible with o1js.
     ///
     /// # Compatibility
     ///
-    /// This implementation is compatible with the TypeScript version:
-    /// <https://github.com/o1-labs/o1js/blob/main/src/mina-signer/src/signature.ts#L128>
+    /// This implementation corresponds to `Message.Chunked.derive` in the OCaml
+    /// implementation (`src/lib/crypto/signature_lib/schnorr.ml`).
+    ///
+    /// It is also compatible with the TypeScript o1js implementation:
+    /// <https://github.com/o1-labs/o1js/blob/main/src/mina-signer/src/signature.ts>
     ///
     /// The private key conversion replicates the "Field.project" method with unpack
     /// from the OCaml implementation, which performs modular reduction when the
@@ -133,10 +176,10 @@ impl<H: 'static + Hashable> Schnorr<H> {
     /// # Algorithm
     ///
     /// The nonce derivation follows this process:
-    /// 1. Create ROInput from: `message || public_key_x || public_key_y || private_key || network_id`
-    /// 2. Pack the ROInput into fields using Mina's field packing
+    /// 1. Create `ROInput` from: `message || public_key_x || public_key_y || private_key || network_id`
+    /// 2. Pack the `ROInput` into fields using Mina's field packing
     /// 3. Convert packed fields to bits (255 bits per field)
-    /// 4. Convert bits to bytes for BLAKE2b input
+    /// 4. Convert bits to bytes for `BLAKE2b` input
     /// 5. Hash with BLAKE2b-256
     /// 6. Drop the top 2 bits to create a valid scalar field element
     ///
@@ -147,14 +190,13 @@ impl<H: 'static + Hashable> Schnorr<H> {
     ///
     /// # Returns
     ///
-    /// A deterministic nonce as a scalar field element, ensuring compatibility
-    /// with OCaml and TypeScript signature implementations.
+    /// A deterministic nonce as a scalar field element.
     ///
     /// # Test Vectors
     ///
     /// For test vectors demonstrating this function's usage, see the
     /// `sign_fields_test` in [`tests/signer.rs`](../../tests/signer.rs) which
-    /// uses the compatible nonce derivation mode (`packed: true`).
+    /// uses `NonceMode::Chunked`.
     ///
     /// # Security
     ///
@@ -164,8 +206,14 @@ impl<H: 'static + Hashable> Schnorr<H> {
     /// - Ensures no two different messages share the same nonce (with the same
     ///   key)
     /// - Is compatible with existing Mina protocol implementations
-    pub fn derive_nonce_compatible(&self, kp: &Keypair, input: &H) -> ScalarField {
-        let mut blake_hasher = Blake2bVar::new(32).unwrap();
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `BLAKE2b` variable-output hasher cannot be created with
+    /// a 32-byte output size (should not happen).
+    pub fn derive_nonce_chunked(&self, kp: &Keypair, input: &H) -> ScalarField {
+        let mut blake_hasher =
+            Blake2bVar::new(BLAKE2B_OUTPUT_SIZE).expect("BLAKE2b output size is valid");
 
         // Create ROInput with message + [px, py, private_key_as_field] +
         // network_id_packed
@@ -184,7 +232,7 @@ impl<H: 'static + Hashable> Schnorr<H> {
                 // Convert scalar to base field with explicit wraparound (modular reduction)
                 // This replicates the "Field.project" method with unpack from the OCaml implementation
 
-                let secret_biguint: BigUint = kp.secret.scalar().into_bigint().into();
+                let secret_biguint: BigUint = kp.secret_key().scalar().into_bigint().into();
                 let modulus = BaseField::MODULUS.into();
                 if secret_biguint >= modulus {
                     // Reduce modulo base field modulus
@@ -206,7 +254,7 @@ impl<H: 'static + Hashable> Schnorr<H> {
         for field in packed_fields {
             let field_bytes = field.to_bytes();
             let mut field_bits = 0;
-            for &byte in field_bytes.iter() {
+            for &byte in &field_bytes {
                 for bit_idx in 0..8 {
                     if field_bits < 255 {
                         let bit = (byte & (1 << bit_idx)) != 0;
@@ -227,7 +275,7 @@ impl<H: 'static + Hashable> Schnorr<H> {
 
         // Hash with BLAKE2b and drop top 2 bits
         blake_hasher.update(&input_bytes);
-        let mut bytes = [0; 32];
+        let mut bytes = [0; BLAKE2B_OUTPUT_SIZE];
         blake_hasher
             .finalize_variable(&mut bytes)
             .expect("incorrect output size");
@@ -236,11 +284,16 @@ impl<H: 'static + Hashable> Schnorr<H> {
         ScalarField::from_random_bytes(&bytes[..]).expect("failed to create scalar from bytes")
     }
 
-    /// Standard nonce derivation using direct byte serialization
+    /// Legacy nonce derivation for user commands (payments, delegations).
     ///
-    /// This function uses a cryptographic hash function to create a uniformly
-    /// and randomly distributed nonce. It is crucial for security that no two
-    /// different messages share the same nonce.
+    /// This function implements the deterministic nonce derivation algorithm used
+    /// by `Message.Legacy` in the OCaml implementation. Use this for legacy Mina
+    /// transactions (user commands) such as payments and delegations.
+    ///
+    /// # Compatibility
+    ///
+    /// This implementation corresponds to `Message.Legacy.derive` in the OCaml
+    /// implementation (`src/lib/crypto/signature_lib/schnorr.ml`).
     ///
     /// # Parameters
     ///
@@ -251,40 +304,41 @@ impl<H: 'static + Hashable> Schnorr<H> {
     ///
     /// A deterministic nonce as a scalar field element.
     ///
-    /// # Compatibility
+    /// # Usage
     ///
-    /// For OCaml/TypeScript compatibility, use
-    /// [`derive_nonce_compatible`](Self::derive_nonce_compatible)
-    /// instead. This method will be deprecated in future versions.
+    /// Use this method for legacy Mina transactions (user commands) such as
+    /// payments and delegations. For zkApp transactions, use
+    /// [`derive_nonce_chunked`](Self::derive_nonce_chunked) instead.
     ///
-    /// # Differences from `derive_nonce_compatible`
+    /// # Differences from `derive_nonce_chunked`
     ///
-    /// This method differs from [`derive_nonce_compatible`](Self::derive_nonce_compatible) in several ways:
+    /// This method differs from [`derive_nonce_chunked`](Self::derive_nonce_chunked) in several ways:
     /// - Uses direct byte serialization (`roi.to_bytes()`) instead of field
     ///   packing
     /// - Appends private key as scalar field element instead of base field
     ///   element
     /// - Uses full network ID bytes instead of packed single byte
-    /// - Does not perform bit-level manipulation for BLAKE2b input
+    /// - Does not perform bit-level manipulation for `BLAKE2b` input
     ///
     /// # Security
     ///
     /// This function generates a cryptographically secure, deterministic nonce
     /// that depends on the private key, public key, message, and network
     /// context.
-    fn derive_nonce(&self, kp: &Keypair, input: &H) -> ScalarField {
-        let mut blake_hasher = Blake2bVar::new(32).unwrap();
+    fn derive_nonce_legacy(&self, kp: &Keypair, input: &H) -> ScalarField {
+        let mut blake_hasher =
+            Blake2bVar::new(BLAKE2B_OUTPUT_SIZE).expect("BLAKE2b output size is valid");
 
         let roi = input
             .to_roinput()
             .append_field(kp.public.point().x)
             .append_field(kp.public.point().y)
-            .append_scalar(*kp.secret.scalar())
+            .append_scalar(*kp.secret_key().scalar())
             .append_bytes(&self.domain_param.clone().into_bytes());
 
         blake_hasher.update(&roi.to_bytes());
 
-        let mut bytes = [0; 32];
+        let mut bytes = [0; BLAKE2B_OUTPUT_SIZE];
         blake_hasher
             .finalize_variable(&mut bytes)
             .expect("incorrect output size");

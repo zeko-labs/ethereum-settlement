@@ -26,8 +26,6 @@ rand.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_with.workspace = true
-bytemuck.workspace = true
-sp1-lib.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
@@ -36,7 +34,6 @@ serde_json.workspace = true
 
 [features]
 ocaml_types = ["ocaml", "ocaml-gen"]
-debug-log=[]
 
 [[bench]]
 name = "poseidon_bench"

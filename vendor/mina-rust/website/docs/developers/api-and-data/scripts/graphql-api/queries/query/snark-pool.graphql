@@ -1,6 +1,0 @@
-query SnarkPool {
-  snarkPool {
-    fee
-    prover
-  }
-}
