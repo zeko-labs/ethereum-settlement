@@ -494,6 +494,7 @@ mod tests {
                 action_state: hex32(
                     "3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9",
                 ),
+                action_state_length: 0,
             },
             withdraws,
         }

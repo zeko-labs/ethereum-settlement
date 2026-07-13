@@ -573,6 +573,8 @@ pub struct EthereumBridgeState {
 pub struct ZekoBridgeState {
     #[serde(with = "serde_bytes32")]
     pub action_state: Bytes32,
+    #[serde(default)]
+    pub action_state_length: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -595,6 +597,122 @@ pub struct BridgeTransitionPublicValues {
     #[serde(with = "serde_bytes32")]
     pub zeko_action_state_after: Bytes32,
     pub deposit_count: u32,
+}
+
+pub const BRIDGE_PUBLIC_VALUES_V2_MAGIC: [u8; 4] = *b"ZKBR";
+pub const BRIDGE_PUBLIC_VALUES_V2_VERSION: u16 = 2;
+pub const BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH: usize = 164;
+pub const BRIDGE_ACTION_FIELDS: usize = 5;
+pub const BRIDGE_ACTION_V2_LENGTH: usize = (BRIDGE_ACTION_FIELDS + 1) * 32;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeOuterActionV2 {
+    pub fields: [Bytes32; BRIDGE_ACTION_FIELDS],
+    pub state_after: Bytes32,
+}
+
+/// Canonical native-deposit receipt. The variable tail contains every exact
+/// five-field outer Witness action, so the gateway can serve the same action
+/// bytes to the OCaml sequencer without reimplementing Poseidon hashing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BridgeTransitionPublicValuesV2 {
+    pub ethereum_state_before: Bytes32,
+    pub ethereum_state_after: Bytes32,
+    pub ethereum_nonce_before: u64,
+    pub ethereum_nonce_after: u64,
+    pub zeko_action_state_before: Bytes32,
+    pub zeko_action_state_after: Bytes32,
+    pub zeko_action_state_length_before: u32,
+    pub zeko_action_state_length_after: u32,
+    pub actions: Vec<BridgeOuterActionV2>,
+}
+
+impl BridgeTransitionPublicValuesV2 {
+    pub fn encode(&self) -> Vec<u8> {
+        let count = u32::try_from(self.actions.len()).expect("bridge action count fits u32");
+        let mut output = Vec::with_capacity(
+            BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH + self.actions.len() * BRIDGE_ACTION_V2_LENGTH,
+        );
+        output.extend_from_slice(&BRIDGE_PUBLIC_VALUES_V2_MAGIC);
+        output.extend_from_slice(&BRIDGE_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+        output.extend_from_slice(&[0u8; 2]);
+        output.extend_from_slice(&self.ethereum_state_before);
+        output.extend_from_slice(&self.ethereum_state_after);
+        output.extend_from_slice(&self.ethereum_nonce_before.to_be_bytes());
+        output.extend_from_slice(&self.ethereum_nonce_after.to_be_bytes());
+        output.extend_from_slice(&self.zeko_action_state_before);
+        output.extend_from_slice(&self.zeko_action_state_after);
+        output.extend_from_slice(&self.zeko_action_state_length_before.to_be_bytes());
+        output.extend_from_slice(&self.zeko_action_state_length_after.to_be_bytes());
+        output.extend_from_slice(&count.to_be_bytes());
+        for action in &self.actions {
+            for field in &action.fields {
+                output.extend_from_slice(field);
+            }
+            output.extend_from_slice(&action.state_after);
+        }
+        debug_assert_eq!(output.len(), output.capacity());
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() < BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH {
+            return Err("bridge V2 public values: truncated header".to_owned());
+        }
+        if input[..4] != BRIDGE_PUBLIC_VALUES_V2_MAGIC {
+            return Err("bridge V2 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != BRIDGE_PUBLIC_VALUES_V2_VERSION {
+            return Err(format!(
+                "bridge V2 public values: unsupported version {version}"
+            ));
+        }
+        if input[6..8] != [0u8; 2] {
+            return Err("bridge V2 public values: reserved bytes must be zero".to_owned());
+        }
+        let mut cursor = 8;
+        let ethereum_state_before = read_array(input, &mut cursor);
+        let ethereum_state_after = read_array(input, &mut cursor);
+        let ethereum_nonce_before = u64::from_be_bytes(read_array(input, &mut cursor));
+        let ethereum_nonce_after = u64::from_be_bytes(read_array(input, &mut cursor));
+        let zeko_action_state_before = read_array(input, &mut cursor);
+        let zeko_action_state_after = read_array(input, &mut cursor);
+        let zeko_action_state_length_before = u32::from_be_bytes(read_array(input, &mut cursor));
+        let zeko_action_state_length_after = u32::from_be_bytes(read_array(input, &mut cursor));
+        let count = u32::from_be_bytes(read_array(input, &mut cursor)) as usize;
+        let expected = BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH
+            .checked_add(count * BRIDGE_ACTION_V2_LENGTH)
+            .ok_or_else(|| "bridge V2 public values: length overflow".to_owned())?;
+        if input.len() != expected {
+            return Err(format!(
+                "bridge V2 public values: expected {expected} bytes, got {}",
+                input.len()
+            ));
+        }
+        let mut actions = Vec::with_capacity(count);
+        for _ in 0..count {
+            actions.push(BridgeOuterActionV2 {
+                fields: core::array::from_fn(|_| read_array(input, &mut cursor)),
+                state_after: read_array(input, &mut cursor),
+            });
+        }
+        Ok(Self {
+            ethereum_state_before,
+            ethereum_state_after,
+            ethereum_nonce_before,
+            ethereum_nonce_after,
+            zeko_action_state_before,
+            zeko_action_state_after,
+            zeko_action_state_length_before,
+            zeko_action_state_length_after,
+            actions,
+        })
+    }
+
+    pub fn deposit_count(&self) -> u32 {
+        self.actions.len() as u32
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1029,5 +1147,46 @@ mod tests {
             bincode::deserialize::<SettlementWitnessV1>(&encoded).unwrap(),
             witness
         );
+    }
+
+    #[test]
+    fn bridge_public_values_v2_round_trip_and_rejects_tail_drift() {
+        let values = BridgeTransitionPublicValuesV2 {
+            ethereum_state_before: [0x11; 32],
+            ethereum_state_after: [0x22; 32],
+            ethereum_nonce_before: 4,
+            ethereum_nonce_after: 6,
+            zeko_action_state_before: [0x33; 32],
+            zeko_action_state_after: [0x66; 32],
+            zeko_action_state_length_before: 9,
+            zeko_action_state_length_after: 11,
+            actions: vec![
+                BridgeOuterActionV2 {
+                    fields: [[0x44; 32]; BRIDGE_ACTION_FIELDS],
+                    state_after: [0x55; 32],
+                },
+                BridgeOuterActionV2 {
+                    fields: [[0x77; 32]; BRIDGE_ACTION_FIELDS],
+                    state_after: [0x66; 32],
+                },
+            ],
+        };
+        let encoded = values.encode();
+        assert_eq!(
+            encoded.len(),
+            BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH + 2 * BRIDGE_ACTION_V2_LENGTH
+        );
+        assert_eq!(
+            BridgeTransitionPublicValuesV2::decode(&encoded).unwrap(),
+            values
+        );
+
+        let mut truncated = encoded.clone();
+        truncated.pop();
+        assert!(BridgeTransitionPublicValuesV2::decode(&truncated).is_err());
+
+        let mut bad_count = encoded;
+        bad_count[160..164].copy_from_slice(&3u32.to_be_bytes());
+        assert!(BridgeTransitionPublicValuesV2::decode(&bad_count).is_err());
     }
 }

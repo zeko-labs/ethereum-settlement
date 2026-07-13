@@ -10,7 +10,8 @@ use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use zeko_sp1_lib::{
-    Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ZekoAddress,
+    Address, BridgeOuterActionV2, BridgeTransitionInput, BridgeTransitionPublicValuesV2, Bytes32,
+    ZekoAddress,
 };
 
 const WEI_PER_ZEKO_UNIT: u64 = 1_000_000_000;
@@ -23,10 +24,12 @@ fn main() {
         input.deposits.len() <= u32::MAX as usize,
         "too many deposits"
     );
+    assert!(!input.deposits.is_empty(), "empty deposit batch");
 
     let mut ethereum_state = input.ethereum.deposit_state;
     let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
     let mut next_nonce = input.ethereum.deposit_nonce;
+    let mut emitted_actions = Vec::with_capacity(input.deposits.len());
 
     let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
 
@@ -41,7 +44,10 @@ fn main() {
             "native deposit must have 1 gwei granularity"
         );
         let zeko_amount = ethereum_amount / U256::from(WEI_PER_ZEKO_UNIT);
-        assert!(zeko_amount <= U256::from(u64::MAX), "native deposit exceeds Mina amount");
+        assert!(
+            zeko_amount <= U256::from(u64::MAX),
+            "native deposit exceeds Mina amount"
+        );
 
         next_nonce += 1;
 
@@ -70,17 +76,28 @@ fn main() {
         );
         let zeko_action_list_hash = action_list_add_fields(empty_action_list_hash, &action_fields);
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
+        emitted_actions.push(BridgeOuterActionV2 {
+            fields: action_fields.map(fp_to_bytes),
+            state_after: fp_to_bytes(zeko_action_state),
+        });
     }
 
-    sp1_zkvm::io::commit(&BridgeTransitionPublicValues {
+    let public_values = BridgeTransitionPublicValuesV2 {
         ethereum_state_before: input.ethereum.deposit_state,
         ethereum_state_after: ethereum_state,
         ethereum_nonce_before: input.ethereum.deposit_nonce,
         ethereum_nonce_after: next_nonce,
         zeko_action_state_before: fp_to_bytes(fp_from_bytes(input.zeko.action_state)),
         zeko_action_state_after: fp_to_bytes(zeko_action_state),
-        deposit_count: input.deposits.len() as u32,
-    });
+        zeko_action_state_length_before: input.zeko.action_state_length,
+        zeko_action_state_length_after: input
+            .zeko
+            .action_state_length
+            .checked_add(input.deposits.len() as u32)
+            .expect("outer action-state length overflow"),
+        actions: emitted_actions,
+    };
+    sp1_zkvm::io::commit_slice(&public_values.encode());
 }
 
 fn compute_ethereum_deposit_leaf(
@@ -128,7 +145,7 @@ fn compute_deposit_aux(
         Fp::from(zeko_recipient_is_odd as u8),
         Fp::from(timeout),
     ];
-    hash_with_prefix("Deposit_params - qFB3jXP*)", &fields)
+    hash_with_prefix("Ethereum deposit V1", &fields)
 }
 
 // Returns the 5 action fields for an L1 outer witness (deposit) action:
@@ -454,10 +471,8 @@ mod tests {
         );
     }
 
-    /// Legacy fixture test (simplified 1-field model from action-state.ts).
-    /// NOTE: this uses a simplified bridge contract that dispatches only `aux`
-    /// as a single Field, not the full 5-field outer witness structure.
-    /// Kept for reference — the real Zeko bridge uses real_l1_outer_witness_matches_onchain_state.
+    /// Cross-language Ethereum-native deposit vectors. The three aux values
+    /// are also asserted by Zeko's `ethereum_bridge_vectors` executable.
     #[test]
     fn fixture_deposit_matches_zeko_action_state() {
         let mut bridge_address = [0u8; 20];
@@ -467,17 +482,17 @@ mod tests {
             (
                 U256::from(1_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000001020304"),
-                hex32("30117a0c5f5f2266769ae3f5c53934e5981a915ef4f361bf07a58e5873b0d5e7"),
+                hex32("2e9d1b29cea8eaba8c1dfe6d8c78b21127ce44a8378b3c9d2ee9ba0ddbd7c849"),
             ),
             (
                 U256::from(2_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000005060708"),
-                hex32("26ce0c15313d96d8625e92eab623f5dd969e16a17c173ef21f495c3f5921768f"),
+                hex32("1a03b5b4a38e241ee071764a843e5b7bf29aa0e455d7ccd53a83f729885bfb18"),
             ),
             (
                 U256::from(3_000_000_000u64),
                 hex32("80000000000000000000000000000000000000000000000000000000090a0b0c"),
-                hex32("2c58feec7503548e3b3938d3a30b113e1e26f241976d99547304a9053da876f6"),
+                hex32("1adc48d4e3b4478369ec2d8ce4ca72c397c9e75f019b24c9d65c262ae9757fa9"),
             ),
         ];
 
@@ -491,7 +506,7 @@ mod tests {
                 zeko_amount,
                 zeko_recipient_x,
                 zeko_recipient_is_odd,
-                3600,
+                INFINITE_TIMEOUT,
             );
             assert_eq!(fp_to_bytes(aux), expected_aux);
 
@@ -506,7 +521,7 @@ mod tests {
 
         assert_eq!(
             action_state,
-            hex32("1e014b9576be458e9917f4692eeaa506a601be2b7b36bb86e7e840edac8e74b5")
+            hex32("2503022f5ba200b5b44d13741ad0d6e01b8cbdab340d25e637c22f3980be1abf")
         );
     }
 

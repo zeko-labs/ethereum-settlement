@@ -14,7 +14,12 @@ waits for configurable finality.
   header.
 - `POST /v1/settlements` and `POST /v1/proofs/settlement`
 - `POST /v1/proofs/bridge`
+- `POST /v1/bridge/deposits/prove` — builds a native-deposit proof job from
+  the next contiguous finalized `BridgeDeposit` logs; callers cannot supply
+  deposit contents
 - `POST /v1/proofs/withdraw`
+- `GET /v1/bridge/withdrawals/:sequence/:offset` — returns the ordinary
+  Keccak Merkle proof and claim data for a settlement-bound native withdrawal
 - `GET /v1/proofs` and `GET /v1/proofs/:id`
 - `GET /health`
 
@@ -23,6 +28,11 @@ transaction hash cannot be reused for different input. Multiple OCaml commits
 may queue, but only one settlement can be proving or submitted at a time. The
 gateway assigns its Ethereum batch/action context only when it reaches the
 worker, after the previous settlement is confirmed.
+
+Bridge batches and settlements are mutually exclusive outer action-state
+writers. A bridge batch is rejected while any settlement is queued or active,
+and a settlement is rejected while a bridge batch is queued or active. This
+prevents purchasing two proofs against the same starting action checkpoint.
 
 The Mina compatibility subset is deliberately narrow:
 
@@ -94,6 +104,18 @@ cargo run --release -p zeko-proof-api
 `VIRTUAL_MINA_ACCOUNTS_PATH` points to a JSON array of complete Mina GraphQL
 account objects for the outer account and fee payer. Existing rows are not
 overwritten at startup.
+
+`VIRTUAL_MINA_OUTER_PUBLIC_KEY` identifies the rollup outer account updated by
+confirmed bridge receipts. The indexer decodes every exact five-field outer
+Witness action from the SP1 receipt, checks each intermediate Poseidon action
+state, and exposes those same fields through Mina-compatible `actions` reads.
+
+For the native bridge PoC, the gateway also indexes canonical bridge deposits
+and settlement V2 inner-action batches. Deposit proof jobs are constructed only
+from contiguous finalized logs beginning at the bridge contract's proven
+nonce. Settlement confirmation stores the ordered inner-action leaves. The
+public withdrawal endpoint returns a depth-16 Keccak proof, so a user can claim
+on Ethereum without generating a Mina or SP1 proof.
 
 The worker records `cycleCount`, `proverGas`, the network base/max prices,
 actual PROVE deduction after refund, Ethereum gas, confirmations, and explorer

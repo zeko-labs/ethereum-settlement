@@ -36,8 +36,9 @@ companion `~/zeko` tree:
 Deployment and acceptance steps are in `TESTNET_POC.md`. Remaining items for an
 actual testnet launch are operational: build the ELF with a real OCaml Zeko VK,
 generate the first real commit fixture, deploy/configure contracts and gateway,
-and run the listed end-to-end acceptance tests. The full bridge protocol and
-blob DA remain outside this milestone.
+and run the listed end-to-end acceptance tests. Native ETH bridging now has a
+local contract/glue E2E checkpoint; cancellation, ERC20 bridging, proof fees,
+real bridge proof fixtures, and blob DA remain outside this milestone.
 
 ## Current PoC Boundary
 
@@ -59,8 +60,8 @@ The current repository has useful PoC pieces:
 It should still be treated as a PoC. The settlement contract now represents all
 eight fields of Zeko's normal multisig outer state and its action-state length,
 but that path still needs its first real OCaml-produced end-to-end fixture. The
-bridge logic does not yet implement the full bridge protocol described in the
-OCaml design documents.
+native bridge implements the deliberately reduced no-cancellation PoC path
+described below, but not the full bridge protocol in the OCaml design docs.
 
 ## Settlement Binding
 
@@ -263,63 +264,58 @@ The important protocol facts are:
   upgrade ideas, but the design README marks those files as historical and not
   up to date.
 
-## Bridge Gaps In This Repo
+## Native Bridge PoC Status And Remaining Gaps
 
 ### Deposits
 
-The current Ethereum deposit flow locks assets and appends an Ethereum deposit
-accumulator. The SP1 bridge guest can replay that accumulator and compute a Zeko
-action-state transition. That is useful, but it is not the full Zeko bridge
-semantics yet.
+Implemented for the native-only PoC:
 
-Missing work:
+- The Ethereum bridge proxy is the synthetic L1 holder. OCaml accepts the
+  compressed key `(x = uint160(bridge), is_odd = false)` under the distinct
+  `Ethereum deposit V1` Poseidon domain.
+- SP1 emits every exact five-field outer Witness action, every intermediate
+  action state, and action-state lengths in a versioned public-values schema.
+- Solidity checks the receipt against the custody accumulator and appends each
+  action checkpoint to settlement. A later accepted Zeko commit must synchronize
+  that outer checkpoint before the deposit is final in rollup state.
+- The gateway derives bridge input only from contiguous canonical finalized
+  `BridgeDeposit` logs and mirrors the proven actions into the Mina GraphQL view.
+- Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout. The
+  arbitrary-timeout/ERC20 entry points are disabled by default, explicitly
+  cutting cancellation out of this PoC.
+- Rust and OCaml cross-language vectors assert the same three deposit aux
+  values.
 
-- Decide the canonical replacement for the Mina L1 token-outer account in the
-  Ethereum setting. The Ethereum bridge contract is the asset custodian, but the
-  Zeko action consumed by OCaml still needs a canonical form and index.
-- Bind deposit batches to accepted settlement checkpoints. A deposit action
-  should not be considered consumable on Zeko merely because an SP1 bridge proof
-  computes an action state; it must be tied to a Zeko outer action state that is
-  later accepted by settlement.
-- Track deposit indices and lengths in the same style as the OCaml bridge
-  design, not just a nonce and accumulator.
-- Implement timeout/cancelled-deposit semantics or explicitly declare them out
-  of scope for the Ethereum bridge MVP.
-- Add cancelled-deposit proof and Solidity refund path if timeouts are in scope.
-- Add bridge proof-fee fields and checks if the Ethereum bridge is expected to
-  preserve Zeko's fee model.
-- Add tests against OCaml-generated bridge actions, not only Rust fixtures.
-- Build an indexer/batcher that constructs deposit proof inputs from Ethereum
-  logs and Zeko action checkpoints instead of accepting arbitrary JSON.
+Remaining beyond this PoC: generate real OCaml deposit/commit proof fixtures,
+add the cancellation/refund protocol if desired, add circuit proof fees, and
+design ERC20 asset/token-ID semantics.
 
 ### Withdrawals
 
-The current withdrawal path is closer to the desired shape because it requires
-settlement action-state checkpoints and nullifies claims on Ethereum.
+Implemented for the native-only PoC:
 
-Missing work:
+- The OCaml committer exports each exact three-field inner Witness action and,
+  where archived, its native withdrawal preimage.
+- Settlement SP1 verifies the Pickles-bound inner action-state transition,
+  re-hashes each clear withdrawal against its action aux, and emits a depth-16
+  Keccak root with the global start index and count.
+- Solidity records the root only as part of the accepted settlement checkpoint,
+  enforces the virtual-slot withdrawal delay, and nullifies with a monotonic
+  per-recipient action index. Users submit an ordinary Merkle path and do not
+  generate a SNARK.
+- The gateway reconstructs and validates the root after confirmation and serves
+  withdrawal proofs through a public endpoint.
 
-- Replace the generic action-state checkpoint checks with real outer-state /
-  inner-action-state tracking from settlement.
-- Enforce the withdrawal delay from the Zeko bridge spec if it remains part of
-  the Ethereum design.
-- Implement ERC20 withdrawal semantics in the SP1 withdraw guest; it currently
-  only accepts the native token path.
-- Track withdrawal indices in the bridge-compatible way instead of relying only
-  on withdrawal roots and nullifiers.
-- Test withdrawal batches generated from the OCaml bridge circuit.
-- Decide how emergency/governance-induced inner-action-state changes affect
-  pending withdrawals on Ethereum.
+Remaining beyond this PoC: generate a real OCaml withdrawal/commit proof
+fixture, define ERC20 withdrawals, and specify how emergency/governance state
+changes interact with pending claims.
 
 ### Shared Bridge Work
 
-- Define exact field encodings for Ethereum addresses, Mina public keys,
-  amounts, timeouts, token IDs, and action indices.
-- Ensure Solidity, Rust guests, host scripts, and OCaml agree on endianess.
-- Version every hashed leaf/state prefix.
-- Separate deposit and withdrawal replay/nullifier domains clearly.
-- Add invariant tests for asset conservation across deposit, cancel, withdraw,
-  and emergency paths.
+- Define ERC20 token-ID and decimal encodings when ERC20 support is added.
+- Add invariant tests covering cancellation and emergency paths if those paths
+  enter scope. The native E2E already checks liability conservation on the
+  deposit-to-withdraw happy path.
 - Document the trust model: admin roles are acceptable for the PoC, but every
   production role must be deliberately scoped and eventually timelocked or
   governed.
@@ -462,12 +458,17 @@ not part of this verification target.
    outer state needed by bridge consumers. Add attached blob-hash checks for
    the production DA phase.
 6. Regenerate settlement fixtures from the OCaml Zeko commit prover.
-7. Redesign deposit proof inputs around accepted Zeko outer action checkpoints.
-8. Add cancelled-deposit and timeout support, or explicitly cut them from the
-   MVP with a written risk statement.
-9. Complete withdrawal ERC20/index/delay semantics.
+7. **Done for the native PoC:** derive deposit proof inputs from finalized
+   Ethereum logs and bind exact outer actions to settlement checkpoints.
+8. **Cut from the native PoC:** cancelled deposits and caller-selected timeouts;
+   add them only together with a complete refund protocol.
+9. **Native index/delay done; ERC20 pending:** settlement-bound inner-action
+   trees allow delayed, indexed native claims without user SNARK proving.
 10. **Multisig gateway done; blob batcher pending:** the gateway owns proving,
     Ethereum submission and canonical checkpoint indexing. Extend it to derive
     blob payloads and bridge inputs from Ethereum logs in the production phase.
-11. Add end-to-end tests: Ethereum deposit -> blob-backed Zeko batch -> OCaml
-    commit proof -> SP1 settlement -> Ethereum withdrawal claim.
+11. **Local contract/glue checkpoint done:** Ethereum deposit -> proven outer
+    action -> synchronized settlement -> settlement-bound inner root -> delayed
+    Ethereum withdrawal. Replace the mocked verifier boundary with real
+    OCaml/SP1 bridge fixtures for the live testnet, then add blob DA in the
+    production phase.

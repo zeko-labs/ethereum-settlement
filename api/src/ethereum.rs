@@ -1,10 +1,12 @@
 use alloy::{
     eips::BlockNumberOrTag,
     network::EthereumWallet,
-    primitives::{Address, Bytes, TxHash, B256},
+    primitives::{Address, Bytes, TxHash, B256, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol,
+    sol_types::SolEvent,
 };
 use anyhow::{Context, Result};
 use std::str::FromStr;
@@ -31,11 +33,25 @@ sol! {
         function currentDepositState() external view returns (bytes32);
         function currentWithdrawState() external view returns (bytes32);
         function currentWithdrawActionStateIndex() external view returns (uint64);
+        function bridgedDepositNonce() external view returns (uint64);
+        function withdrawalDelaySlots() external view returns (uint32);
         function processedActionState(bytes32 actionState) external view returns (bool);
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
         function submitBridgeTransition(bytes publicValues, bytes proofBytes) external;
         function submitWithdrawTransition(bytes publicValues, bytes proofBytes) external;
+        event BridgeDeposit(
+            uint64 indexed nonce,
+            bytes32 indexed depositLeaf,
+            bytes32 indexed newDepositState,
+            bytes32 oldDepositState,
+            address token,
+            address sender,
+            bytes32 zekoRecipient,
+            uint256 amount,
+            uint256 zekoAmount,
+            uint64 timeout
+        );
     }
 }
 
@@ -65,8 +81,27 @@ pub struct BridgeState {
     pub current_deposit_state: B256,
     pub current_withdraw_state: B256,
     pub current_withdraw_action_state_index: u64,
+    pub bridged_deposit_nonce: u64,
     pub action_state_processed: Option<bool>,
     pub paused: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BridgeDepositLog {
+    pub nonce: u64,
+    pub deposit_leaf: B256,
+    pub new_deposit_state: B256,
+    pub old_deposit_state: B256,
+    pub token: Address,
+    pub sender: Address,
+    pub zeko_recipient: B256,
+    pub amount: U256,
+    pub zeko_amount: U256,
+    pub timeout: u64,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub transaction_hash: TxHash,
+    pub log_index: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -208,6 +243,7 @@ impl Ethereum {
                     .currentWithdrawActionStateIndex()
                     .call()
                     .await?,
+                bridged_deposit_nonce: contract.bridgedDepositNonce().call().await?,
                 action_state_processed: match action_state_after {
                     Some(action_state) => {
                         Some(contract.processedActionState(action_state).call().await?)
@@ -218,6 +254,62 @@ impl Ethereum {
             },
             historical,
         ))
+    }
+
+    pub async fn bridge_deposit_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<BridgeDepositLog>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let filter = Filter::new()
+            .address(self.bridge_address)
+            .event_signature(IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+        provider
+            .get_logs(&filter)
+            .await?
+            .into_iter()
+            .map(|log| {
+                let decoded = log
+                    .log_decode_validate::<IEthereumZekoBridge::BridgeDeposit>()
+                    .context("decode BridgeDeposit log")?;
+                let data = decoded.data();
+                Ok(BridgeDepositLog {
+                    nonce: data.nonce,
+                    deposit_leaf: data.depositLeaf,
+                    new_deposit_state: data.newDepositState,
+                    old_deposit_state: data.oldDepositState,
+                    token: data.token,
+                    sender: data.sender,
+                    zeko_recipient: data.zekoRecipient,
+                    amount: data.amount,
+                    zeko_amount: data.zekoAmount,
+                    timeout: data.timeout,
+                    block_number: decoded
+                        .block_number
+                        .context("BridgeDeposit log missing block number")?,
+                    block_hash: decoded
+                        .block_hash
+                        .context("BridgeDeposit log missing block hash")?,
+                    transaction_hash: decoded
+                        .transaction_hash
+                        .context("BridgeDeposit log missing transaction hash")?,
+                    log_index: decoded
+                        .log_index
+                        .context("BridgeDeposit log missing log index")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn withdrawal_delay_slots(&self) -> Result<u32> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
+            .withdrawalDelaySlots()
+            .call()
+            .await?)
     }
 
     pub async fn l2_action_state_info(&self, action_state: B256) -> Result<(u64, bool)> {

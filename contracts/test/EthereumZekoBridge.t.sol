@@ -36,6 +36,8 @@ contract MockSettlementVerifier {
     mapping(bytes32 => bool) public validActionState;
     mapping(bytes32 => uint64) public l2ActionStateIndex;
     bytes32 public actionState;
+    uint32 public outerActionStateLength;
+    uint32 public appendCalls;
     uint64 public virtualSlot;
 
     struct Batch {
@@ -54,13 +56,19 @@ contract MockSettlementVerifier {
         actionState = value;
     }
 
+    function setOuterActionStateLength(uint32 value) external {
+        outerActionStateLength = value;
+    }
+
     function appendOuterWitnessBatch(
         bytes32 stateBefore,
         bytes32 stateAfter,
-        uint32
+        uint32 count
     ) external {
         require(stateBefore == actionState, "stale action state");
         actionState = stateAfter;
+        outerActionStateLength += count;
+        appendCalls += 1;
     }
 
     function setVirtualSlot(uint64 value) external {
@@ -199,6 +207,7 @@ contract EthereumZekoBridgeTest is Test {
             )
         );
         bridge = EthereumZekoBridge(payable(address(proxy)));
+        bridge.setLegacyDepositEnabled(true);
         bridge.setLegacyWithdrawEnabled(true);
         token18 = new TestERC20("Token18", "TK18", 18);
         token6 = new TestERC20("Token6", "TK6", 6);
@@ -219,6 +228,7 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(bridge.bridgeProgramVKey(), bridgeProgramVKey);
         assertEq(address(bridge.withdrawVerifier()), address(sp1Verifier));
         assertEq(bridge.withdrawProgramVKey(), withdrawProgramVKey);
+        assertTrue(bridge.legacyDepositEnabled());
         assertTrue(bridge.hasRole(bridge.DEFAULT_ADMIN_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.ADMIN_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.PROVER_ROLE(), owner));
@@ -442,6 +452,21 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(bridge.nativeEscrowLiability(), 1 ether);
     }
 
+    function test_LegacyDepositSwitchCannotBlockCanonicalNonceStream()
+        public
+    {
+        bridge.setLegacyDepositEnabled(false);
+        ZekoAddress recipient = ZekoAddressLib.pack(0x1234, false);
+
+        vm.expectRevert(
+            EthereumZekoBridge.LegacyDepositPathDisabled.selector
+        );
+        bridge.depositETH{value: 1 ether}(recipient, 10);
+
+        bridge.depositETH{value: 1 ether}(recipient);
+        assertEq(bridge.depositNonce(), 1);
+    }
+
     function test_ClaimNativeWithdrawalUsesSettlementRootDelayAndCursor()
         public
     {
@@ -655,6 +680,61 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(bridge.bridgedDepositNonce(), 1);
         assertEq(settlement.actionState(), actionState);
         assertEq(bridge.currentWithdrawState(), bytes32(0));
+    }
+
+    function test_SubmitBridgeTransitionV2_RecordsEveryActionCheckpoint()
+        public
+    {
+        bytes32 oldActionState = keccak256("v2 old action state");
+        bytes32 intermediateActionState = keccak256("v2 intermediate state");
+        bytes32 finalActionState = keccak256("v2 final action state");
+        settlement.setCurrentActionState(oldActionState);
+        settlement.setOuterActionStateLength(7);
+
+        ZekoAddress recipient = ZekoAddressLib.pack(123, false);
+        bridge.depositETH{value: 1 ether}(recipient);
+        bridge.depositETH{value: 2 ether}(recipient);
+
+        bytes memory firstAction = abi.encodePacked(
+            bytes32(uint256(1)),
+            bytes32(uint256(2)),
+            bytes32(uint256(3)),
+            bytes32(uint256(4)),
+            bytes32(uint256(5)),
+            intermediateActionState
+        );
+        bytes memory secondAction = abi.encodePacked(
+            bytes32(uint256(6)),
+            bytes32(uint256(7)),
+            bytes32(uint256(8)),
+            bytes32(uint256(9)),
+            bytes32(uint256(10)),
+            finalActionState
+        );
+        bytes memory publicValues = abi.encodePacked(
+            bytes4(0x5a4b4252),
+            uint16(2),
+            uint16(0),
+            bridge.depositStateByNonce(0),
+            bridge.currentDepositState(),
+            uint64(0),
+            uint64(2),
+            oldActionState,
+            finalActionState,
+            uint32(7),
+            uint32(9),
+            uint32(2),
+            firstAction,
+            secondAction
+        );
+
+        bridge.submitBridgeTransition(publicValues, "");
+
+        assertEq(settlement.actionState(), finalActionState);
+        assertEq(settlement.outerActionStateLength(), 9);
+        assertEq(settlement.appendCalls(), 2);
+        assertEq(bridge.bridgedDepositNonce(), 2);
+        assertTrue(bridge.processedActionState(finalActionState));
     }
 
     function test_SubmitBridgeTransition_RevertsWhenNotProver() public {

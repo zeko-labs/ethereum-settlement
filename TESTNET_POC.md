@@ -23,34 +23,53 @@ preimage, action fields, and source outer state. SP1 verifies Pickles and
 derives the settlement receipt. The gateway only supplies Ethereum-domain
 context, which the contract checks against its own state.
 
+The native bridge adds two proof-bound paths:
+
+```text
+ETH deposit -> BridgeDeposit log -> finalized gateway batch -> bridge SP1
+  -> exact outer Witness actions -> sequencer Mina actions view
+  -> later synchronized settlement checkpoint
+
+OCaml inner Witness actions -> settlement SP1 Keccak tree
+  -> accepted settlement V2 root -> gateway Merkle path
+  -> delayed permissionless ETH claim
+```
+
 ## Build and deploy order
 
-1. Build the OCaml outer rules and export their wrap verifier index. Build the
+1. Reserve the final bridge proxy address, preferably with deterministic
+   deployment. Configure the OCaml circuit's `ethereum_holder_account_l1` as
+   the compressed key `(x = uint160(proxy), is_odd = false)`. This address is
+   proof-bound; changing it requires rebuilding the OCaml bridge VK and SP1
+   programs.
+2. Build the OCaml outer rules and export their wrap verifier index. Build the
    settlement ELF with `SETTLEMENT_VK_JSON` pointing to that exact JSON. Do not
    deploy an ELF built with the copied o1 example VK.
-2. Obtain the SP1 program vkey with the host tooling and deploy an SP1 verifier
+3. Obtain the SP1 program vkey with the host tooling and deploy an SP1 verifier
    supported by SP1 6.1.
-3. Deploy `ZekoSettlement` behind `ERC1967Proxy`. Initialize the full eight
-   outer-state fields, action state/length, genesis timestamp, slot duration,
-   fork slot, program vkey and SHA-256 PoC VK identifier.
-4. Grant `PROVER_ROLE` only to the gateway settlement signer. Keep admin and
+4. Deploy `ZekoSettlement` and `EthereumZekoBridge` behind `ERC1967Proxy`.
+   Initialize the full eight outer-state fields, action state/length, genesis
+   timestamp, slot duration, fork slot, program vkey and SHA-256 PoC VK
+   identifier.
+5. Grant `PROVER_ROLE` only to the gateway settlement signer. Keep admin and
    upgrader keys separate.
-5. Create `virtual-mina-accounts.json` with complete GraphQL account objects
+6. Create `virtual-mina-accounts.json` with complete GraphQL account objects
    for the outer account and sequencer fee payer. Values must match the
    contract genesis state.
-6. Configure and start PostgreSQL plus the gateway. Set the Ethereum indexer
+7. Configure and start PostgreSQL plus the gateway. Set the Ethereum indexer
    start block to the settlement deployment block. When using Compose, add a
-   read-only bind mount for the accounts file and set
-   `VIRTUAL_MINA_ACCOUNTS_PATH` to its container path.
-7. Point the sequencer L1 GraphQL URI at `<gateway>/graphql` and set
+   read-only bind mount for the accounts file. Set
+   `VIRTUAL_MINA_ACCOUNTS_PATH` to its container path and
+   `VIRTUAL_MINA_OUTER_PUBLIC_KEY` to the rollup outer account.
+8. Point the sequencer L1 GraphQL URI at `<gateway>/graphql` and set
    `ZEKO_ETHEREUM_GATEWAY_TOKEN` to the API key. The modified committer sends
    the proof export with its normal `send_zkapp` call.
-8. Start with `API_EXECUTE_ONLY=true`. Produce one real OCaml commit and verify
-   that the job reaches `executed` and its 768-byte public values match the
-   initialized contract.
-9. Fund the Succinct requester account, switch execute-only off, and submit one
-   settlement. Confirm the contract state, gateway account view, pending pool,
-   actions query, job cost fields and confirmation count.
+9. Start with `API_EXECUTE_ONLY=true`. Produce one real OCaml commit and verify
+   that the job reaches `executed` and its public values match the initialized
+   contract.
+10. Fund the Succinct requester account, switch execute-only off, and submit
+    one settlement. Confirm the contract state, gateway account view, pending
+    pool, actions query, job cost fields and confirmation count.
 
 ## Required configuration
 
@@ -62,6 +81,9 @@ context, which the contract checks against its own state.
 - Mina façade: genesis timestamp, fork slot, account-creation fee, initial
   state hash and `VIRTUAL_MINA_ACCOUNTS_PATH`.
 - OCaml sequencer: gateway GraphQL URL and `ZEKO_ETHEREUM_GATEWAY_TOKEN`.
+- Native bridge: final bridge proxy address in the OCaml circuit config,
+  `BRIDGE_CONTRACT_ADDRESS`, `BRIDGE_PRIVATE_KEY`, and
+  `VIRTUAL_MINA_OUTER_PUBLIC_KEY`.
 
 ## Acceptance tests
 
@@ -83,9 +105,9 @@ context, which the contract checks against its own state.
 - The VK identifier is SHA-256 of verifier-index JSON, not the canonical Mina
   VK hash.
 - Multisig DA is not replaced by blobs in this milestone.
-- The existing bridge programs/contracts are separate PoC accumulators; full
-  deposit timeout/cancel and delayed withdrawal semantics from the Zeko design
-  are not claimed complete.
+- Native ETH deposits and delayed native withdrawals are implemented. Deposit
+  cancellation/timeouts, proof fees, and ERC20 bridging are intentionally out
+  of scope; their legacy entry points remain disabled by default.
 - `fixtures/zeko-local-e2e` is a genuine OCaml outer-commit fixture generated by
   `test_all_real`. It is suitable for the local execute-only checkpoint, but it
   is not a stable testnet genesis or production fixture.
@@ -133,3 +155,26 @@ It emitted 768 bytes of public values in 52,200,737,822 cycles, while the
 gateway process peaked at roughly 242 MiB RSS. The local settlement contract's
 batch sequence remained zero, confirming that execute-only mode made no
 Ethereum state change.
+
+## Local native-bridge checkpoint
+
+Run the contract/glue E2E without producing an SP1 proof:
+
+```sh
+cd contracts
+forge test --match-path test/NativeBridgePocE2E.t.sol -vv
+```
+
+The test deploys the real settlement and bridge implementations behind proxies,
+locks 1 ETH, accepts a bridge V2 receipt containing the exact outer Witness
+action, accepts a later settlement V2 receipt that synchronizes that outer
+checkpoint and commits a Keccak tree over exact inner actions, rejects an early
+claim, advances the virtual Mina slot, and releases the ETH with a depth-16
+Merkle proof. It checks the bridge liability and per-recipient cursor after the
+claim.
+
+The verifier is mocked only at the SP1 contract boundary. Proof-side coverage
+comes from the Rust guest tests and `ethereum_bridge_vectors.exe`, which asserts
+the same native-deposit Poseidon aux values in OCaml. A fully live testnet still
+needs freshly generated OCaml deposit/withdraw/commit fixtures built for the
+chosen bridge address and real deployed SP1 vkeys.

@@ -1,3 +1,4 @@
+use alloy::primitives::{keccak256, U256};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
@@ -11,12 +12,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
+use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Row};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
-use zeko_sp1_lib::{BridgeTransitionInput, SettlementContextV1, WithdrawTransitionInput};
+use zeko_sp1_lib::{
+    BridgeDeposit, BridgeTransitionInput, EthereumBridgeState, SettlementContextV1,
+    WithdrawTransitionInput, ZekoBridgeState,
+};
 use zkapp_script::SettlementProofBundle;
 
 mod ethereum;
@@ -50,6 +54,21 @@ struct CreatedJob {
     id: Uuid,
     status: &'static str,
     status_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWithdrawalProof {
+    settlement_sequence: u64,
+    offset: u32,
+    global_action_index: u32,
+    recipient: String,
+    amount: u64,
+    action_fields_hash: String,
+    siblings: Vec<String>,
+    inner_action_root: String,
+    commit_slot_upper: u32,
+    claimable_slot: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +196,7 @@ async fn main() -> Result<()> {
         .route("/v1/proofs/settlement", post(create_settlement))
         .route("/v1/settlements", post(create_settlement))
         .route("/v1/proofs/bridge", post(create_bridge))
+        .route("/v1/bridge/deposits/prove", post(create_deposit_batch))
         .route("/v1/proofs/withdraw", post(create_withdraw))
         .route("/v1/proofs", get(list_jobs))
         .route("/v1/proofs/:id", get(get_job))
@@ -188,6 +208,10 @@ async fn main() -> Result<()> {
             get(|| async { Json(serde_json::json!({"status": "ok"})) }),
         )
         .route("/graphql", post(graphql::handle))
+        .route(
+            "/v1/bridge/withdrawals/:sequence/:offset",
+            get(get_native_withdrawal_proof),
+        )
         .merge(protected)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -236,10 +260,34 @@ async fn create_settlement(
             "settlement proof must include the OCaml account-update binding",
         );
     }
+    match conflicting_outer_writer(&state.pool, "settlement").await {
+        Ok(false) => {}
+        Ok(true) => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "a bridge batch is queued or active; retry after it is finalized",
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "check bridge writer before settlement");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not check the outer action-state queue",
+            );
+        }
+    }
     // Ethereum-domain context is assigned when the worker claims this job.
     // This lets the sequencer queue later OCaml commits while an earlier
     // settlement is still proving without binding them to a stale L1 batch.
     request.proof.context = None;
+    if let Some(batch) = &mut request.proof.inner_action_batch {
+        batch.bridge_address = state
+            .ethereum
+            .bridge_address()
+            .as_slice()
+            .try_into()
+            .expect("Ethereum address length");
+    }
     create_job(
         &state,
         &headers,
@@ -291,6 +339,22 @@ async fn create_bridge(
     headers: HeaderMap,
     Json(input): Json<BridgeTransitionInput>,
 ) -> Response {
+    match conflicting_outer_writer(&state.pool, "bridge").await {
+        Ok(false) => {}
+        Ok(true) => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "a settlement is queued or active; retry after it is finalized",
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "check settlement writer before bridge");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not check the outer action-state queue",
+            );
+        }
+    }
     create_job(
         &state,
         &headers,
@@ -298,6 +362,257 @@ async fn create_bridge(
         serde_json::to_value(input).unwrap(),
     )
     .await
+}
+
+/// Builds the bridge proof input exclusively from canonical Ethereum logs.
+/// This is the PoC production endpoint; `/v1/proofs/bridge` is retained only
+/// for explicit fixture/debug inputs.
+async fn create_deposit_batch(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    match conflicting_outer_writer(&state.pool, "bridge").await {
+        Ok(false) => {}
+        Ok(true) => {
+            return api_error(
+                StatusCode::CONFLICT,
+                "a settlement is queued or active; retry after it is finalized",
+            );
+        }
+        Err(error) => {
+            tracing::error!(%error, "check settlement writer before bridge");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not check the outer action-state queue",
+            );
+        }
+    }
+    match canonical_deposit_batch(&state).await {
+        Ok(input) => {
+            create_job(
+                &state,
+                &headers,
+                "bridge",
+                serde_json::to_value(input).expect("serialize bridge input"),
+            )
+            .await
+        }
+        Err(error) => api_error(StatusCode::CONFLICT, &error.to_string()),
+    }
+}
+
+async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInput> {
+    let (bridge, _historical) = state.ethereum.bridge_state("bridge", None, None).await?;
+    anyhow::ensure!(!bridge.paused, "bridge contract is paused");
+    anyhow::ensure!(
+        bridge.deposit_nonce > bridge.bridged_deposit_nonce,
+        "there are no unbridged deposits"
+    );
+    let (_, historical) = state
+        .ethereum
+        .bridge_state("bridge", Some(bridge.bridged_deposit_nonce), None)
+        .await?;
+    let historical = historical.context("missing bridged deposit checkpoint")?;
+    let settlement = state.ethereum.settlement_state().await?;
+    let rows = sqlx::query(
+        "SELECT nonce, old_deposit_state, new_deposit_state, token,
+                zeko_recipient, ethereum_amount::text AS ethereum_amount,
+                zeko_amount::text AS zeko_amount, timeout
+         FROM gateway_bridge_deposits deposits
+         JOIN gateway_blocks blocks
+           ON blocks.block_number = deposits.ethereum_block_number
+          AND blocks.block_hash = deposits.ethereum_block_hash
+         WHERE NOT deposits.removed AND blocks.canonical AND blocks.finalized
+           AND nonce > $1 AND nonce <= $2
+         ORDER BY nonce",
+    )
+    .bind(i64::try_from(bridge.bridged_deposit_nonce)?)
+    .bind(i64::try_from(bridge.deposit_nonce)?)
+    .fetch_all(&state.pool)
+    .await?;
+    anyhow::ensure!(
+        rows.len() == usize::try_from(bridge.deposit_nonce - bridge.bridged_deposit_nonce)?,
+        "canonical deposit log range is incomplete"
+    );
+
+    let mut expected_nonce = bridge.bridged_deposit_nonce + 1;
+    let mut expected_state = historical;
+    let mut deposits = Vec::with_capacity(rows.len());
+    for row in rows {
+        let nonce = u64::try_from(row.try_get::<i64, _>("nonce")?)?;
+        anyhow::ensure!(
+            nonce == expected_nonce,
+            "deposit nonce range is not contiguous"
+        );
+        let old_state: alloy::primitives::B256 = row
+            .try_get::<String, _>("old_deposit_state")?
+            .parse()
+            .context("invalid indexed old deposit state")?;
+        let new_state: alloy::primitives::B256 = row
+            .try_get::<String, _>("new_deposit_state")?
+            .parse()
+            .context("invalid indexed new deposit state")?;
+        anyhow::ensure!(
+            old_state == expected_state,
+            "deposit accumulator is discontinuous"
+        );
+        let token: alloy::primitives::Address = row
+            .try_get::<String, _>("token")?
+            .parse()
+            .context("invalid indexed token")?;
+        anyhow::ensure!(
+            token.is_zero(),
+            "only canonical native deposits are batchable"
+        );
+        let timeout = u64::try_from(row.try_get::<i64, _>("timeout")?)?;
+        anyhow::ensure!(
+            timeout == u64::from(u32::MAX),
+            "deposit does not use the no-cancellation timeout"
+        );
+        let ethereum_amount =
+            U256::from_str_radix(&row.try_get::<String, _>("ethereum_amount")?, 10)?;
+        let zeko_amount = U256::from_str_radix(&row.try_get::<String, _>("zeko_amount")?, 10)?;
+        anyhow::ensure!(
+            ethereum_amount == zeko_amount * U256::from(1_000_000_000u64),
+            "indexed native amount normalization mismatch"
+        );
+        let recipient: alloy::primitives::B256 = row
+            .try_get::<String, _>("zeko_recipient")?
+            .parse()
+            .context("invalid indexed Zeko recipient")?;
+        deposits.push(BridgeDeposit {
+            amount: ethereum_amount.to_be_bytes(),
+            zeko_recipient: recipient.0,
+        });
+        expected_nonce += 1;
+        expected_state = new_state;
+    }
+    anyhow::ensure!(
+        expected_state == bridge.current_deposit_state,
+        "indexed deposit accumulator does not reach bridge state"
+    );
+
+    Ok(BridgeTransitionInput {
+        ethereum: EthereumBridgeState {
+            chain_id: state.ethereum.chain_id().await?,
+            bridge_address: state
+                .ethereum
+                .bridge_address()
+                .as_slice()
+                .try_into()
+                .expect("Ethereum address length"),
+            deposit_nonce: bridge.bridged_deposit_nonce,
+            deposit_state: historical.0,
+            withdraw_state: bridge.current_withdraw_state.0,
+        },
+        zeko: ZekoBridgeState {
+            action_state: settlement.action_state.0,
+            action_state_length: settlement.outer_action_state_length,
+        },
+        deposits,
+    })
+}
+
+async fn get_native_withdrawal_proof(
+    State(state): State<AppState>,
+    Path((sequence, offset)): Path<(u64, u32)>,
+) -> Response {
+    match load_native_withdrawal_proof(&state, sequence, offset).await {
+        Ok(proof) => Json(proof).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, &error.to_string()),
+    }
+}
+
+async fn load_native_withdrawal_proof(
+    state: &AppState,
+    sequence: u64,
+    offset: u32,
+) -> Result<NativeWithdrawalProof> {
+    let rows = sqlx::query(
+        "SELECT action_offset, global_action_index, action_fields_hash, leaf,
+                recipient, zeko_amount::text AS zeko_amount, inner_action_root,
+                commit_slot_upper
+         FROM gateway_inner_action_leaves
+         WHERE settlement_sequence = $1 AND NOT removed
+         ORDER BY action_offset",
+    )
+    .bind(i64::try_from(sequence)?)
+    .fetch_all(&state.pool)
+    .await?;
+    anyhow::ensure!(!rows.is_empty(), "settlement inner-action batch not found");
+    let target = rows
+        .get(usize::try_from(offset)?)
+        .context("withdrawal offset is outside the batch")?;
+    anyhow::ensure!(
+        target.try_get::<i32, _>("action_offset")? == i32::try_from(offset)?,
+        "inner-action batch is not contiguous"
+    );
+    let recipient: String = target
+        .try_get::<Option<String>, _>("recipient")?
+        .context("inner action is not a claimable native withdrawal")?;
+    let amount = target
+        .try_get::<Option<String>, _>("zeko_amount")?
+        .context("withdrawal amount missing")?
+        .parse::<u64>()?;
+    let leaves = rows
+        .iter()
+        .map(|row| -> Result<[u8; 32]> {
+            Ok(row
+                .try_get::<String, _>("leaf")?
+                .parse::<alloy::primitives::B256>()?
+                .0)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let siblings = inner_action_merkle_proof(&leaves, usize::try_from(offset)?)
+        .into_iter()
+        .map(|hash| format!("0x{}", hex::encode(hash)))
+        .collect();
+    let commit_slot_upper = u32::try_from(target.try_get::<i64, _>("commit_slot_upper")?)?;
+    let delay = state.ethereum.withdrawal_delay_slots().await?;
+
+    Ok(NativeWithdrawalProof {
+        settlement_sequence: sequence,
+        offset,
+        global_action_index: u32::try_from(target.try_get::<i64, _>("global_action_index")?)?,
+        recipient,
+        amount,
+        action_fields_hash: target.try_get("action_fields_hash")?,
+        siblings,
+        inner_action_root: target.try_get("inner_action_root")?,
+        commit_slot_upper,
+        claimable_slot: u64::from(commit_slot_upper) + u64::from(delay),
+    })
+}
+
+fn inner_action_merkle_proof(leaves: &[[u8; 32]], target: usize) -> [[u8; 32]; 16] {
+    let zero_hashes = inner_action_zero_hashes();
+    let mut proof = [[0u8; 32]; 16];
+    let mut nodes = leaves.to_vec();
+    let mut index = target;
+    for level in 0..16 {
+        proof[level] = nodes.get(index ^ 1).copied().unwrap_or(zero_hashes[level]);
+        nodes = nodes
+            .chunks(2)
+            .map(|pair| {
+                hash_inner_action_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level]))
+            })
+            .collect();
+        index >>= 1;
+    }
+    proof
+}
+
+fn inner_action_zero_hashes() -> [[u8; 32]; 17] {
+    let mut hashes = [[0u8; 32]; 17];
+    for level in 0..16 {
+        hashes[level + 1] = hash_inner_action_node(hashes[level], hashes[level]);
+    }
+    hashes
+}
+
+fn hash_inner_action_node(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let mut encoded = Vec::with_capacity(96);
+    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_NODE_V2").0);
+    encoded.extend_from_slice(&left);
+    encoded.extend_from_slice(&right);
+    keccak256(encoded).0
 }
 
 async fn create_withdraw(
@@ -361,6 +676,16 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
                     "another settlement is still active; retry after it is finalized",
                 );
             }
+            if error
+                .as_database_error()
+                .and_then(|database| database.constraint())
+                == Some("one_active_bridge_batch")
+            {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "another bridge batch is still active; retry after it is finalized",
+                );
+            }
             tracing::error!(%error, "create proof job");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -368,6 +693,27 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
             )
         }
     }
+}
+
+async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result<bool> {
+    let conflicting_kind = match requested_kind {
+        "settlement" => "bridge",
+        "bridge" => "settlement",
+        _ => return Ok(false),
+    };
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(
+             SELECT 1 FROM proof_jobs
+             WHERE kind::text = $1
+               AND status IN (
+                 'queued', 'validating', 'proof_requested', 'proving',
+                 'submitting', 'submitted'
+               )
+         )",
+    )
+    .bind(conflicting_kind)
+    .fetch_one(pool)
+    .await?)
 }
 
 async fn get_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
@@ -452,10 +798,11 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
         .fetch_one(&mut *tx)
         .await?;
     let job = sqlx::query_as::<_, ClaimedJob>(
-        "SELECT id, kind::text AS kind, input, proof_request_id
-         FROM proof_jobs
-         WHERE status = 'queued'
-           AND (kind <> 'settlement' OR NOT EXISTS (
+        "SELECT queued.id, queued.kind::text AS kind, queued.input,
+                queued.proof_request_id
+         FROM proof_jobs queued
+         WHERE queued.status = 'queued'
+           AND (queued.kind <> 'settlement' OR NOT EXISTS (
              SELECT 1 FROM proof_jobs active
              WHERE active.kind = 'settlement'
                AND active.status IN (
@@ -463,7 +810,16 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
                  'submitting', 'submitted'
                )
            ))
-         ORDER BY created_at
+           AND (queued.kind NOT IN ('settlement', 'bridge') OR NOT EXISTS (
+             SELECT 1 FROM proof_jobs active
+             WHERE active.kind <> queued.kind
+               AND active.kind IN ('settlement', 'bridge')
+               AND active.status IN (
+                 'validating', 'proof_requested', 'proving',
+                 'submitting', 'submitted'
+               )
+           ))
+         ORDER BY queued.created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1",
     )
@@ -720,6 +1076,10 @@ async fn validate_preflight(
                 .await?;
             anyhow::ensure!(!chain.paused, "bridge contract is paused");
             anyhow::ensure!(
+                values.ethereum_nonce_before == chain.bridged_deposit_nonce,
+                "bridge batch does not start at the next unbridged nonce"
+            );
+            anyhow::ensure!(
                 chain.action_state_processed == Some(false),
                 "bridge action state already processed"
             );
@@ -742,6 +1102,29 @@ async fn validate_preflight(
                 chain.current_deposit_state,
                 "current deposit state",
             )?;
+            let settlement = state.ethereum.settlement_state().await?;
+            ensure_bytes_eq(
+                values.zeko_action_state_before,
+                settlement.action_state,
+                "settlement outer action state",
+            )?;
+            anyhow::ensure!(
+                values.zeko_action_state_length_before == settlement.outer_action_state_length,
+                "settlement outer action-state length mismatch"
+            );
+            anyhow::ensure!(
+                values.zeko_action_state_length_after
+                    == values
+                        .zeko_action_state_length_before
+                        .checked_add(u32::try_from(values.actions.len())?)
+                        .context("bridge action-state length overflow")?,
+                "bridge action-state length transition mismatch"
+            );
+            anyhow::ensure!(
+                values.actions.last().map(|action| action.state_after)
+                    == Some(values.zeko_action_state_after),
+                "bridge final action-state checkpoint mismatch"
+            );
         }
         prover::Preflight::Withdraw { values, .. } => {
             let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
@@ -884,16 +1267,23 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
     let state_hash = env::var("VIRTUAL_MINA_INITIAL_STATE_HASH").unwrap_or_else(|_| {
         "0x0000000000000000000000000000000000000000000000000000000000000000".to_owned()
     });
+    let outer_public_key = nonempty_env("VIRTUAL_MINA_OUTER_PUBLIC_KEY");
     sqlx::query(
         "INSERT INTO gateway_config
-            (id, genesis_timestamp, fork_slot, account_creation_fee, state_hash)
-         VALUES (TRUE, $1, $2, $3, $4)
-         ON CONFLICT (id) DO NOTHING",
+            (id, genesis_timestamp, fork_slot, account_creation_fee, state_hash,
+             outer_public_key)
+         VALUES (TRUE, $1, $2, $3, $4, $5)
+         ON CONFLICT (id) DO UPDATE SET
+            outer_public_key = COALESCE(
+                gateway_config.outer_public_key,
+                EXCLUDED.outer_public_key
+            )",
     )
     .bind(genesis_timestamp)
     .bind(fork_slot)
     .bind(account_creation_fee)
     .bind(state_hash)
+    .bind(outer_public_key)
     .execute(pool)
     .await?;
     if let Some(path) = nonempty_env("VIRTUAL_MINA_ACCOUNTS_PATH") {
@@ -923,4 +1313,46 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn withdrawal_proof_uses_fixed_depth_and_preserves_offsets() {
+        let leaves = [
+            keccak256("first").0,
+            keccak256("second").0,
+            keccak256("third").0,
+        ];
+        for target in 0..leaves.len() {
+            let proof = inner_action_merkle_proof(&leaves, target);
+            let mut computed = leaves[target];
+            let mut index = target;
+            for sibling in proof {
+                computed = if index & 1 == 0 {
+                    hash_inner_action_node(computed, sibling)
+                } else {
+                    hash_inner_action_node(sibling, computed)
+                };
+                index >>= 1;
+            }
+
+            let zero_hashes = inner_action_zero_hashes();
+            let mut nodes = leaves.to_vec();
+            for level in 0..16 {
+                nodes = nodes
+                    .chunks(2)
+                    .map(|pair| {
+                        hash_inner_action_node(
+                            pair[0],
+                            pair.get(1).copied().unwrap_or(zero_hashes[level]),
+                        )
+                    })
+                    .collect();
+            }
+            assert_eq!(computed, nodes[0]);
+        }
+    }
 }

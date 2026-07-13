@@ -8,7 +8,7 @@ use sp1_sdk::{
     SP1Stdin,
 };
 use zeko_sp1_lib::{
-    BridgeTransitionInput, BridgeTransitionPublicValues, SettlementPublicValues,
+    BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues,
     WithdrawTransitionInput, WithdrawTransitionPublicValues,
 };
 use zkapp_script::{
@@ -45,7 +45,7 @@ pub enum Preflight {
         cycles: u64,
     },
     Bridge {
-        values: BridgeTransitionPublicValues,
+        values: BridgeTransitionPublicValuesV2,
         public_values: Vec<u8>,
         cycles: u64,
     },
@@ -89,7 +89,8 @@ pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
                 cycles,
             }),
             "bridge" => Ok(Preflight::Bridge {
-                values: bincode::deserialize(&public_values)?,
+                values: BridgeTransitionPublicValuesV2::decode(&public_values)
+                    .map_err(anyhow::Error::msg)?,
                 public_values,
                 cycles,
             }),

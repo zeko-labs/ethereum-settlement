@@ -157,27 +157,66 @@ keccak256(
 )
 ```
 
-5. Computes the Zeko deposit action:
+5. Computes the native Ethereum deposit aux value:
 
 ```text
-Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
-  Field(0),
-  holderAccountL1,
+Poseidon.hashWithPrefix("Ethereum deposit V1", [
+  emptyCallForest,
+  bridgeAddress.x,
+  false,
   zekoAmount,
   recipient.x,
   recipient.isOdd,
-  timeout
+  UInt32.max
 ])
 ```
 
-6. Adds that action to the Zeko action-state sequence using the same Poseidon update semantics as o1js.
+6. Emits the exact five-field outer Witness action
+   `[1, aux, 0, 0, UInt32.max]`, then adds it to the Zeko action-state sequence
+   using Mina Poseidon semantics.
 
 The bridge public output includes:
 
 - Ethereum deposit state before/after
 - Ethereum nonce before/after
 - Zeko action state before/after
-- deposit count
+- Zeko action-state length before/after
+- every exact five-field action and its intermediate action-state checkpoint
+
+The native path accepts ETH only, requires 1 gwei granularity, fixes the timeout
+to `UInt32.max`, and rejects an empty batch. Arbitrary-timeout and ERC20 deposit
+entry points are disabled by default because the current OCaml PoC cannot safely
+consume or cancel them.
+
+## Native Bridge PoC
+
+Settlement public values V2 bind the exact ordered inner actions to the
+proof-verified inner action-state transition. SP1 emits a depth-16 Keccak root,
+the global start index, count, bridge address, and the normal settlement
+receipt. Solidity records that root only while accepting the corresponding
+settlement transition. A native withdrawal claim supplies an ordinary Merkle
+proof, amount, recipient, and action-fields hash; it does not require the user
+to generate a SNARK.
+
+The OCaml Ethereum deposit rule recognizes one additional synthetic holder key:
+`x = uint160(EthereumZekoBridge)` and `is_odd = false`. Its circuit configuration
+must contain the exact final bridge proxy address before the OCaml bridge VK and
+SP1 ELF are built. Use a predetermined deployment address (for example CREATE2)
+or deploy the proxy first, then build the circuit artifacts against it.
+
+Run the contract/glue checkpoint locally:
+
+```sh
+cd contracts
+forge test --match-path test/NativeBridgePocE2E.t.sol -vv
+```
+
+This locks native ETH, imports the deposit as an exact outer Witness action,
+accepts a later settlement that synchronizes that checkpoint and binds an inner
+withdrawal tree, enforces the configured delay, and releases ETH with a Merkle
+claim. The test uses a mock SP1 verifier at the contract boundary; Rust guest
+tests and OCaml cross-language vectors cover the two proof-side encodings
+without generating an SP1 proof.
 
 ## Withdraw Circuit
 
@@ -328,7 +367,9 @@ deposit_count     : 3
 
 The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
 checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
-Network, simulates contract submission, and broadcasts valid transactions.
+Network, simulates contract submission, and broadcasts valid transactions. Its
+native deposit endpoint derives proof input from canonical finalized Ethereum
+logs, and its public withdrawal endpoint serves settlement-bound Keccak paths.
 
 It can run with Docker Compose using a read-only environment-file mount and a
 persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and

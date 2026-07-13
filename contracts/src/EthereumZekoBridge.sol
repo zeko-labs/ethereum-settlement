@@ -25,6 +25,8 @@ import {ISP1Verifier} from "./ZekoSettlement.sol";
 interface IZekoSettlementVerifier {
     function actionState() external view returns (bytes32);
 
+    function outerActionStateLength() external view returns (uint32);
+
     function appendOuterWitnessBatch(
         bytes32 stateBefore,
         bytes32 stateAfter,
@@ -99,6 +101,8 @@ contract EthereumZekoBridge is
     );
     error ActionStateAlreadyProcessed(bytes32 actionState);
     error InvalidBridgePublicValuesLength(uint256 expected, uint256 actual);
+    error InvalidBridgePublicValuesMagic(bytes4 actual);
+    error InvalidBridgePublicValuesVersion(uint16 actual);
     error InvalidDepositState(bytes32 expected, bytes32 actual);
     error InvalidDepositNonce(uint64 expected, uint64 actual);
     error InvalidWithdrawState(bytes32 withdrawState);
@@ -106,6 +110,7 @@ contract EthereumZekoBridge is
     error InvalidWithdrawToken(bytes32 token);
     error InvalidWithdrawRecipient(bytes32 recipient);
     error WithdrawAlreadyClaimed(bytes32 nullifier);
+    error LegacyDepositPathDisabled();
     error LegacyWithdrawPathDisabled();
     error WithdrawalNotYetClaimable(uint64 currentSlot, uint64 claimableSlot);
     error WithdrawalIndexAlreadyProcessed(
@@ -151,6 +156,10 @@ contract EthereumZekoBridge is
         1 << WITHDRAW_MERKLE_TREE_DEPTH;
 
     uint256 private constant BRIDGE_PUBLIC_VALUES_LENGTH = 148;
+    bytes4 private constant BRIDGE_PUBLIC_VALUES_V2_MAGIC = 0x5a4b4252; // ZKBR
+    uint16 private constant BRIDGE_PUBLIC_VALUES_V2_VERSION = 2;
+    uint256 private constant BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH = 164;
+    uint256 private constant BRIDGE_ACTION_BYTES = 192;
     uint256 private constant WITHDRAW_PUBLIC_VALUES_LENGTH = 164;
 
     uint8 public constant MAX_ZEKO_DECIMALS = 9;
@@ -176,12 +185,15 @@ contract EthereumZekoBridge is
     }
 
     struct DecodedBridgePublicValues {
+        uint16 schemaVersion;
         bytes32 ethereumStateBefore;
         bytes32 ethereumStateAfter;
         uint64 ethereumNonceBefore;
         uint64 ethereumNonceAfter;
         bytes32 zekoActionStateBefore;
         bytes32 zekoActionStateAfter;
+        uint32 zekoActionStateLengthBefore;
+        uint32 zekoActionStateLengthAfter;
         uint32 depositCount;
     }
 
@@ -258,6 +270,7 @@ contract EthereumZekoBridge is
     uint32 public withdrawalDelaySlots;
     uint256 public nativeEscrowLiability;
     bool public legacyWithdrawEnabled;
+    bool public legacyDepositEnabled;
 
     // -------------------------------------------------------------------------
     // Events
@@ -331,6 +344,7 @@ contract EthereumZekoBridge is
         bytes32 actionFieldsHash
     );
     event WithdrawalDelayUpdated(uint32 oldDelay, uint32 newDelay);
+    event LegacyDepositPathUpdated(bool enabled);
     event LegacyWithdrawPathUpdated(bool enabled);
 
     // -------------------------------------------------------------------------
@@ -468,6 +482,16 @@ contract EthereumZekoBridge is
         emit LegacyWithdrawPathUpdated(enabled);
     }
 
+    /// @notice Compatibility switch for arbitrary-timeout/ERC20 deposit
+    /// fixtures. Native PoC deployments leave this disabled so an unsupported
+    /// deposit cannot block the canonical nonce stream.
+    function setLegacyDepositEnabled(
+        bool enabled
+    ) external onlyRole(ADMIN_ROLE) {
+        legacyDepositEnabled = enabled;
+        emit LegacyDepositPathUpdated(enabled);
+    }
+
     /// @notice Emergency withdrawal for stuck funds.
     /// @dev Use carefully. For a production bridge, prefer a timelock or governance flow.
     function emergencyWithdrawToken(
@@ -507,6 +531,7 @@ contract EthereumZekoBridge is
         whenNotPaused
         returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
     {
+        if (!legacyDepositEnabled) revert LegacyDepositPathDisabled();
         if (token == address(0)) revert ZeroAddress();
 
         TokenConfig memory config = allowedToken[token];
@@ -538,6 +563,7 @@ contract EthereumZekoBridge is
         whenNotPaused
         returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
     {
+        if (!legacyDepositEnabled) revert LegacyDepositPathDisabled();
         TokenConfig memory config = allowedToken[address(0)];
         if (!config.allowed) revert TokenNotAllowed(address(0));
         if (msg.value == 0) revert ZeroAmount();
@@ -709,6 +735,21 @@ contract EthereumZekoBridge is
                 decoded.zekoActionStateBefore
             );
         }
+        if (decoded.schemaVersion == BRIDGE_PUBLIC_VALUES_V2_VERSION) {
+            uint32 settlementActionStateLength = settlementVerifier
+                .outerActionStateLength();
+            if (
+                decoded.zekoActionStateLengthBefore !=
+                settlementActionStateLength ||
+                decoded.zekoActionStateLengthAfter !=
+                decoded.zekoActionStateLengthBefore + decoded.depositCount
+            ) {
+                revert InvalidBridgePublicValuesLength(
+                    settlementActionStateLength + decoded.depositCount,
+                    decoded.zekoActionStateLengthAfter
+                );
+            }
+        }
 
         if (
             depositStateByNonce[decoded.ethereumNonceBefore] !=
@@ -746,11 +787,32 @@ contract EthereumZekoBridge is
 
         processedActionState[decoded.zekoActionStateAfter] = true;
         bridgedDepositNonce = decoded.ethereumNonceAfter;
-        settlementVerifier.appendOuterWitnessBatch(
-            decoded.zekoActionStateBefore,
-            decoded.zekoActionStateAfter,
-            decoded.depositCount
-        );
+        if (decoded.schemaVersion == BRIDGE_PUBLIC_VALUES_V2_VERSION) {
+            bytes32 stateBefore = decoded.zekoActionStateBefore;
+            uint256 actionCursor = BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH;
+            for (uint32 i = 0; i < decoded.depositCount; i++) {
+                bytes32 stateAfter = _readBytes32(
+                    publicValues,
+                    actionCursor + 160
+                );
+                settlementVerifier.appendOuterWitnessBatch(
+                    stateBefore,
+                    stateAfter,
+                    1
+                );
+                stateBefore = stateAfter;
+                actionCursor += BRIDGE_ACTION_BYTES;
+            }
+            if (stateBefore != decoded.zekoActionStateAfter) {
+                revert InvalidSettlementActionState(stateBefore);
+            }
+        } else {
+            settlementVerifier.appendOuterWitnessBatch(
+                decoded.zekoActionStateBefore,
+                decoded.zekoActionStateAfter,
+                decoded.depositCount
+            );
+        }
 
         emit BridgeTransitionAccepted(
             decoded.zekoActionStateBefore,
@@ -858,31 +920,98 @@ contract EthereumZekoBridge is
     function decodeBridgePublicValues(
         bytes calldata publicValues
     ) public pure returns (DecodedBridgePublicValues memory decoded) {
-        if (publicValues.length != BRIDGE_PUBLIC_VALUES_LENGTH) {
+        if (publicValues.length == BRIDGE_PUBLIC_VALUES_LENGTH) {
+            decoded.schemaVersion = 1;
+            uint256 legacyCursor = 0;
+            decoded.ethereumStateBefore = _readBytes32(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 32;
+            decoded.ethereumStateAfter = _readBytes32(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 32;
+            decoded.ethereumNonceBefore = _readUint64LE(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 8;
+            decoded.ethereumNonceAfter = _readUint64LE(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 8;
+            decoded.zekoActionStateBefore = _readBytes32(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 32;
+            decoded.zekoActionStateAfter = _readBytes32(
+                publicValues,
+                legacyCursor
+            );
+            legacyCursor += 32;
+            decoded.depositCount = _readUint32LE(
+                publicValues,
+                legacyCursor
+            );
+            return decoded;
+        }
+        if (publicValues.length < BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH) {
             revert InvalidBridgePublicValuesLength(
-                BRIDGE_PUBLIC_VALUES_LENGTH,
+                BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH,
                 publicValues.length
             );
         }
-
-        uint256 cursor = 0;
-
+        bytes4 magic = bytes4(publicValues[0:4]);
+        if (magic != BRIDGE_PUBLIC_VALUES_V2_MAGIC) {
+            revert InvalidBridgePublicValuesMagic(magic);
+        }
+        uint16 version = uint16(bytes2(publicValues[4:6]));
+        if (version != BRIDGE_PUBLIC_VALUES_V2_VERSION) {
+            revert InvalidBridgePublicValuesVersion(version);
+        }
+        if (publicValues[6] != 0 || publicValues[7] != 0) {
+            revert InvalidWithdrawProof();
+        }
+        decoded.schemaVersion = version;
+        uint256 cursor = 8;
         decoded.ethereumStateBefore = _readBytes32(publicValues, cursor);
         cursor += 32;
         decoded.ethereumStateAfter = _readBytes32(publicValues, cursor);
         cursor += 32;
-        decoded.ethereumNonceBefore = _readUint64LE(publicValues, cursor);
+        decoded.ethereumNonceBefore = _readUint64BE(publicValues, cursor);
         cursor += 8;
-        decoded.ethereumNonceAfter = _readUint64LE(publicValues, cursor);
+        decoded.ethereumNonceAfter = _readUint64BE(publicValues, cursor);
         cursor += 8;
         decoded.zekoActionStateBefore = _readBytes32(publicValues, cursor);
         cursor += 32;
         decoded.zekoActionStateAfter = _readBytes32(publicValues, cursor);
         cursor += 32;
-        decoded.depositCount = _readUint32LE(publicValues, cursor);
+        decoded.zekoActionStateLengthBefore = _readUint32BE(
+            publicValues,
+            cursor
+        );
         cursor += 4;
-
-        assert(cursor == BRIDGE_PUBLIC_VALUES_LENGTH);
+        decoded.zekoActionStateLengthAfter = _readUint32BE(
+            publicValues,
+            cursor
+        );
+        cursor += 4;
+        decoded.depositCount = _readUint32BE(publicValues, cursor);
+        cursor += 4;
+        uint256 expectedLength =
+            BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH +
+            uint256(decoded.depositCount) *
+            BRIDGE_ACTION_BYTES;
+        if (publicValues.length != expectedLength) {
+            revert InvalidBridgePublicValuesLength(
+                expectedLength,
+                publicValues.length
+            );
+        }
     }
 
     function decodeWithdrawPublicValues(
@@ -1293,6 +1422,20 @@ contract EthereumZekoBridge is
         for (uint256 i = 0; i < 4; i++) {
             value |= uint32(uint8(data[offset + i])) << uint32(8 * i);
         }
+    }
+
+    function _readUint64BE(
+        bytes calldata data,
+        uint256 offset
+    ) private pure returns (uint64) {
+        return uint64(bytes8(data[offset:offset + 8]));
+    }
+
+    function _readUint32BE(
+        bytes calldata data,
+        uint256 offset
+    ) private pure returns (uint32) {
+        return uint32(bytes4(data[offset:offset + 4]));
     }
 
     function _authorizeUpgrade(
