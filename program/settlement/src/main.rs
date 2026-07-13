@@ -10,6 +10,8 @@ sp1_zkvm::entrypoint!(main);
 use pickles_verifier::serialize::decode_verifier_blob;
 use pickles_verifier::types::VerifiableProof;
 use pickles_verifier::verify;
+use settlement_program::derive_receipt;
+use zeko_sp1_lib::SettlementWitnessV1;
 
 #[repr(C, align(8))]
 struct Aligned<T: ?Sized>(T);
@@ -48,6 +50,7 @@ pub fn main() {
     tracker(b"cycle-tracker-report-start:setup\n");
     let verifier = decode_verifier_blob(&VERIFIER_BYTES.0);
     let proof: VerifiableProof = sp1_zkvm::io::read();
+    let settlement: Option<SettlementWitnessV1> = sp1_zkvm::io::read();
     tracker(b"cycle-tracker-report-end:setup\n");
 
     tracker(b"cycle-tracker-report-start:verify\n");
@@ -55,5 +58,11 @@ pub fn main() {
     tracker(b"cycle-tracker-report-end:verify\n");
 
     assert!(proof_valid, "Pickles proof verification failed");
-    commit_zkapp_public_values(proof_valid);
+    match settlement {
+        Some(witness) => {
+            let public_values = derive_receipt(&proof, witness, *VK_HASH);
+            sp1_zkvm::io::commit_slice(&public_values.encode());
+        }
+        None => commit_zkapp_public_values(proof_valid),
+    }
 }

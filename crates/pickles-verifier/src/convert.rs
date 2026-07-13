@@ -230,6 +230,8 @@ impl OcamlProof {
             prev_evals: self.prev_evals,
             p_eval0_chunks: self.p_eval0_chunks,
             old_bulletproof_challenges,
+            app_state: app_state.to_vec(),
+            prev_step_sgs: self.prev_step_sgs,
             challenge_polynomial_commitment: self.challenge_polynomial_commitment,
             messages_for_next_step_proof_digest,
             messages_for_next_wrap_proof_digest,

@@ -10,14 +10,18 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
-use zeko_sp1_lib::{BridgeTransitionInput, WithdrawTransitionInput};
+use zeko_sp1_lib::{BridgeTransitionInput, SettlementContextV1, WithdrawTransitionInput};
+use zkapp_script::SettlementProofBundle;
 
 mod ethereum;
+mod graphql;
+mod indexer;
 mod prover;
 
 #[derive(Clone)]
@@ -25,22 +29,19 @@ struct AppState {
     pool: PgPool,
     api_key: Arc<str>,
     ethereum: ethereum::Ethereum,
-    settlement_vk: Arc<str>,
     proof_system: Arc<str>,
+    prover_config: prover::NetworkRequestConfig,
+    network_explorer_base: Arc<str>,
     execute_only: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SettlementRequest {
-    graphql: String,
-    expected: Option<SettlementExpectedState>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SettlementExpectedState {
-    vk_hash: String,
-    action_state: String,
-    current_root: String,
+    #[serde(rename = "schemaVersion")]
+    schema_version: u16,
+    #[serde(rename = "minaTransactionHash")]
+    mina_transaction_hash: String,
+    proof: SettlementProofBundle,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +75,15 @@ struct ProofJob {
     updated_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
+    input_digest: String,
+    cycle_count: Option<i64>,
+    prover_gas: Option<i64>,
+    base_fee_prove: Option<String>,
+    max_price_per_pgu: Option<String>,
+    actual_cost_prove: Option<String>,
+    ethereum_gas_used: Option<i64>,
+    confirmations: i32,
+    explorer_url: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -105,14 +115,21 @@ async fn main() -> Result<()> {
         nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
         nonempty_env("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
     )?;
-    let settlement_vk: Arc<str> = std::fs::read_to_string(required_env("SETTLEMENT_VK_PATH")?)?
-        .trim()
-        .to_owned()
-        .into();
     let proof_system: Arc<str> = env::var("PROOF_SYSTEM")
         .unwrap_or_else(|_| "groth16".to_owned())
         .into();
     let execute_only = bool_env("API_EXECUTE_ONLY")?;
+    let prover_config = prover::NetworkRequestConfig {
+        timeout: Duration::from_secs(u64_env("PROVER_TIMEOUT_SECS", 21_600)?),
+        min_auction_period: u64_env("PROVER_MIN_AUCTION_PERIOD_SECS", 15)?,
+        gas_limit: optional_u64_env("PROVER_GAS_LIMIT")?,
+        max_price_per_pgu: optional_u64_env("PROVER_MAX_PRICE_PER_PGU")?,
+    };
+    let network_explorer_base: Arc<str> = env::var("PROVER_EXPLORER_BASE_URL")
+        .unwrap_or_else(|_| "https://explorer.succinct.xyz/request".to_owned())
+        .trim_end_matches('/')
+        .to_owned()
+        .into();
     let bind: SocketAddr = env::var("API_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse()
@@ -127,10 +144,11 @@ async fn main() -> Result<()> {
         .run(&pool)
         .await
         .context("run migrations")?;
+    initialize_gateway_config(&pool).await?;
     sqlx::query(
         "UPDATE proof_jobs
          SET status = 'queued', error = 'worker restarted before completion', updated_at = NOW()
-         WHERE status IN ('validating', 'proving', 'submitting')",
+         WHERE status IN ('validating', 'proof_requested', 'proving', 'submitting')",
     )
     .execute(&pool)
     .await
@@ -139,15 +157,25 @@ async fn main() -> Result<()> {
         pool,
         api_key,
         ethereum,
-        settlement_vk,
         proof_system,
+        prover_config,
+        network_explorer_base,
         execute_only,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
+    let indexer_config = indexer::Config {
+        start_block: optional_u64_env("ETHEREUM_INDEXER_START_BLOCK")?,
+        confirmations: u64_env("ETHEREUM_CONFIRMATIONS", 12)?,
+        poll_interval: Duration::from_secs(u64_env("ETHEREUM_POLL_INTERVAL_SECS", 3)?),
+    };
+    let indexer_pool = state.pool.clone();
+    let indexer_ethereum = state.ethereum.clone();
+    tokio::spawn(async move { indexer::run(indexer_pool, indexer_ethereum, indexer_config).await });
 
     let protected = Router::new()
         .route("/v1/proofs/settlement", post(create_settlement))
+        .route("/v1/settlements", post(create_settlement))
         .route("/v1/proofs/bridge", post(create_bridge))
         .route("/v1/proofs/withdraw", post(create_withdraw))
         .route("/v1/proofs", get(list_jobs))
@@ -159,6 +187,7 @@ async fn main() -> Result<()> {
             "/health",
             get(|| async { Json(serde_json::json!({"status": "ok"})) }),
         )
+        .route("/graphql", post(graphql::handle))
         .merge(protected)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -187,11 +216,30 @@ async fn authenticate(
 async fn create_settlement(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(request): Json<SettlementRequest>,
+    Json(mut request): Json<SettlementRequest>,
 ) -> Response {
-    if request.graphql.trim().is_empty() {
-        return api_error(StatusCode::BAD_REQUEST, "graphql must not be empty");
+    if request.schema_version != 1 {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported settlement schemaVersion",
+        );
     }
+    if !is_bytes32_hex(&request.mina_transaction_hash) {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "minaTransactionHash must be a 32-byte 0x-prefixed hex value",
+        );
+    }
+    if request.proof.binding.is_none() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "settlement proof must include the OCaml account-update binding",
+        );
+    }
+    // Ethereum-domain context is assigned when the worker claims this job.
+    // This lets the sequencer queue later OCaml commits while an earlier
+    // settlement is still proving without binding them to a stale L1 batch.
+    request.proof.context = None;
     create_job(
         &state,
         &headers,
@@ -199,6 +247,43 @@ async fn create_settlement(
         serde_json::to_value(request).unwrap(),
     )
     .await
+}
+
+async fn hydrate_settlement_context(
+    state: &AppState,
+    proof: &mut SettlementProofBundle,
+    mina_transaction_hash: &str,
+) -> Result<()> {
+    let chain = state.ethereum.settlement_state().await?;
+    let chain_id = state.ethereum.chain_id().await?;
+    let hash: [u8; 32] = hex::decode(
+        mina_transaction_hash
+            .strip_prefix("0x")
+            .context("mina transaction hash must be 0x-prefixed")?,
+    )?
+    .try_into()
+    .map_err(|_| anyhow::anyhow!("mina transaction hash must be 32 bytes"))?;
+    let settlement_contract: [u8; 20] = state
+        .ethereum
+        .settlement_address()
+        .as_slice()
+        .try_into()
+        .expect("Ethereum address is 20 bytes");
+    let context = SettlementContextV1 {
+        chain_id,
+        settlement_contract,
+        batch_sequence: chain
+            .batch_sequence
+            .checked_add(1)
+            .context("settlement batch sequence overflow")?,
+        mina_transaction_hash: hash,
+        outer_action_state_length_before: chain.outer_action_state_length,
+    };
+    if let Some(supplied) = &proof.context {
+        anyhow::ensure!(supplied == &context, "stale settlement Ethereum context");
+    }
+    proof.context = Some(context);
+    Ok(())
 }
 
 async fn create_bridge(
@@ -231,25 +316,28 @@ async fn create_withdraw(
 
 async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Value) -> Response {
     let id = Uuid::new_v4();
+    let input_digest = format!("0x{}", hex::encode(Sha256::digest(input.to_string())));
     let idempotency_key = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok());
     let result = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO proof_jobs (id, kind, input, idempotency_key)
-         VALUES ($1, $2::proof_kind, $3, $4)
+        "INSERT INTO proof_jobs (id, kind, input, idempotency_key, input_digest)
+         VALUES ($1, $2::proof_kind, $3, $4, $5)
          ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
          DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+         WHERE proof_jobs.input_digest = EXCLUDED.input_digest
          RETURNING id",
     )
     .bind(id)
     .bind(kind)
     .bind(input)
     .bind(idempotency_key)
-    .fetch_one(&state.pool)
+    .bind(input_digest)
+    .fetch_optional(&state.pool)
     .await;
 
     match result {
-        Ok(id) => (
+        Ok(Some(id)) => (
             StatusCode::ACCEPTED,
             Json(CreatedJob {
                 id,
@@ -258,7 +346,21 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
             }),
         )
             .into_response(),
+        Ok(None) => api_error(
+            StatusCode::CONFLICT,
+            "idempotency key already exists with a different payload",
+        ),
         Err(error) => {
+            if error
+                .as_database_error()
+                .and_then(|database| database.constraint())
+                == Some("one_active_settlement")
+            {
+                return api_error(
+                    StatusCode::CONFLICT,
+                    "another settlement is still active; retry after it is finalized",
+                );
+            }
             tracing::error!(%error, "create proof job");
             api_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -272,7 +374,10 @@ async fn get_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Respons
     let job = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
                 proof_request_id, transaction_hash, error, attempts, created_at,
-                updated_at, started_at, completed_at
+                updated_at, started_at, completed_at, input_digest, cycle_count,
+                prover_gas, base_fee_prove, max_price_per_pgu,
+                actual_cost_prove, ethereum_gas_used,
+                confirmations, explorer_url
          FROM proof_jobs WHERE id = $1",
     )
     .bind(id)
@@ -297,7 +402,10 @@ async fn list_jobs(State(state): State<AppState>, Query(query): Query<ListJobsQu
     let jobs = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
                 proof_request_id, transaction_hash, error, attempts, created_at,
-                updated_at, started_at, completed_at
+                updated_at, started_at, completed_at, input_digest, cycle_count,
+                prover_gas, base_fee_prove, max_price_per_pgu,
+                actual_cost_prove, ethereum_gas_used,
+                confirmations, explorer_url
          FROM proof_jobs
          WHERE ($1::text IS NULL OR kind::text = $1)
            AND ($2::text IS NULL OR status::text = $2)
@@ -337,10 +445,24 @@ async fn worker_loop(state: AppState) {
 
 async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
     let mut tx = pool.begin().await?;
+    // Serialize claims across gateway replicas. The lock is held only for the
+    // short database transaction; the active-settlement index then guards the
+    // much longer prove/submit lifecycle.
+    sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
     let job = sqlx::query_as::<_, ClaimedJob>(
         "SELECT id, kind::text AS kind, input, proof_request_id
          FROM proof_jobs
          WHERE status = 'queued'
+           AND (kind <> 'settlement' OR NOT EXISTS (
+             SELECT 1 FROM proof_jobs active
+             WHERE active.kind = 'settlement'
+               AND active.status IN (
+                 'validating', 'proof_requested', 'proving',
+                 'submitting', 'submitted'
+               )
+           ))
          ORDER BY created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1",
@@ -362,20 +484,33 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
     Ok(job)
 }
 
-async fn process_job(state: &AppState, job: ClaimedJob) {
+async fn process_job(state: &AppState, mut job: ClaimedJob) {
     let result = async {
-        let preflight = prover::preflight(&job.kind, &job.input, &state.settlement_vk).await?;
+        if job.kind == "settlement" {
+            hydrate_queued_settlement(state, &mut job.input).await?;
+            let result = sqlx::query(
+                "UPDATE proof_jobs SET input = $2, updated_at = NOW()
+                 WHERE id = $1 AND status = 'validating'",
+            )
+            .bind(job.id)
+            .bind(&job.input)
+            .execute(&state.pool)
+            .await?;
+            anyhow::ensure!(result.rows_affected() == 1, "settlement job was cancelled");
+        }
+        let preflight = prover::preflight(&job.kind, &job.input).await?;
         validate_preflight(state, &job.kind, &job.input, &preflight).await?;
         if state.execute_only {
-            sqlx::query(
+            let result = sqlx::query(
                 "UPDATE proof_jobs SET status = 'executed', public_values = $2,
                         completed_at = NOW(), updated_at = NOW()
-                 WHERE id = $1",
+                 WHERE id = $1 AND status = 'validating'",
             )
             .bind(job.id)
             .bind(format!("0x{}", hex::encode(preflight.public_values())))
             .execute(&state.pool)
             .await?;
+            anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
             return Result::<()>::Ok(());
         }
 
@@ -387,38 +522,83 @@ async fn process_job(state: &AppState, job: ClaimedJob) {
                 let request_id = prover::request_proof(
                     &job.kind,
                     &job.input,
-                    &state.settlement_vk,
                     &state.proof_system,
+                    &state.prover_config,
                 )
                 .await?;
-                sqlx::query(
-                    "UPDATE proof_jobs SET proof_request_id = $2, updated_at = NOW() WHERE id = $1",
+                let result = sqlx::query(
+                    "UPDATE proof_jobs SET proof_request_id = $2, updated_at = NOW()
+                     WHERE id = $1 AND status = 'proving'",
                 )
                 .bind(job.id)
                 .bind(&request_id)
                 .execute(&state.pool)
                 .await?;
+                anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
+                set_status(&state.pool, job.id, "proof_requested").await?;
                 request_id
             }
         };
         let proof = prover::wait_proof(&job.kind, &request_id).await?;
+        anyhow::ensure!(
+            proof.public_values == preflight.public_values(),
+            "network proof public values differ from local SP1 preflight"
+        );
+        let metrics = prover::request_metrics(&request_id)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, %request_id, "could not read prover-network metrics");
+                prover::RequestMetrics::default()
+            });
         set_status(&state.pool, job.id, "submitting").await?;
+        let mut submit_tx = state.pool.begin().await?;
+        sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
+            .fetch_one(&mut *submit_tx)
+            .await?;
+        let still_submitting = sqlx::query_scalar::<_, bool>(
+            "SELECT status = 'submitting' FROM proof_jobs WHERE id = $1",
+        )
+        .bind(job.id)
+        .fetch_one(&mut *submit_tx)
+        .await?;
+        anyhow::ensure!(
+            still_submitting,
+            "proof job was cancelled before submission"
+        );
         let transaction_hash = state
             .ethereum
             .submit(&job.kind, proof.public_values.clone(), proof.proof.bytes())
             .await?;
-        sqlx::query(
-            "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
+        let result = sqlx::query(
+            "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
                     proof_request_id = $3, transaction_hash = $4,
-                    completed_at = NOW(), updated_at = NOW()
-             WHERE id = $1",
+                    cycle_count = $5, prover_gas = $6, base_fee_prove = $7,
+                    max_price_per_pgu = $8, actual_cost_prove = $9,
+                    confirmations = 0, explorer_url = $10,
+                    updated_at = NOW()
+             WHERE id = $1 AND status = 'submitting'",
         )
         .bind(job.id)
         .bind(format!("0x{}", hex::encode(proof.public_values)))
-        .bind(request_id)
-        .bind(transaction_hash)
-        .execute(&state.pool)
+        .bind(&request_id)
+        .bind(transaction_hash.to_string())
+        .bind(metrics.cycles.and_then(|value| i64::try_from(value).ok()))
+        .bind(
+            metrics
+                .prover_gas
+                .and_then(|value| i64::try_from(value).ok()),
+        )
+        .bind(metrics.base_fee_prove)
+        .bind(metrics.max_price_per_pgu)
+        .bind(metrics.actual_cost_prove)
+        .bind(format!("{}/{}", state.network_explorer_base, request_id))
+        .execute(&mut *submit_tx)
         .await?;
+        anyhow::ensure!(
+            result.rows_affected() == 1,
+            "proof job was cancelled after submission"
+        );
+        submit_tx.commit().await?;
         Result::<()>::Ok(())
     }
     .await;
@@ -427,13 +607,38 @@ async fn process_job(state: &AppState, job: ClaimedJob) {
         tracing::error!(job_id = %job.id, %error, "proof job failed");
         let _ = sqlx::query(
             "UPDATE proof_jobs SET status = 'failed', error = $2,
-                    completed_at = NOW(), updated_at = NOW() WHERE id = $1",
+                    completed_at = NOW(), updated_at = NOW()
+             WHERE id = $1 AND status <> 'reorged'",
         )
         .bind(job.id)
         .bind(format!("{error:#}"))
         .execute(&state.pool)
         .await;
+        let _ = sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
+            .bind(job.id)
+            .execute(&state.pool)
+            .await;
     }
+}
+
+async fn hydrate_queued_settlement(state: &AppState, input: &mut Value) -> Result<()> {
+    let mina_transaction_hash = input
+        .get("minaTransactionHash")
+        .and_then(Value::as_str)
+        .context("queued settlement has no Mina transaction hash")?
+        .to_owned();
+    let mut proof: SettlementProofBundle = serde_json::from_value(
+        input
+            .get("proof")
+            .cloned()
+            .context("queued settlement has no proof bundle")?,
+    )?;
+    hydrate_settlement_context(state, &mut proof, &mina_transaction_hash).await?;
+    input
+        .as_object_mut()
+        .context("queued settlement input must be an object")?
+        .insert("proof".to_owned(), serde_json::to_value(proof)?);
+    Ok(())
 }
 
 async fn validate_preflight(
@@ -452,12 +657,45 @@ async fn validate_preflight(
                 "settlement program vkey",
             )?;
             ensure_bytes_eq(values.vk_hash, chain.vk_hash, "vk hash")?;
+            anyhow::ensure!(
+                values.chain_id == state.ethereum.chain_id().await?,
+                "settlement chain id mismatch"
+            );
+            anyhow::ensure!(
+                values.settlement_contract.as_slice()
+                    == state.ethereum.settlement_address().as_slice(),
+                "settlement contract address mismatch"
+            );
+            anyhow::ensure!(
+                values.batch_sequence == chain.batch_sequence + 1,
+                "settlement batch sequence mismatch"
+            );
             ensure_bytes_eq(
-                values.action_state_before,
+                values.outer_action_state_before,
                 chain.action_state,
                 "action state",
             )?;
-            ensure_bytes_eq(values.state_before[3], chain.current_root, "current root")?;
+            anyhow::ensure!(
+                values.outer_action_state_length_before == chain.outer_action_state_length,
+                "outer action-state length mismatch"
+            );
+            for (index, (actual, expected)) in values
+                .state_before
+                .fields
+                .iter()
+                .zip(chain.outer_state.iter())
+                .enumerate()
+            {
+                anyhow::ensure!(
+                    actual.as_slice() == expected.as_slice(),
+                    "outer state field {index} mismatch"
+                );
+            }
+            ensure_bytes_eq(
+                values.state_before.fields[2],
+                chain.current_root,
+                "current root",
+            )?;
         }
         prover::Preflight::Bridge { values, .. } => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;
@@ -569,13 +807,15 @@ fn ensure_hex_eq(actual: &str, expected: &str, name: &str) -> Result<()> {
 }
 
 async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE proof_jobs SET status = $2::proof_status, updated_at = NOW() WHERE id = $1",
+    let result = sqlx::query(
+        "UPDATE proof_jobs SET status = $2::proof_status, updated_at = NOW()
+         WHERE id = $1 AND status <> 'reorged'",
     )
     .bind(id)
     .bind(status)
     .execute(pool)
     .await?;
+    anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
     Ok(())
 }
 
@@ -601,4 +841,82 @@ fn bool_env(name: &str) -> Result<bool> {
         "0" | "false" | "no" | "off" => Ok(false),
         value => anyhow::bail!("{name} must be a boolean, got {value}"),
     }
+}
+
+fn u64_env(name: &str, default: u64) -> Result<u64> {
+    match nonempty_env(name) {
+        Some(value) => value
+            .parse()
+            .with_context(|| format!("{name} must be an unsigned integer")),
+        None => Ok(default),
+    }
+}
+
+fn optional_u64_env(name: &str) -> Result<Option<u64>> {
+    nonempty_env(name)
+        .map(|value| {
+            value
+                .parse()
+                .with_context(|| format!("{name} must be an unsigned integer"))
+        })
+        .transpose()
+}
+
+fn is_bytes32_hex(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
+    let genesis_timestamp =
+        env::var("VIRTUAL_MINA_GENESIS_TIMESTAMP").unwrap_or_else(|_| Utc::now().to_rfc3339());
+    let fork_slot = env::var("VIRTUAL_MINA_FORK_SLOT")
+        .unwrap_or_else(|_| "0".to_owned())
+        .parse::<i32>()
+        .context("VIRTUAL_MINA_FORK_SLOT must fit int32")?;
+    let account_creation_fee =
+        env::var("VIRTUAL_MINA_ACCOUNT_CREATION_FEE").unwrap_or_else(|_| "1000000000".to_owned());
+    let state_hash = env::var("VIRTUAL_MINA_INITIAL_STATE_HASH").unwrap_or_else(|_| {
+        "0x0000000000000000000000000000000000000000000000000000000000000000".to_owned()
+    });
+    sqlx::query(
+        "INSERT INTO gateway_config
+            (id, genesis_timestamp, fork_slot, account_creation_fee, state_hash)
+         VALUES (TRUE, $1, $2, $3, $4)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(genesis_timestamp)
+    .bind(fork_slot)
+    .bind(account_creation_fee)
+    .bind(state_hash)
+    .execute(pool)
+    .await?;
+    if let Some(path) = nonempty_env("VIRTUAL_MINA_ACCOUNTS_PATH") {
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("read virtual Mina accounts from {path}"))?;
+        let accounts: Vec<Value> = serde_json::from_str(&contents)
+            .with_context(|| format!("parse virtual Mina accounts from {path}"))?;
+        for account in accounts {
+            let public_key = account
+                .get("publicKey")
+                .and_then(Value::as_str)
+                .context("virtual Mina account publicKey is required")?;
+            let token_id = account
+                .get("tokenId")
+                .and_then(Value::as_str)
+                .unwrap_or("1");
+            sqlx::query(
+                "INSERT INTO gateway_accounts (public_key, token_id, account_json)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (public_key, token_id) DO NOTHING",
+            )
+            .bind(public_key)
+            .bind(token_id)
+            .bind(&account)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(())
 }

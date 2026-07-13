@@ -170,12 +170,11 @@ impl Verifier {
     }
 }
 
-/// The minimal data the verifier reads for one proof. The 9 carried fields
-/// come straight from the wire; the 3 recomputed ones
-/// (`old_bulletproof_challenges` + the two message digests) are produced by
-/// the conversion.
+/// The minimal data the verifier reads for one proof. In addition to the proof
+/// data, this carries the application statement and previous step commitments
+/// needed to recompute its Pickles message digest inside the guest.
 #[serde_as]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VerifiableProof {
     pub wrap_proof: WrapProof,
     pub raw_plonk: PlonkMinimal,
@@ -191,6 +190,13 @@ pub struct VerifiableProof {
     /// previous-proof bp challenges, ALREADY endo-expanded (length `mpv`).
     #[serde_as(as = "Vec<[SerdeAs; STEP_IPA_ROUNDS]>")]
     pub old_bulletproof_challenges: Vec<[StepField; STEP_IPA_ROUNDS]>,
+    /// Application statement fields (`Statement_value.to_field_elements`).
+    #[serde_as(as = "Vec<SerdeAs>")]
+    pub app_state: Vec<StepField>,
+    /// Previous step proof challenge-polynomial commitments. These are needed
+    /// to bind `app_state` to `messages_for_next_step_proof_digest` in-guest.
+    #[serde_as(as = "Vec<SerdeAs>")]
+    pub prev_step_sgs: Vec<Pallas>,
     /// the proof's own wrap challenge-polynomial commitment (`Vesta`).
     #[serde_as(as = "SerdeAs")]
     pub challenge_polynomial_commitment: Vesta,

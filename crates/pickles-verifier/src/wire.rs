@@ -54,10 +54,32 @@ pub fn parse_field_be_hex<F: PrimeField>(s: &str) -> Result<F, String> {
     field_from_le(bytes)
 }
 
-/// Parse `app_statement.json` (a JSON string `"0x…"`) into the step field.
+/// Parse `app_statement.json` into application-statement fields. Historical o1
+/// fixtures contain one `"0x…"` value. Zeko zkApp statements contain the two
+/// fields from `Zkapp_statement.to_field_elements`, so an array is accepted as
+/// well.
+pub fn parse_app_statement_fields(json: &str) -> Result<Vec<StepField>, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    match value {
+        Value::String(value) => Ok(alloc::vec![parse_field_be_hex(&value)?]),
+        Value::Array(values) => values
+            .iter()
+            .map(be_hex)
+            .collect::<Result<Vec<_>, String>>(),
+        _ => Err("app statement: expected a 0x-hex string or array".to_string()),
+    }
+}
+
+/// Compatibility parser for the single-field o1 fixtures.
 pub fn parse_app_statement(json: &str) -> Result<StepField, String> {
-    let s: String = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    parse_field_be_hex(&s)
+    let fields = parse_app_statement_fields(json)?;
+    if fields.len() != 1 {
+        return Err(alloc::format!(
+            "app statement: expected one field, got {}",
+            fields.len()
+        ));
+    }
+    Ok(fields[0])
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +298,34 @@ impl OcamlProof {
         let deferred = field(proof_state, "deferred_values")?;
 
         let plonk = field(deferred, "plonk")?;
+        if !field(plonk, "joint_combiner")?.is_null() {
+            return Err("plonk: lookup joint combiner is unsupported".to_string());
+        }
+        let feature_flags = field(plonk, "feature_flags")?;
+        for name in [
+            "range_check0",
+            "range_check1",
+            "foreign_field_add",
+            "foreign_field_mul",
+            "xor",
+            "rot",
+            "lookup",
+            "runtime_tables",
+        ] {
+            match field(feature_flags, name)?.as_bool() {
+                Some(false) => {}
+                Some(true) => {
+                    return Err(alloc::format!(
+                        "plonk: feature flag `{name}` is unsupported"
+                    ))
+                }
+                None => {
+                    return Err(alloc::format!(
+                        "plonk: feature flag `{name}` is not boolean"
+                    ))
+                }
+            }
+        }
         let raw_plonk = PlonkMinimal {
             alpha: challenge(field(plonk, "alpha")?)?,
             beta: challenge(field(plonk, "beta")?)?,
@@ -354,6 +404,35 @@ mod tests {
         parse_wrap_vk(fixture!("nrr/vk.serde.json")).expect("vk");
         parse_wrap_proof(fixture!("nrr/proof.serde.json")).expect("proof");
         parse_app_statement(fixture!("nrr/app_statement.json")).expect("app_statement");
+    }
+
+    #[test]
+    fn multi_field_application_statement_parses() {
+        let fields =
+            parse_app_statement_fields(r#"["0x01", "0x02"]"#).expect("two-field Zkapp statement");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0], StepField::from(1u64));
+        assert_eq!(fields[1], StepField::from(2u64));
+    }
+
+    #[test]
+    fn enabled_feature_flag_is_rejected() {
+        let mut skeleton: Value =
+            serde_json::from_str(fixture!("nrr/public_input_skeleton.json")).unwrap();
+        skeleton["statement"]["proof_state"]["deferred_values"]["plonk"]["feature_flags"]
+            ["lookup"] = Value::Bool(true);
+        let error = OcamlProof::parse(&skeleton.to_string()).unwrap_err();
+        assert!(error.contains("feature flag `lookup`"));
+    }
+
+    #[test]
+    fn lookup_joint_combiner_is_rejected() {
+        let mut skeleton: Value =
+            serde_json::from_str(fixture!("nrr/public_input_skeleton.json")).unwrap();
+        skeleton["statement"]["proof_state"]["deferred_values"]["plonk"]["joint_combiner"] =
+            Value::String("0x01".to_string());
+        let error = OcamlProof::parse(&skeleton.to_string()).unwrap_err();
+        assert!(error.contains("joint combiner"));
     }
 
     /// Common skeleton checks: parses with the expected mpv (prev-proof array

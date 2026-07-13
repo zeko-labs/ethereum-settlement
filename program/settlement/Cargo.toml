@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 sp1-zkvm = "6.1.0"
 pickles-verifier = { path = "../../crates/pickles-verifier", default-features = false }
+zeko_sp1_lib = { path = "../../lib" }
+ark-ff = { workspace = true }
+mina-poseidon = { workspace = true }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
 sp1-lib = "6.1.0"

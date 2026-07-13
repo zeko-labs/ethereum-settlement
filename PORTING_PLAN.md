@@ -14,6 +14,31 @@ The target architecture is:
 - Solidity only owns Ethereum-side bridge custody, settlement checkpoints, and
   minimal glue needed to connect Ethereum deposits/claims to accepted Zeko state.
 
+## Multisig Testnet PoC Implementation Status (July 2026)
+
+The no-blob testnet milestone is now implemented across this repository and the
+companion `~/zeko` tree:
+
+- the Pickles verifier recomputes the recursive application-statement binding
+  and rejects unsupported lookup features and mutated deferred/accumulator data;
+- OCaml exports the real wrap proof/VK, full statement skeleton, two-field zkApp
+  statement, account-update body input, actions and source outer state;
+- the settlement guest derives a versioned 768-byte outer-commit receipt from
+  proof-bound data instead of accepting a host-provided next state;
+- Solidity tracks all eight outer-state fields, action state/length, batch
+  sequence, accepted inner action states and the virtual Mina slot clock;
+- the gateway exposes the Mina GraphQL subset used by the sequencer, owns local
+  SP1 preflight and network proving, submits Ethereum transactions, records
+  proving/Ethereum cost metrics, and waits for confirmation depth;
+- the Ethereum indexer maintains the virtual Mina account/pool/action views and
+  rolls them back on reorg while retaining the paid SP1 proof request.
+
+Deployment and acceptance steps are in `TESTNET_POC.md`. Remaining items for an
+actual testnet launch are operational: build the ELF with a real OCaml Zeko VK,
+generate the first real commit fixture, deploy/configure contracts and gateway,
+and run the listed end-to-end acceptance tests. The full bridge protocol and
+blob DA remain outside this milestone.
+
 ## Current PoC Boundary
 
 The current repository has useful PoC pieces:
@@ -31,10 +56,11 @@ The current repository has useful PoC pieces:
 - `contracts/src/EthereumZekoBridge.sol` has real ETH/ERC20 custody,
   deposit-state, withdrawal-state, nullifier, and claim accounting.
 
-It should still be treated as a PoC. The contract state is not yet a faithful
-Ethereum representation of Zeko's real outer rollup state, and the bridge logic
-does not yet implement the full bridge protocol described in the OCaml design
-documents.
+It should still be treated as a PoC. The settlement contract now represents all
+eight fields of Zeko's normal multisig outer state and its action-state length,
+but that path still needs its first real OCaml-produced end-to-end fixture. The
+bridge logic does not yet implement the full bridge protocol described in the
+OCaml design documents.
 
 ## Settlement Binding
 
@@ -53,12 +79,12 @@ update is already public input to the Pickles proof; once SP1 correctly verifies
 the proof against the expected Zeko verification key, the account update binding
 belongs inside the proof system, not in hand-written Solidity parsing.
 
-### Missing production work
+### Multisig PoC status and remaining production work
 
-- Define a stable settlement public-values schema for the Zeko outer commit
-  receipt.
-- Track the real Zeko outer app state on Ethereum, not just `state[3]`.
-- Include the Zeko fields that Ethereum bridge logic must rely on:
+- Implemented: a versioned, fixed-length settlement public-values schema for
+  the Zeko outer commit receipt.
+- Implemented: tracking the full eight-field Zeko outer app state on Ethereum.
+- Implemented in the receipt/contract:
   - ledger hash
   - inner action state and length
   - synchronized outer action state and length
@@ -66,10 +92,10 @@ belongs inside the proof system, not in hand-written Solidity parsing.
   - commit slot range
   - relevant status/paused flags
   - account-set/hash fields if they are needed by bridge safety checks
-- Version the public-values schema so SP1 guest, Solidity decoder, and fixtures
-  cannot silently drift.
-- Add tests that decode a real OCaml-produced commit and assert the exact L1
-  state transition.
+- Implemented: a shared schema version and byte-length check so the SP1 guest
+  and Solidity decoder cannot silently drift.
+- Remaining: generate a genuine OCaml commit fixture and assert its exact L1
+  transition in the Solidity suite.
 
 It is acceptable that this is not fully implemented yet, because the original
 scope appears to have been a PoC. It must be implemented before this can be
@@ -116,18 +142,17 @@ Implemented PoC path now:
 - native `cargo test -p pickles-verifier` passes over the full copied o1
   fixture matrix
 
-Remaining hardening work:
+Hardening status:
 
-- Re-run SP1 `--execute` only after agreeing on local resource limits; the
-  previous local proving attempt crashed the machine.
-- Add negative tests that mutate deferred values, bulletproof challenges,
-  `messages_for_next_wrap_proof.challenge_polynomial_commitment`, feature
-  flags, and `prev_evals`; all must fail inside the SP1 guest.
-- Wire Zeko outer-state extraction into the settlement public values. The
-  current SP1 public values retain the Solidity PoC layout but zero the
-  state/action fields.
-- Regenerate fixtures from the OCaml Zeko state-transition prover, not only the
-  o1 example fixtures.
+- SP1 execute-only is covered by the low-memory direct executor path; proving
+  is deliberately not part of local validation.
+- Negative tests mutate the application statement, deferred values,
+  bulletproof challenges, accumulator commitment, feature flags and previous
+  evaluations and require verification failure.
+- The guest derives the full V1 outer-state receipt from the proof-bound body
+  and action rather than accepting a host-provided next state.
+- Remaining: regenerate fixtures from the OCaml Zeko state-transition prover,
+  not only the o1 example fixtures.
 
 ## Data Availability With Ethereum Blobs
 
@@ -360,11 +385,10 @@ Current settlement verification status:
 
 - `cargo check --offline -p settlement-program -p zkapp-script -p zeko_sp1_lib
   -p zeko-proof-api` passes.
-- `cargo test --offline -p pickles-verifier` passes: 13 native tests, including
-  full verification over the copied o1 fixture matrix.
-- SP1 `zkapp --execute` has not been rerun after switching to the o1 verifier,
-  because the previous local proving session crashed the machine. The next run
-  should be done deliberately, with resource limits and no local proving.
+- `cargo test --offline -p pickles-verifier` passes: 22 native tests, including
+  full verification over the copied o1 fixture matrix and mutation failures.
+- SP1 `zkapp --execute` passes through the low-memory direct executor at
+  52,153,051,519 cycles. This is execute-only; local proving remains disabled.
 - The old static RKYV SRS blobs are gone. The o1 verifier blob is produced at
   build time from the wrap VK and proof-systems SRS data.
 - The guest checks the Pickles Vesta accumulator, reconstructs deferred values,
@@ -376,13 +400,11 @@ Current settlement verification status:
 
 Known limitations:
 
-- SP1 cycle count for the o1 verifier path is unknown until `zkapp --execute`
-  is rerun.
-- The settlement public values still zero the Zeko state/action fields.
+- The copied o1 fixture uses the compatibility receipt and does not contain a
+  real Zeko outer commit. The V1 derivation is covered by native binding tests,
+  but still needs its first OCaml-produced end-to-end fixture.
 - The SP1 compatibility patches live in local vendored forks. They need to be
   turned into a real upstreamable `zkvm`/SP1 feature profile.
-- Negative tests for corrupted Pickles accumulator/deferred/public-input data
-  are still missing.
 
 Required upstream/fork work:
 
@@ -422,27 +444,30 @@ cargo prove build --docker --tag v6.1.0 --locked \
   -p settlement-program -p bridge-program -p withdraw-program
 ```
 
-Settlement execution/proving should be rechecked after the guest dependency
-graph is SP1-safe, after the public-values schema is finalized, and after the
-fixtures are regenerated from OCaml output.
+Settlement execute-only should be rechecked after dependency-level guest
+changes and when the first real OCaml fixture is generated. Local proving is
+not part of this verification target.
 
 ## Recommended Implementation Order
 
-1. Clean stale artifacts and make the repo build/test with pinned toolchains.
-2. Fix host/guest serialization drift and add regression tests for encodings.
-3. Specify the settlement public-values schema as a versioned Rust/Solidity
-   contract.
+1. **Done for the multisig PoC:** clean stale artifacts and make the maintained
+   Rust/Solidity paths build and test with pinned toolchains.
+2. **Done for the multisig PoC:** fix host/guest serialization drift and add
+   regression tests for encodings.
+3. **Done for the multisig PoC:** specify the settlement public-values schema
+   as a versioned Rust/Solidity contract.
 4. Specify the blob DA payload format and bind the settlement public values to
    blob versioned hashes plus the Zeko batch data root.
-5. Make `ZekoSettlement` track the real Zeko outer state needed by the bridge
-   and check the attached blob hashes for each settlement.
+5. **Outer state done; blobs pending:** `ZekoSettlement` tracks the real Zeko
+   outer state needed by bridge consumers. Add attached blob-hash checks for
+   the production DA phase.
 6. Regenerate settlement fixtures from the OCaml Zeko commit prover.
 7. Redesign deposit proof inputs around accepted Zeko outer action checkpoints.
 8. Add cancelled-deposit and timeout support, or explicitly cut them from the
    MVP with a written risk statement.
 9. Complete withdrawal ERC20/index/delay semantics.
-10. Replace ad hoc JSON job submission with an indexer/batcher that derives
-    inputs from Ethereum logs, accepted Zeko checkpoints, and archived blob
-    payloads.
+10. **Multisig gateway done; blob batcher pending:** the gateway owns proving,
+    Ethereum submission and canonical checkpoint indexing. Extend it to derive
+    blob payloads and bridge inputs from Ethereum logs in the production phase.
 11. Add end-to-end tests: Ethereum deposit -> blob-backed Zeko batch -> OCaml
     commit proof -> SP1 settlement -> Ethereum withdrawal claim.

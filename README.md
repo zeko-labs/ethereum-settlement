@@ -95,25 +95,34 @@ At a high level it:
    - deferred value reconstruction
    - wrap public input reconstruction
    - outer Kimchi proof
-5. The guest commits SP1 public values using the existing Solidity PoC layout.
+5. For a real Zeko export, the guest recomputes the account-update body digest,
+   checks it against the verified two-field zkApp statement, recomputes the
+   action hash, and decodes the fixed eight-field outer `Commit` action.
+6. The guest derives and emits the versioned 768-byte settlement receipt. A
+   fixture-only compatibility mode still emits the old 577-byte output so the
+   copied o1 fixtures can be executed without pretending they are Zeko commits.
 
-The current settlement public output is still PoC-shaped: it contains
-`proof_valid`, a SHA-256 hash of the fixture VK JSON, and zeroed state/action
-fields. The production binding should use the canonical OCaml/Mina
-verification-key hash, and real Zeko outer-state extraction plus Ethereum state
-tracking still need to be wired to the OCaml state-transition public inputs.
+The V1 receipt contains the complete eight-field outer state, current and
+synchronized outer action states and lengths, inner action state and length,
+slot range, Ethereum domain, batch sequence, and Mina transaction tracking
+hash. The Ethereum domain values are supplied by the gateway and checked by
+Solidity; the state transition is derived from data committed by Pickles.
+
+The PoC VK identifier remains SHA-256 over the exact verifier-index JSON baked
+into the guest. A production deployment must switch this to the canonical
+OCaml/Mina verification-key hash.
 
 On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the
 public output matches the verifier contract's tracked state:
 
-- `vkHash` must match the expected Zeko verification key hash.
-- `actionStateBefore` must match the verifier's stored action state.
-- `stateBefore[3]` must match the verifier's current root.
-- `stateAfter[3]` becomes the new root.
+- chain ID, settlement address, batch sequence and VK hash must match L1;
+- all eight source state fields and the outer action state/length must match;
+- the action length must increment exactly once and the synchronized length may
+  not exceed the committed outer length;
+- the virtual Mina slot must be inside the proved commit range.
 
-This contract currently updates the settlement root. It stores action state as
-a guard input but does not derive a new action state from the settlement proof
-output.
+On acceptance it stores the complete next outer state and records the accepted
+inner action state for bridge consumers.
 
 ## Bridge Circuit
 
@@ -242,10 +251,15 @@ Run the withdraw unit tests (same real L2 inner-action data):
 cargo test --manifest-path program/withdraw/Cargo.toml
 ```
 
-Run a specific test:
+Run the settlement receipt binding tests:
 
 ```sh
-cargo test --manifest-path program/settlement/Cargo.toml fq_to_bytes
+cargo test -p settlement-program
+```
+
+Run specific bridge/withdraw tests:
+
+```sh
 cargo test --manifest-path program/bridge/Cargo.toml real_l1_outer_witness
 cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
 cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
@@ -320,6 +334,9 @@ It can run with Docker Compose using a read-only environment-file mount and a
 persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and
 [`.env.api.example`](.env.api.example).
 
+For the multisig-DA testnet architecture and deployment order, see
+[`TESTNET_POC.md`](TESTNET_POC.md).
+
 ## Generating Proofs
 
 Generate an EVM-compatible Groth16 proof:
@@ -346,14 +363,13 @@ Retrieve the settlement program verification key:
 cargo run --release --bin vkey
 ```
 
-To use the [Succinct Prover Network](https://docs.succinct.xyz/docs/network/introduction) instead of local proving:
+To read the current network fee parameters and calculate a maximum-cost bound
+without registering a program or requesting a proof:
 
 ```sh
-cp .env.example .env
-# set SP1_PROVER=network and NETWORK_PRIVATE_KEY in .env
-SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release --bin evm
+cargo run --bin network_quote -- <estimated-pgu>
 ```
 
-A Groth16 proof for a Zeko rollup command takes under 5 minutes on the prover network (~1.1 PROVE tokens as of May 2025).
-
-[Example request](https://explorer.succinct.xyz/request/0x67eecb92c7ed781f06271e661bcf49543eb2f555a98f80745e266e23d79b0b8a)
+The result is an upper bound (`base fee + estimated PGU × current maximum
+price`). Actual auction cost can be lower. No static PROVE estimate is kept in
+the repository because the market price changes.

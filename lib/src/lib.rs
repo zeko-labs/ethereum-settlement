@@ -109,6 +109,290 @@ pub type Bytes32 = [u8; 32];
 pub type Address = [u8; 20];
 pub type ZekoAddress = Bytes32;
 
+pub const SETTLEMENT_PUBLIC_VALUES_MAGIC: [u8; 4] = *b"ZKST";
+pub const SETTLEMENT_PUBLIC_VALUES_VERSION: u16 = 1;
+pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
+
+/// Mina network domain used when hashing the account-update body that is the
+/// first field of the verified Zkapp statement.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum MinaSignatureKindV1 {
+    Mainnet,
+    Testnet,
+}
+
+/// A single chunk in Mina's `Random_oracle_input.Chunked` representation.
+/// `value` must fit in `bits`; the guest checks this before packing.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackedFieldV1 {
+    #[serde(with = "serde_bytes32")]
+    pub value: Bytes32,
+    pub bits: u16,
+}
+
+/// Canonical preimage of `Account_update.Body.digest`, exported by OCaml.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkedRandomOracleInputV1 {
+    #[serde(with = "serde_vec_bytes32")]
+    pub field_elements: Vec<Bytes32>,
+    pub packed: Vec<PackedFieldV1>,
+}
+
+/// Data that is already committed by the Pickles application statement. The
+/// guest hashes `account_update_body`, compares it to the verified statement,
+/// hashes `actions`, and decodes the fixed Zeko outer-commit action.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementBindingV1 {
+    pub mina_signature_kind: MinaSignatureKindV1,
+    pub account_update_body: ChunkedRandomOracleInputV1,
+    #[serde(with = "serde_vec_vec_bytes32")]
+    pub actions: Vec<Vec<Bytes32>>,
+    pub state_before: OuterStateV1,
+}
+
+/// Ethereum-domain values supplied by the gateway. These are intentionally
+/// outside the Mina statement; Solidity checks all of them against L1 state.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementContextV1 {
+    pub chain_id: u64,
+    #[serde(with = "serde_address")]
+    pub settlement_contract: Address,
+    pub batch_sequence: u64,
+    #[serde(with = "serde_bytes32")]
+    pub mina_transaction_hash: Bytes32,
+    pub outer_action_state_length_before: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementWitnessV1 {
+    pub binding: SettlementBindingV1,
+    pub context: SettlementContextV1,
+}
+
+/// The exact eight-field OCaml `Rollup_state.Outer_state` app-state layout.
+/// Fields are canonical 32-byte Mina field encodings supplied by the OCaml
+/// exporter; consumers should use the named accessors rather than numeric
+/// indices.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct OuterStateV1 {
+    #[serde(with = "serde_array8_bytes32")]
+    pub fields: [Bytes32; 8],
+}
+
+impl OuterStateV1 {
+    pub fn pause_key(&self) -> &Bytes32 {
+        &self.fields[0]
+    }
+
+    pub fn status_flags(&self) -> &Bytes32 {
+        &self.fields[1]
+    }
+
+    pub fn ledger_hash(&self) -> &Bytes32 {
+        &self.fields[2]
+    }
+
+    pub fn inner_action_state(&self) -> &Bytes32 {
+        &self.fields[3]
+    }
+
+    pub fn inner_action_state_length(&self) -> &Bytes32 {
+        &self.fields[4]
+    }
+
+    pub fn sequencer(&self) -> &Bytes32 {
+        &self.fields[5]
+    }
+
+    pub fn da_key(&self) -> &Bytes32 {
+        &self.fields[6]
+    }
+
+    pub fn account_set(&self) -> &Bytes32 {
+        &self.fields[7]
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SettlementDaMode {
+    Multisig = 1,
+}
+
+/// Versioned receipt emitted by the settlement guest and decoded by Solidity.
+/// Numeric values use big-endian encoding in [`Self::encode`] so the byte
+/// layout is unambiguous across Rust, OCaml, and Solidity.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV1 {
+    pub da_mode: SettlementDaMode,
+    pub chain_id: u64,
+    pub settlement_contract: Address,
+    pub batch_sequence: u64,
+    pub vk_hash: Bytes32,
+    pub app_statement: Bytes32,
+    pub mina_transaction_hash: Bytes32,
+    pub state_before: OuterStateV1,
+    pub state_after: OuterStateV1,
+    pub outer_action_state_before: Bytes32,
+    pub outer_action_state_after: Bytes32,
+    pub outer_action_state_length_before: u32,
+    pub outer_action_state_length_after: u32,
+    pub synchronized_outer_action_state: Bytes32,
+    pub synchronized_outer_action_state_length: u32,
+    pub slot_lower: u32,
+    pub slot_upper: u32,
+}
+
+impl SettlementPublicValuesV1 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V1_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V1_LENGTH];
+        let mut cursor = 0;
+
+        write_bytes(&mut output, &mut cursor, &SETTLEMENT_PUBLIC_VALUES_MAGIC);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &SETTLEMENT_PUBLIC_VALUES_VERSION.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &[self.da_mode as u8, 0]);
+        write_bytes(&mut output, &mut cursor, &self.chain_id.to_be_bytes());
+        write_bytes(&mut output, &mut cursor, &self.settlement_contract);
+        write_bytes(&mut output, &mut cursor, &self.batch_sequence.to_be_bytes());
+        write_bytes(&mut output, &mut cursor, &self.vk_hash);
+        write_bytes(&mut output, &mut cursor, &self.app_statement);
+        write_bytes(&mut output, &mut cursor, &self.mina_transaction_hash);
+        for field in &self.state_before.fields {
+            write_bytes(&mut output, &mut cursor, field);
+        }
+        for field in &self.state_after.fields {
+            write_bytes(&mut output, &mut cursor, field);
+        }
+        write_bytes(&mut output, &mut cursor, &self.outer_action_state_before);
+        write_bytes(&mut output, &mut cursor, &self.outer_action_state_after);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.outer_action_state_length_before.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.outer_action_state_length_after.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.synchronized_outer_action_state,
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.synchronized_outer_action_state_length.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &self.slot_lower.to_be_bytes());
+        write_bytes(&mut output, &mut cursor, &self.slot_upper.to_be_bytes());
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V1_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V1_LENGTH {
+            return Err(format!(
+                "settlement public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V1_LENGTH,
+                input.len()
+            ));
+        }
+        let mut cursor = 0;
+        let magic: [u8; 4] = read_array(input, &mut cursor);
+        if magic != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(read_array(input, &mut cursor));
+        if version != SETTLEMENT_PUBLIC_VALUES_VERSION {
+            return Err(format!(
+                "settlement public values: unsupported version {version}"
+            ));
+        }
+        let mode = read_array::<1>(input, &mut cursor)[0];
+        let reserved = read_array::<1>(input, &mut cursor)[0];
+        if reserved != 0 {
+            return Err("settlement public values: reserved byte must be zero".to_owned());
+        }
+        let da_mode = match mode {
+            1 => SettlementDaMode::Multisig,
+            other => {
+                return Err(format!(
+                    "settlement public values: unsupported DA mode {other}"
+                ))
+            }
+        };
+        let chain_id = u64::from_be_bytes(read_array(input, &mut cursor));
+        let settlement_contract = read_array(input, &mut cursor);
+        let batch_sequence = u64::from_be_bytes(read_array(input, &mut cursor));
+        let vk_hash = read_array(input, &mut cursor);
+        let app_statement = read_array(input, &mut cursor);
+        let mina_transaction_hash = read_array(input, &mut cursor);
+        let mut state_before = OuterStateV1::default();
+        for field in &mut state_before.fields {
+            *field = read_array(input, &mut cursor);
+        }
+        let mut state_after = OuterStateV1::default();
+        for field in &mut state_after.fields {
+            *field = read_array(input, &mut cursor);
+        }
+        let outer_action_state_before = read_array(input, &mut cursor);
+        let outer_action_state_after = read_array(input, &mut cursor);
+        let outer_action_state_length_before = u32::from_be_bytes(read_array(input, &mut cursor));
+        let outer_action_state_length_after = u32::from_be_bytes(read_array(input, &mut cursor));
+        let synchronized_outer_action_state = read_array(input, &mut cursor);
+        let synchronized_outer_action_state_length =
+            u32::from_be_bytes(read_array(input, &mut cursor));
+        let slot_lower = u32::from_be_bytes(read_array(input, &mut cursor));
+        let slot_upper = u32::from_be_bytes(read_array(input, &mut cursor));
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            da_mode,
+            chain_id,
+            settlement_contract,
+            batch_sequence,
+            vk_hash,
+            app_statement,
+            mina_transaction_hash,
+            state_before,
+            state_after,
+            outer_action_state_before,
+            outer_action_state_after,
+            outer_action_state_length_before,
+            outer_action_state_length_after,
+            synchronized_outer_action_state,
+            synchronized_outer_action_state_length,
+            slot_lower,
+            slot_upper,
+        })
+    }
+}
+
+fn write_bytes<const N: usize>(output: &mut [u8], cursor: &mut usize, bytes: &[u8; N]) {
+    output[*cursor..*cursor + N].copy_from_slice(bytes);
+    *cursor += N;
+}
+
+fn read_array<const N: usize>(input: &[u8], cursor: &mut usize) -> [u8; N] {
+    let result = input[*cursor..*cursor + N]
+        .try_into()
+        .expect("public values length checked");
+    *cursor += N;
+    result
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeDeposit {
     #[serde(with = "serde_address")]
@@ -237,6 +521,102 @@ mod serde_bytes32 {
         D: serde::Deserializer<'de>,
     {
         deserialize_fixed_bytes(deserializer)
+    }
+}
+
+mod serde_vec_bytes32 {
+    use super::*;
+
+    pub fn serialize<S>(values: &[Bytes32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+            sequence.serialize_element(&fixed_bytes_to_hex(value))?;
+        }
+        sequence.end()
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Bytes32>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = Vec::<String>::deserialize(deserializer)?;
+        values
+            .iter()
+            .map(|value| parse_fixed_bytes(value).map_err(serde::de::Error::custom))
+            .collect()
+    }
+}
+
+mod serde_vec_vec_bytes32 {
+    use super::*;
+
+    pub fn serialize<S>(values: &[Vec<Bytes32>], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let encoded = values
+            .iter()
+            .map(|event| event.iter().map(fixed_bytes_to_hex).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        encoded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<Vec<Bytes32>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = Vec::<Vec<String>>::deserialize(deserializer)?;
+        values
+            .iter()
+            .map(|event| {
+                event
+                    .iter()
+                    .map(|value| parse_fixed_bytes(value).map_err(serde::de::Error::custom))
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+mod serde_array8_bytes32 {
+    use super::*;
+
+    pub fn serialize<S>(values: &[Bytes32; 8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if !serializer.is_human_readable() {
+            return values.serialize(serializer);
+        }
+        let encoded = values.map(|value| fixed_bytes_to_hex(&value));
+        encoded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[Bytes32; 8], D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if !deserializer.is_human_readable() {
+            return <[Bytes32; 8]>::deserialize(deserializer);
+        }
+        let values = Vec::<String>::deserialize(deserializer)?;
+        if values.len() != 8 {
+            return Err(serde::de::Error::invalid_length(
+                values.len(),
+                &"eight fields",
+            ));
+        }
+        let decoded = values
+            .iter()
+            .map(|value| parse_fixed_bytes(value).map_err(serde::de::Error::custom))
+            .collect::<Result<Vec<Bytes32>, D::Error>>()?;
+        decoded
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("expected eight fields"))
     }
 }
 
@@ -422,4 +802,100 @@ fn parse_decimal_u256(value: &str) -> Result<Bytes32, String> {
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settlement_values() -> SettlementPublicValuesV1 {
+        SettlementPublicValuesV1 {
+            da_mode: SettlementDaMode::Multisig,
+            chain_id: 11_155_111,
+            settlement_contract: [0x11; 20],
+            batch_sequence: 42,
+            vk_hash: [0x22; 32],
+            app_statement: [0x33; 32],
+            mina_transaction_hash: [0x44; 32],
+            state_before: OuterStateV1 {
+                fields: core::array::from_fn(|i| [i as u8; 32]),
+            },
+            state_after: OuterStateV1 {
+                fields: core::array::from_fn(|i| [0x80 + i as u8; 32]),
+            },
+            outer_action_state_before: [0x55; 32],
+            outer_action_state_after: [0x66; 32],
+            outer_action_state_length_before: 7,
+            outer_action_state_length_after: 8,
+            synchronized_outer_action_state: [0x77; 32],
+            synchronized_outer_action_state_length: 6,
+            slot_lower: 100,
+            slot_upper: 120,
+        }
+    }
+
+    #[test]
+    fn settlement_public_values_v1_round_trip() {
+        let values = settlement_values();
+        let encoded = values.encode();
+
+        assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V1_LENGTH);
+        assert_eq!(&encoded[..4], b"ZKST");
+        assert_eq!(SettlementPublicValuesV1::decode(&encoded).unwrap(), values);
+    }
+
+    #[test]
+    fn settlement_public_values_v1_rejects_domain_drift() {
+        let mut encoded = settlement_values().encode();
+        encoded[0] ^= 1;
+        assert!(SettlementPublicValuesV1::decode(&encoded).is_err());
+
+        let mut encoded = settlement_values().encode();
+        encoded[4..6].copy_from_slice(&2u16.to_be_bytes());
+        assert!(SettlementPublicValuesV1::decode(&encoded).is_err());
+
+        let mut encoded = settlement_values().encode();
+        encoded[7] = 1;
+        assert!(SettlementPublicValuesV1::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn settlement_binding_uses_hex_json_and_round_trips() {
+        let binding = SettlementBindingV1 {
+            mina_signature_kind: MinaSignatureKindV1::Testnet,
+            account_update_body: ChunkedRandomOracleInputV1 {
+                field_elements: vec![[0x11; 32], [0x22; 32]],
+                packed: vec![PackedFieldV1 {
+                    value: [1; 32],
+                    bits: 8,
+                }],
+            },
+            actions: vec![vec![[0x33; 32], [0x44; 32]]],
+            state_before: OuterStateV1 {
+                fields: [[0x55; 32]; 8],
+            },
+        };
+        let json = serde_json::to_string(&binding).unwrap();
+        assert!(json.contains("0x1111111111111111"));
+        assert_eq!(
+            serde_json::from_str::<SettlementBindingV1>(&json).unwrap(),
+            binding
+        );
+
+        let witness = SettlementWitnessV1 {
+            binding,
+            context: SettlementContextV1 {
+                chain_id: 1,
+                settlement_contract: [0x66; 20],
+                batch_sequence: 2,
+                mina_transaction_hash: [0x77; 32],
+                outer_action_state_length_before: 3,
+            },
+        };
+        let encoded = bincode::serialize(&witness).unwrap();
+        assert_eq!(
+            bincode::deserialize::<SettlementWitnessV1>(&encoded).unwrap(),
+            witness
+        );
+    }
 }

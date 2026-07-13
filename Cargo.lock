@@ -6576,12 +6576,15 @@ dependencies = [
 name = "settlement-program"
 version = "0.1.0"
 dependencies = [
+ "ark-ff 0.5.0",
  "mina-curves",
+ "mina-poseidon",
  "pickles-verifier",
  "poly-commitment",
  "sha2 0.10.9",
  "sp1-lib",
  "sp1-zkvm",
+ "zeko_sp1_lib",
 ]
 
 [[package]]
@@ -9645,6 +9648,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sp1-sdk",
  "sqlx",
  "tokio",
@@ -9660,7 +9664,9 @@ dependencies = [
 name = "zeko_sp1_lib"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,55 +1,75 @@
-# Zeko Proof API
+# Zeko Ethereum Gateway
 
-Asynchronous REST API for validating inputs, requesting SP1 Network proofs, and
-submitting them to Ethereum.
+The gateway is the compatibility and proving service between the OCaml Zeko
+sequencer and Ethereum. It exposes the subset of Mina GraphQL used by
+`gql_client.ml`, validates an OCaml proof export by executing SP1 locally,
+requests the EVM proof from the Succinct Network, submits it to Ethereum, and
+waits for configurable finality.
 
-## Endpoints
+## Interfaces
 
-- `POST /v1/proofs/settlement`
+- `POST /graphql` — Mina-compatible reads plus the gateway `sendZkapp`
+  extension. Read operations are public. The mutation carries
+  `gatewayToken` because the current OCaml client cannot attach a custom HTTP
+  header.
+- `POST /v1/settlements` and `POST /v1/proofs/settlement`
 - `POST /v1/proofs/bridge`
 - `POST /v1/proofs/withdraw`
-- `GET /v1/proofs?kind=bridge&status=confirmed&limit=50`
-- `GET /v1/proofs/:id`
+- `GET /v1/proofs` and `GET /v1/proofs/:id`
 - `GET /health`
 
-All `/v1` endpoints require `x-api-key`. `POST` requests may also send an
-`Idempotency-Key` header. A submission returns HTTP `202`; poll the returned
-status URL until the job is `confirmed`, `executed`, or `failed`.
+All `/v1` routes require `x-api-key`. Mutations are idempotent and a Mina
+transaction hash cannot be reused for different input. Multiple OCaml commits
+may queue, but only one settlement can be proving or submitted at a time. The
+gateway assigns its Ethereum batch/action context only when it reaches the
+worker, after the previous settlement is confirmed.
 
-```sh
-curl -X POST http://127.0.0.1:8080/v1/proofs/bridge \
-  -H "x-api-key: $PROOF_API_KEY" \
-  -H "Idempotency-Key: bridge-batch-42" \
-  -H "content-type: application/json" \
-  --data-binary @proofs/bridge-input.json
-```
+The Mina compatibility subset is deliberately narrow:
 
-Settlement requests contain the GraphQL mutation. They may also include the
-expected on-chain state for an additional cheap check before local SP1
-execution:
+- `account`
+- `pooledZkappCommands` and `pooledUserCommands`
+- `actions` and empty `events`
+- `genesisConstants`, `runtimeConfig`, and `bestChain`
+- `sendZkapp` with `EthereumSettlementInput`
+
+Confirmed settlements update `zkappState`, the rolling five-element action
+state, fee-payer nonce, and action rows. Pending commands are removed only
+after finality. The indexer records canonical blocks and account snapshots so
+an Ethereum reorg restores the prior virtual Mina view and requeues the same
+proof rather than purchasing a second proof.
+
+## Settlement input
+
+The OCaml exporter supplies the four Pickles files plus a `binding` object:
 
 ```json
 {
-  "graphql": "mutation { sendZkapp(input: ...) { ... } }",
-  "expected": {
-    "vk_hash": "0x...",
-    "action_state": "0x...",
-    "current_root": "0x..."
+  "schemaVersion": 1,
+  "minaTransactionHash": "0x<32 bytes>",
+  "proof": {
+    "vkJson": "...",
+    "proofJson": "...",
+    "publicInputSkeletonJson": "...",
+    "appStatementJson": "[\"0x...\",\"0x...\"]",
+    "binding": {
+      "minaSignatureKind": "testnet",
+      "accountUpdateBody": {
+        "fieldElements": ["0x..."],
+        "packed": [{"value": "0x...", "bits": 1}]
+      },
+      "actions": [["0x...", "0x..."]],
+      "stateBefore": {"fields": ["0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x...", "0x..."]}
+    }
   }
 }
 ```
 
-Bridge and withdraw bodies use `BridgeTransitionInput` and
-`WithdrawTransitionInput` JSON directly. See `proofs/bridge-input.json` and
-`proofs/withdraw-input.json`.
+When the job reaches the worker, the gateway adds `proof.context` from the live
+contract (chain ID, contract address, next batch, outer action length and
+transaction hash). SP1 derives the receipt; neither the API nor the sequencer
+supplies a trusted `stateAfter`.
 
-## Run
-
-### Docker
-
-Docker Compose runs the API and PostgreSQL together. The API configuration is
-mounted from `.env.api` in read-only mode, while PostgreSQL data is persisted in
-the `postgres-data` named volume.
+## Running
 
 ```sh
 cp .env.api.example .env.api
@@ -57,54 +77,24 @@ docker compose up --build -d
 curl http://127.0.0.1:8080/health
 ```
 
-`compose.yaml` overrides `DATABASE_URL` and `API_BIND` so the API can reach the
-database container and accept connections outside its container. Keep secrets
-in `.env.api`; the file is ignored by Git and is not copied into the image.
-
-Run the API without network proving or Ethereum submission by enabling local
-execution-only mode in `.env.api`, or by passing it at Compose startup:
+For execute-only validation with no network proof and no Ethereum write:
 
 ```sh
 API_EXECUTE_ONLY=true docker compose up --build -d
 ```
 
-Stop the services without deleting the database:
-
-```sh
-docker compose down
-```
-
-Delete the persisted database only when explicitly needed:
-
-```sh
-docker compose down --volumes
-```
-
-### Local
+Locally:
 
 ```sh
 createdb zeko_proofs
-cp .env.api.example .env.api
 set -a; source .env.api; set +a
 cargo run --release -p zeko-proof-api
 ```
 
-For local execution-only mode:
+`VIRTUAL_MINA_ACCOUNTS_PATH` points to a JSON array of complete Mina GraphQL
+account objects for the outer account and fee payer. Existing rows are not
+overwritten at startup.
 
-```sh
-API_EXECUTE_ONLY=true cargo run --release -p zeko-proof-api
-```
-
-The API stores job inputs and results in PostgreSQL. Ethereum and SP1 private
-keys are read only by the worker process from environment variables.
-
-The worker directly uses the SP1 SDK and Alloy. It does not invoke shell
-scripts, `cargo`, or `cast`.
-
-Before requesting a paid proof, it executes the SP1 program locally and checks
-the resulting public values against Ethereum. SP1 request IDs are persisted
-immediately, allowing interrupted jobs to resume the existing network request
-after a restart.
-
-When `API_EXECUTE_ONLY=true`, the worker stops after local SP1 execution and
-Ethereum validation, stores `publicValues`, and marks the job `executed`.
+The worker records `cycleCount`, `proverGas`, the network base/max prices,
+actual PROVE deduction after refund, Ethereum gas, confirmations, and explorer
+URL when those values are available.

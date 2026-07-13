@@ -21,6 +21,7 @@ extern crate alloc;
 
 pub mod deferred;
 pub mod serialize;
+pub mod statement;
 pub mod types;
 
 #[cfg(feature = "std")]
@@ -66,7 +67,10 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
     use rand_chacha::ChaCha20Rng;
     use types::WrapField;
 
-    if !proofs.iter().all(|p| accumulator_check(verifier, p)) {
+    if !proofs
+        .iter()
+        .all(|p| statement::check_app_state_binding(verifier, p) && accumulator_check(verifier, p))
+    {
         return false;
     }
 
@@ -222,6 +226,83 @@ mod tests {
 
             assert!(verify(&verifier, &vp), "verify should accept {dir}");
         }
+    }
+
+    #[test]
+    fn verify_rejects_mutated_application_statement() {
+        use ark_ff::One;
+
+        let dir = "mainnet-blockchain-snark";
+        let ocaml =
+            OcamlProof::parse(&fixture(dir, "public_input_skeleton.json")).expect("skeleton");
+        let wrap_vk = parse_wrap_vk(&fixture(dir, "vk.serde.json")).expect("vk");
+        let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
+        let stmt = parse_app_statement(&fixture(dir, "app_statement.json")).expect("stmt");
+        let mut proof = ocaml
+            .into_verifiable(wrap_proof, &wrap_vk, &[stmt])
+            .expect("conversion");
+        let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
+
+        proof.app_state[0] += StepField::one();
+
+        assert!(
+            !verify(&verifier, &proof),
+            "application statement must be bound inside the verifier"
+        );
+    }
+
+    fn mainnet_proof() -> (Verifier, VerifiableProof) {
+        let dir = "mainnet-blockchain-snark";
+        let ocaml =
+            OcamlProof::parse(&fixture(dir, "public_input_skeleton.json")).expect("skeleton");
+        let wrap_vk = parse_wrap_vk(&fixture(dir, "vk.serde.json")).expect("vk");
+        let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
+        let stmt = parse_app_statement(&fixture(dir, "app_statement.json")).expect("stmt");
+        let proof = ocaml
+            .into_verifiable(wrap_proof, &wrap_vk, &[stmt])
+            .expect("conversion");
+        let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
+        (verifier, proof)
+    }
+
+    #[test]
+    fn verify_rejects_mutated_deferred_plonk_challenge() {
+        use ark_ff::One;
+        let (verifier, mut proof) = mainnet_proof();
+        proof.raw_plonk.alpha += StepField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_bulletproof_challenge() {
+        use ark_ff::One;
+        let (verifier, mut proof) = mainnet_proof();
+        proof.raw_bulletproof_challenges[0] += StepField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_accumulator_commitment() {
+        use ark_ff::One;
+        let (verifier, mut proof) = mainnet_proof();
+        proof.challenge_polynomial_commitment.x += types::WrapField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_previous_proof_challenge() {
+        use ark_ff::One;
+        let (verifier, mut proof) = mainnet_proof();
+        proof.old_bulletproof_challenges[0][0] += StepField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_previous_evaluation() {
+        use ark_ff::One;
+        let (verifier, mut proof) = mainnet_proof();
+        proof.prev_evals.ft_eval1 += StepField::one();
+        assert!(!verify(&verifier, &proof));
     }
 
     /// Encode→decode round-trip: build a [`Verifier`] from the mainnet

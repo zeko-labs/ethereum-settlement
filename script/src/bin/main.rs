@@ -40,6 +40,7 @@ fn main() {
     let verifiable = load_verifiable(Path::new(&args.fixture_dir));
     let mut stdin = SP1Stdin::new();
     stdin.write(&verifiable);
+    stdin.write(&Option::<zeko_sp1_lib::SettlementWitnessV1>::None);
 
     if args.execute {
         let (output, cycles) = execute_minimal(ZKAPP_ELF, stdin).expect("execution failed");
