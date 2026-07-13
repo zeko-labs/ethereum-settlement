@@ -69,6 +69,9 @@ pub struct PlonkMinimal {
     pub gamma: StepField,
     #[serde_as(as = "SerdeAs")]
     pub zeta: StepField,
+    #[serde_as(as = "Option<SerdeAs>")]
+    pub joint_combiner: Option<StepField>,
+    pub feature_flags: FeatureFlags,
 }
 
 /// `branch_data` — the proofs-verified prefix mask (CONSTANT `to_bool_vec`
@@ -97,6 +100,21 @@ pub struct ChunkedAllEvals {
     pub s: [PointEvaluations<Vec<StepField>>; 6],
     /// index selectors: generic, poseidon, complete_add, mul, emul, endomul_scalar.
     pub index: [PointEvaluations<Vec<StepField>>; 6],
+    pub range_check0_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub range_check1_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub foreign_field_add_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub foreign_field_mul_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub xor_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub rot_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub lookup_aggregation: Option<PointEvaluations<Vec<StepField>>>,
+    pub lookup_table: Option<PointEvaluations<Vec<StepField>>>,
+    pub lookup_sorted: [Option<PointEvaluations<Vec<StepField>>>; 5],
+    pub runtime_lookup_table: Option<PointEvaluations<Vec<StepField>>>,
+    pub runtime_lookup_table_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub xor_lookup_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub lookup_gate_lookup_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub range_check_lookup_selector: Option<PointEvaluations<Vec<StepField>>>,
+    pub foreign_field_mul_lookup_selector: Option<PointEvaluations<Vec<StepField>>>,
 }
 
 /// Per-tag verifier constants. Built once from the wrap VK + SRSes and reused

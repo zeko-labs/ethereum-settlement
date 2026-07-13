@@ -18,6 +18,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use ark_ff::PrimeField;
+use kimchi::circuits::constraints::FeatureFlags;
+use kimchi::circuits::lookup::lookups::{LookupFeatures, LookupPatterns};
 use kimchi::proof::PointEvaluations;
 use mina_curves::pasta::{Pallas, Vesta};
 use o1_utils::FieldHelpers;
@@ -239,6 +241,16 @@ fn point_eval_chunked(v: &Value) -> Result<PointEvaluations<Vec<StepField>>, Str
     Ok(PointEvaluations { zeta, zeta_omega })
 }
 
+fn optional_point_eval_chunked(
+    v: &Value,
+) -> Result<Option<PointEvaluations<Vec<StepField>>>, String> {
+    if v.is_null() {
+        Ok(None)
+    } else {
+        point_eval_chunked(v).map(Some)
+    }
+}
+
 fn fixed_chunked<const N: usize>(
     v: &Value,
 ) -> Result<[PointEvaluations<Vec<StepField>>; N], String> {
@@ -277,6 +289,15 @@ fn parse_all_evals(v: &Value) -> Result<ChunkedAllEvals, String> {
         point_eval_chunked(field(inner, "endomul_scalar_selector")?)?,
     ];
 
+    let lookup_sorted = as_vec(field(inner, "lookup_sorted")?)?
+        .iter()
+        .map(optional_point_eval_chunked)
+        .collect::<Result<Vec<_>, String>>()?
+        .try_into()
+        .map_err(|values: Vec<_>| {
+            alloc::format!("lookup_sorted: expected 5 columns, got {}", values.len())
+        })?;
+
     Ok(ChunkedAllEvals {
         ft_eval1,
         public_evals,
@@ -285,6 +306,39 @@ fn parse_all_evals(v: &Value) -> Result<ChunkedAllEvals, String> {
         coefficients,
         s,
         index,
+        range_check0_selector: optional_point_eval_chunked(field(inner, "range_check0_selector")?)?,
+        range_check1_selector: optional_point_eval_chunked(field(inner, "range_check1_selector")?)?,
+        foreign_field_add_selector: optional_point_eval_chunked(field(
+            inner,
+            "foreign_field_add_selector",
+        )?)?,
+        foreign_field_mul_selector: optional_point_eval_chunked(field(
+            inner,
+            "foreign_field_mul_selector",
+        )?)?,
+        xor_selector: optional_point_eval_chunked(field(inner, "xor_selector")?)?,
+        rot_selector: optional_point_eval_chunked(field(inner, "rot_selector")?)?,
+        lookup_aggregation: optional_point_eval_chunked(field(inner, "lookup_aggregation")?)?,
+        lookup_table: optional_point_eval_chunked(field(inner, "lookup_table")?)?,
+        lookup_sorted,
+        runtime_lookup_table: optional_point_eval_chunked(field(inner, "runtime_lookup_table")?)?,
+        runtime_lookup_table_selector: optional_point_eval_chunked(field(
+            inner,
+            "runtime_lookup_table_selector",
+        )?)?,
+        xor_lookup_selector: optional_point_eval_chunked(field(inner, "xor_lookup_selector")?)?,
+        lookup_gate_lookup_selector: optional_point_eval_chunked(field(
+            inner,
+            "lookup_gate_lookup_selector",
+        )?)?,
+        range_check_lookup_selector: optional_point_eval_chunked(field(
+            inner,
+            "range_check_lookup_selector",
+        )?)?,
+        foreign_field_mul_lookup_selector: optional_point_eval_chunked(field(
+            inner,
+            "foreign_field_mul_lookup_selector",
+        )?)?,
     })
 }
 
@@ -298,39 +352,50 @@ impl OcamlProof {
         let deferred = field(proof_state, "deferred_values")?;
 
         let plonk = field(deferred, "plonk")?;
-        if !field(plonk, "joint_combiner")?.is_null() {
-            return Err("plonk: lookup joint combiner is unsupported".to_string());
-        }
         let feature_flags = field(plonk, "feature_flags")?;
-        for name in [
-            "range_check0",
-            "range_check1",
-            "foreign_field_add",
-            "foreign_field_mul",
-            "xor",
-            "rot",
-            "lookup",
-            "runtime_tables",
-        ] {
-            match field(feature_flags, name)?.as_bool() {
-                Some(false) => {}
-                Some(true) => {
-                    return Err(alloc::format!(
-                        "plonk: feature flag `{name}` is unsupported"
-                    ))
-                }
-                None => {
-                    return Err(alloc::format!(
-                        "plonk: feature flag `{name}` is not boolean"
-                    ))
-                }
-            }
-        }
+        let flag = |name| {
+            field(feature_flags, name)?
+                .as_bool()
+                .ok_or_else(|| alloc::format!("plonk: feature flag `{name}` is not boolean"))
+        };
+        let range_check0 = flag("range_check0")?;
+        let range_check1 = flag("range_check1")?;
+        let foreign_field_add = flag("foreign_field_add")?;
+        let foreign_field_mul = flag("foreign_field_mul")?;
+        let xor = flag("xor")?;
+        let rot = flag("rot")?;
+        let lookup = flag("lookup")?;
+        let runtime_tables = flag("runtime_tables")?;
+        let patterns = LookupPatterns {
+            xor,
+            lookup,
+            range_check: range_check0 || range_check1 || rot,
+            foreign_field_mul,
+        };
+        let feature_flags = FeatureFlags {
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup_features: LookupFeatures {
+                patterns,
+                joint_lookup_used: patterns.joint_lookups_used(),
+                uses_runtime_tables: runtime_tables,
+            },
+        };
+        let joint_combiner = match field(plonk, "joint_combiner")? {
+            Value::Null => None,
+            value => Some(challenge(value)?),
+        };
         let raw_plonk = PlonkMinimal {
             alpha: challenge(field(plonk, "alpha")?)?,
             beta: challenge(field(plonk, "beta")?)?,
             gamma: challenge(field(plonk, "gamma")?)?,
             zeta: challenge(field(plonk, "zeta")?)?,
+            joint_combiner,
+            feature_flags,
         };
 
         let raw_bulletproof_challenges = bulletproof_vec::<StepField, STEP_IPA_ROUNDS>(field(
@@ -416,23 +481,31 @@ mod tests {
     }
 
     #[test]
-    fn enabled_feature_flag_is_rejected() {
+    fn enabled_feature_flag_is_parsed() {
         let mut skeleton: Value =
             serde_json::from_str(fixture!("nrr/public_input_skeleton.json")).unwrap();
         skeleton["statement"]["proof_state"]["deferred_values"]["plonk"]["feature_flags"]
-            ["lookup"] = Value::Bool(true);
-        let error = OcamlProof::parse(&skeleton.to_string()).unwrap_err();
-        assert!(error.contains("feature flag `lookup`"));
+            ["range_check0"] = Value::Bool(true);
+        let proof = OcamlProof::parse(&skeleton.to_string()).expect("featureful skeleton parses");
+        assert!(proof.raw_plonk.feature_flags.range_check0);
+        assert!(
+            proof
+                .raw_plonk
+                .feature_flags
+                .lookup_features
+                .patterns
+                .range_check
+        );
     }
 
     #[test]
-    fn lookup_joint_combiner_is_rejected() {
+    fn lookup_joint_combiner_is_parsed() {
         let mut skeleton: Value =
             serde_json::from_str(fixture!("nrr/public_input_skeleton.json")).unwrap();
         skeleton["statement"]["proof_state"]["deferred_values"]["plonk"]["joint_combiner"] =
-            Value::String("0x01".to_string());
-        let error = OcamlProof::parse(&skeleton.to_string()).unwrap_err();
-        assert!(error.contains("joint combiner"));
+            serde_json::json!({"inner": [1, 0]});
+        let proof = OcamlProof::parse(&skeleton.to_string()).expect("joint combiner parses");
+        assert_eq!(proof.raw_plonk.joint_combiner, Some(StepField::from(1u64)));
     }
 
     /// Common skeleton checks: parses with the expected mpv (prev-proof array

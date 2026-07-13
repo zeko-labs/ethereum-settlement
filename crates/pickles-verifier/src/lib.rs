@@ -174,7 +174,10 @@ pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
 mod tests {
     use super::*;
     use crate::types::{VestaSrs, WrapSrs};
-    use crate::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
+    use crate::wire::{
+        parse_app_statement, parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk,
+        OcamlProof,
+    };
     use mina_curves::pasta::Pallas;
     use poly_commitment::precomputed_srs::get_srs;
     use std::sync::{Arc, OnceLock};
@@ -205,6 +208,7 @@ mod tests {
     fn verify_accepts_fixtures() {
         for dir in [
             "mainnet-blockchain-snark",
+            "zeko-local-e2e",
             "nrr",
             "simplechain/wrap0",
             "simplechain/wrap1",
@@ -217,10 +221,11 @@ mod tests {
                 OcamlProof::parse(&fixture(dir, "public_input_skeleton.json")).expect("skeleton");
             let wrap_vk = parse_wrap_vk(&fixture(dir, "vk.serde.json")).expect("vk");
             let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
-            let stmt = parse_app_statement(&fixture(dir, "app_statement.json")).expect("stmt");
+            let stmt =
+                parse_app_statement_fields(&fixture(dir, "app_statement.json")).expect("stmt");
 
             let vp = ocaml
-                .into_verifiable(wrap_proof, &wrap_vk, &[stmt])
+                .into_verifiable(wrap_proof, &wrap_vk, &stmt)
                 .expect("conversion");
             let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
 
@@ -265,6 +270,21 @@ mod tests {
         (verifier, proof)
     }
 
+    fn zeko_proof() -> (Verifier, VerifiableProof) {
+        let dir = "zeko-local-e2e";
+        let ocaml =
+            OcamlProof::parse(&fixture(dir, "public_input_skeleton.json")).expect("skeleton");
+        let wrap_vk = parse_wrap_vk(&fixture(dir, "vk.serde.json")).expect("vk");
+        let wrap_proof = parse_wrap_proof(&fixture(dir, "proof.serde.json")).expect("proof");
+        let stmt = parse_app_statement_fields(&fixture(dir, "app_statement.json"))
+            .expect("application statement");
+        let proof = ocaml
+            .into_verifiable(wrap_proof, &wrap_vk, &stmt)
+            .expect("conversion");
+        let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
+        (verifier, proof)
+    }
+
     #[test]
     fn verify_rejects_mutated_deferred_plonk_challenge() {
         use ark_ff::One;
@@ -302,6 +322,38 @@ mod tests {
         use ark_ff::One;
         let (verifier, mut proof) = mainnet_proof();
         proof.prev_evals.ft_eval1 += StepField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_feature_flag() {
+        let (verifier, mut proof) = zeko_proof();
+        proof.raw_plonk.feature_flags.range_check0 = false;
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_joint_combiner() {
+        use ark_ff::One;
+        let (verifier, mut proof) = zeko_proof();
+        *proof
+            .raw_plonk
+            .joint_combiner
+            .as_mut()
+            .expect("Zeko uses lookup parameters") += StepField::one();
+        assert!(!verify(&verifier, &proof));
+    }
+
+    #[test]
+    fn verify_rejects_mutated_lookup_evaluation() {
+        use ark_ff::One;
+        let (verifier, mut proof) = zeko_proof();
+        proof
+            .prev_evals
+            .lookup_aggregation
+            .as_mut()
+            .expect("Zeko uses lookup aggregation")
+            .zeta[0] += StepField::one();
         assert!(!verify(&verifier, &proof));
     }
 

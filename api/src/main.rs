@@ -501,13 +501,16 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         let preflight = prover::preflight(&job.kind, &job.input).await?;
         validate_preflight(state, &job.kind, &job.input, &preflight).await?;
         if state.execute_only {
+            let cycle_count = i64::try_from(preflight.cycles())
+                .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
             let result = sqlx::query(
                 "UPDATE proof_jobs SET status = 'executed', public_values = $2,
-                        completed_at = NOW(), updated_at = NOW()
+                        cycle_count = $3, completed_at = NOW(), updated_at = NOW()
                  WHERE id = $1 AND status = 'validating'",
             )
             .bind(job.id)
             .bind(format!("0x{}", hex::encode(preflight.public_values())))
+            .bind(cycle_count)
             .execute(&state.pool)
             .await?;
             anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");

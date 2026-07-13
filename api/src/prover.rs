@@ -42,14 +42,17 @@ pub enum Preflight {
     Settlement {
         values: SettlementPublicValuesV1,
         public_values: Vec<u8>,
+        cycles: u64,
     },
     Bridge {
         values: BridgeTransitionPublicValues,
         public_values: Vec<u8>,
+        cycles: u64,
     },
     Withdraw {
         values: WithdrawTransitionPublicValues,
         public_values: Vec<u8>,
+        cycles: u64,
     },
 }
 
@@ -61,6 +64,14 @@ impl Preflight {
             | Preflight::Withdraw { public_values, .. } => public_values,
         }
     }
+
+    pub fn cycles(&self) -> u64 {
+        match self {
+            Preflight::Settlement { cycles, .. }
+            | Preflight::Bridge { cycles, .. }
+            | Preflight::Withdraw { cycles, .. } => *cycles,
+        }
+    }
 }
 
 pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
@@ -68,20 +79,24 @@ pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
     let input = input.clone();
     tokio::task::spawn_blocking(move || {
         let (elf, stdin) = stdin_for(&kind, &input)?;
-        let (public_values, _) = execute_minimal(elf, stdin).context("execute SP1 preflight")?;
+        let (public_values, cycles) =
+            execute_minimal(elf, stdin).context("execute SP1 preflight")?;
         match kind.as_str() {
             "settlement" => Ok(Preflight::Settlement {
                 values: SettlementPublicValuesV1::decode(&public_values)
                     .map_err(anyhow::Error::msg)?,
                 public_values,
+                cycles,
             }),
             "bridge" => Ok(Preflight::Bridge {
                 values: bincode::deserialize(&public_values)?,
                 public_values,
+                cycles,
             }),
             "withdraw" => Ok(Preflight::Withdraw {
                 values: bincode::deserialize(&public_values)?,
                 public_values,
+                cycles,
             }),
             _ => anyhow::bail!("unsupported proof kind: {kind}"),
         }

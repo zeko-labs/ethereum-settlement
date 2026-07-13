@@ -2,7 +2,9 @@
 
 use clap::Parser;
 use pickles_verifier::types::VerifiableProof;
-use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
+use pickles_verifier::wire::{
+    parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk, OcamlProof,
+};
 use sp1_core_executor::Program;
 use sp1_core_executor_runner::MinimalExecutorRunner;
 use sp1_sdk::{
@@ -122,10 +124,10 @@ fn load_verifiable(fixture_dir: &Path) -> VerifiableProof {
     let wrap_vk = parse_wrap_vk(&vk_json).expect("parse vk.serde.json");
     let wrap_proof = parse_wrap_proof(&proof_json).expect("parse proof.serde.json");
     let ocaml = OcamlProof::parse(&skeleton_json).expect("parse public_input_skeleton.json");
-    let app_stmt = parse_app_statement(&app_stmt_json).expect("parse app_statement.json");
+    let app_stmt = parse_app_statement_fields(&app_stmt_json).expect("parse app_statement.json");
 
     ocaml
-        .into_verifiable(wrap_proof, &wrap_vk, &[app_stmt])
+        .into_verifiable(wrap_proof, &wrap_vk, &app_stmt)
         .expect("OcamlProof::into_verifiable")
 }
 
