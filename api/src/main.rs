@@ -653,6 +653,7 @@ async fn validate_preflight(
     let local_vkey = prover::program_vkey(kind).await?;
     match preflight {
         prover::Preflight::Settlement { values, .. } => {
+            let values = values.settlement();
             let chain = state.ethereum.settlement_state().await?;
             ensure_hex_eq(
                 &local_vkey,

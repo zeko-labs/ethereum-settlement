@@ -113,6 +113,71 @@ contract ZekoSettlementV1Test is Test {
         assertTrue(valid);
     }
 
+    function test_V2StoresSettlementBoundInnerActionBatch() public {
+        address bridgeAddress = address(0xB12D63);
+        settlement.setBridgeContract(bridgeAddress);
+        bytes32 root = keccak256("inner action root");
+        bytes memory values = _buildPublicValuesV2(
+            _afterState(),
+            bridgeAddress,
+            root,
+            3,
+            1
+        );
+
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+
+        (
+            bytes32 minaBefore,
+            bytes32 minaAfter,
+            bytes32 storedRoot,
+            uint32 startIndex,
+            uint32 count,
+            uint32 commitSlotUpper,
+            bool valid
+        ) = settlement.innerActionBatch(1);
+        assertEq(minaBefore, initialState[3]);
+        assertEq(minaAfter, _afterState()[3]);
+        assertEq(storedRoot, root);
+        assertEq(startIndex, 3);
+        assertEq(count, 1);
+        assertEq(commitSlotUpper, 11);
+        assertTrue(valid);
+    }
+
+    function test_AppendOuterWitnessBatchRecordsExactCheckpoint() public {
+        settlement.setBridgeContract(alice);
+        bytes32 afterState = keccak256("witness action state");
+        vm.prank(alice);
+        settlement.appendOuterWitnessBatch(
+            initialActionState,
+            afterState,
+            2
+        );
+
+        assertEq(settlement.actionState(), afterState);
+        assertEq(settlement.outerActionStateLength(), 7);
+        (uint32 length, bool valid) = settlement.outerActionStateInfo(
+            afterState
+        );
+        assertEq(length, 7);
+        assertTrue(valid);
+    }
+
+    function test_RevertOnUnknownSynchronizedCheckpoint() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        bytes32 unknown = keccak256("unknown synchronized state");
+        _writeBytes32(values, 724, unknown);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZekoSettlement.UnknownSynchronizedActionState.selector,
+                unknown,
+                uint32(5)
+            )
+        );
+        settlement.verifyAndUpdateRoot(values, hex"01");
+    }
+
     function test_RevertOnWrongLength() public {
         bytes memory invalid = new bytes(12);
         vm.expectRevert(
@@ -308,15 +373,32 @@ contract ZekoSettlementV1Test is Test {
         cursor += 4;
         _writeUint32(values, cursor, 6);
         cursor += 4;
-        _writeBytes32(values, cursor, keccak256("synchronized outer action"));
+        _writeBytes32(values, cursor, initialActionState);
         cursor += 32;
-        _writeUint32(values, cursor, 4);
+        _writeUint32(values, cursor, 5);
         cursor += 4;
         _writeUint32(values, cursor, 9);
         cursor += 4;
         _writeUint32(values, cursor, 11);
         cursor += 4;
         assertEq(cursor, PUBLIC_VALUES_LENGTH);
+    }
+
+    function _buildPublicValuesV2(
+        bytes32[8] memory afterState,
+        address bridgeAddress,
+        bytes32 root,
+        uint32 startIndex,
+        uint32 count
+    ) private view returns (bytes memory values) {
+        bytes memory v1 = _buildPublicValues(afterState);
+        values = new bytes(828);
+        for (uint256 i = 0; i < v1.length; i++) values[i] = v1[i];
+        _writeUint16(values, 4, 2);
+        _writeAddress(values, 768, bridgeAddress);
+        _writeBytes32(values, 788, root);
+        _writeUint32(values, 820, startIndex);
+        _writeUint32(values, 824, count);
     }
 
     function _writeAddress(

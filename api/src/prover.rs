@@ -8,7 +8,7 @@ use sp1_sdk::{
     SP1Stdin,
 };
 use zeko_sp1_lib::{
-    BridgeTransitionInput, BridgeTransitionPublicValues, SettlementPublicValuesV1,
+    BridgeTransitionInput, BridgeTransitionPublicValues, SettlementPublicValues,
     WithdrawTransitionInput, WithdrawTransitionPublicValues,
 };
 use zkapp_script::{
@@ -40,7 +40,7 @@ pub struct RequestMetrics {
 
 pub enum Preflight {
     Settlement {
-        values: SettlementPublicValuesV1,
+        values: SettlementPublicValues,
         public_values: Vec<u8>,
         cycles: u64,
     },
@@ -83,7 +83,7 @@ pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
             execute_minimal(elf, stdin).context("execute SP1 preflight")?;
         match kind.as_str() {
             "settlement" => Ok(Preflight::Settlement {
-                values: SettlementPublicValuesV1::decode(&public_values)
+                values: SettlementPublicValues::decode(&public_values)
                     .map_err(anyhow::Error::msg)?,
                 public_values,
                 cycles,

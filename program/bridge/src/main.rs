@@ -13,6 +13,9 @@ use zeko_sp1_lib::{
     Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ZekoAddress,
 };
 
+const WEI_PER_ZEKO_UNIT: u64 = 1_000_000_000;
+const INFINITE_TIMEOUT: u64 = u32::MAX as u64;
+
 fn main() {
     let input: BridgeTransitionInput = sp1_zkvm::io::read();
 
@@ -30,17 +33,25 @@ fn main() {
     for deposit in &input.deposits {
         let (zeko_recipient_x, zeko_recipient_is_odd) = unpack_zeko_address(deposit.zeko_recipient);
 
-        let zeko_amount = u256_from_bytes(deposit.zeko_amount);
+        let ethereum_amount = u256_from_bytes(deposit.amount);
+        assert!(ethereum_amount > U256::ZERO, "zero deposit");
+        assert_eq!(
+            ethereum_amount % U256::from(WEI_PER_ZEKO_UNIT),
+            U256::ZERO,
+            "native deposit must have 1 gwei granularity"
+        );
+        let zeko_amount = ethereum_amount / U256::from(WEI_PER_ZEKO_UNIT);
+        assert!(zeko_amount <= U256::from(u64::MAX), "native deposit exceeds Mina amount");
 
         next_nonce += 1;
 
         let ethereum_deposit_leaf = compute_ethereum_deposit_leaf(
             input.ethereum.chain_id,
             input.ethereum.bridge_address,
-            deposit.token,
+            [0u8; 20],
             deposit.zeko_recipient,
             zeko_amount,
-            deposit.timeout,
+            INFINITE_TIMEOUT,
             next_nonce,
         );
 
@@ -52,10 +63,10 @@ fn main() {
             zeko_amount,
             zeko_recipient_x,
             zeko_recipient_is_odd,
-            deposit.timeout,
-            fp_from_bytes(deposit.children_digest),
-            deposit.slot_range_lower,
-            deposit.slot_range_upper,
+            INFINITE_TIMEOUT,
+            Fp::from(0u8),
+            0,
+            INFINITE_TIMEOUT,
         );
         let zeko_action_list_hash = action_list_add_fields(empty_action_list_hash, &action_fields);
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
@@ -111,6 +122,7 @@ fn compute_deposit_aux(
     let fields = [
         Fp::from(0u8), // children = Field(0) for empty call forest
         fp_from_address(holder_account_l1),
+        Fp::from(0u8), // synthetic holder compressed-key parity
         fp_from_u256(zeko_amount),
         fp_from_u256(zeko_recipient_x),
         Fp::from(zeko_recipient_is_odd as u8),
@@ -455,17 +467,17 @@ mod tests {
             (
                 U256::from(1_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000001020304"),
-                hex32("08c18c1e345342a9376a5196008a3c2a47c9c544215e26594d3a7bf64a7c53b8"),
+                hex32("30117a0c5f5f2266769ae3f5c53934e5981a915ef4f361bf07a58e5873b0d5e7"),
             ),
             (
                 U256::from(2_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000005060708"),
-                hex32("2b27eaae27d23ace717a80ad95f889a5977f5c278f158e6a6adda717e6a870c7"),
+                hex32("26ce0c15313d96d8625e92eab623f5dd969e16a17c173ef21f495c3f5921768f"),
             ),
             (
                 U256::from(3_000_000_000u64),
                 hex32("80000000000000000000000000000000000000000000000000000000090a0b0c"),
-                hex32("2b8061d0b565f80c99acf967a3402618deecf886865394b67818fa988428f020"),
+                hex32("2c58feec7503548e3b3938d3a30b113e1e26f241976d99547304a9053da876f6"),
             ),
         ];
 
@@ -494,7 +506,7 @@ mod tests {
 
         assert_eq!(
             action_state,
-            hex32("3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf")
+            hex32("1e014b9576be458e9917f4692eeaa506a601be2b7b36bb86e7e840edac8e74b5")
         );
     }
 

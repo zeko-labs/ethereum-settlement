@@ -1,10 +1,12 @@
+use alloy_primitives::keccak256;
 use ark_ff::{BigInteger, PrimeField};
 use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use pickles_verifier::types::{StepField, VerifiableProof};
 use zeko_sp1_lib::{
-    Bytes32, MinaSignatureKindV1, OuterStateV1, SettlementDaMode, SettlementPublicValuesV1,
+    Address, Bytes32, InnerActionBatchWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2,
+    OuterStateV1, SettlementDaMode, SettlementPublicValuesV1, SettlementPublicValuesV2,
     SettlementWitnessV1,
 };
 
@@ -13,6 +15,14 @@ const BODY_ACTIONS_HASH: usize = 15;
 const BODY_PRECONDITION_STATE_START: usize = 28;
 const BODY_PRECONDITION_ACTION_STATE: usize = 36;
 const OUTER_COMMIT_ACTION_FIELDS: usize = 8;
+const INNER_ACTION_FIELDS: usize = 3;
+const INNER_ACTION_TREE_DEPTH: usize = 16;
+const MAX_INNER_ACTIONS: usize = 1 << INNER_ACTION_TREE_DEPTH;
+
+const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
+const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
+const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
+const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
 
 pub fn derive_receipt(
     proof: &VerifiableProof,
@@ -20,6 +30,246 @@ pub fn derive_receipt(
     vk_hash: Bytes32,
 ) -> SettlementPublicValuesV1 {
     derive_receipt_for_app_state(&proof.app_state, witness, vk_hash)
+}
+
+/// Derives either the byte-for-byte compatible V1 receipt or a V2 receipt when
+/// the host supplies the exact inner-action range committed by the Pickles
+/// proof. The clear range is safe witness data: replaying it must reach the
+/// proof-bound inner action state and length before any Keccak root is emitted.
+pub fn derive_receipt_bytes(
+    proof: &VerifiableProof,
+    witness: SettlementWitnessV1,
+    vk_hash: Bytes32,
+) -> Vec<u8> {
+    let inner_action_batch = witness.inner_action_batch.clone();
+    let v1 = derive_receipt(proof, witness, vk_hash);
+    match inner_action_batch {
+        None => v1.encode().to_vec(),
+        Some(batch) => derive_v2_receipt(v1, batch).encode().to_vec(),
+    }
+}
+
+fn derive_v2_receipt(
+    settlement: SettlementPublicValuesV1,
+    batch: InnerActionBatchWitnessV2,
+) -> SettlementPublicValuesV2 {
+    assert!(
+        batch.actions.len() <= MAX_INNER_ACTIONS,
+        "too many inner actions"
+    );
+
+    let state_before = field_from_bytes(settlement.state_before.inner_action_state());
+    let state_after = field_from_bytes(settlement.state_after.inner_action_state());
+    let start_index = field_bytes_to_u32(settlement.state_before.inner_action_state_length());
+    let end_index = field_bytes_to_u32(settlement.state_after.inner_action_state_length());
+    let count = u32::try_from(batch.actions.len()).expect("inner action count fits u32");
+    assert_eq!(
+        end_index.checked_sub(start_index),
+        Some(count),
+        "inner action count does not match committed length transition"
+    );
+
+    let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
+    let mut replayed_state = state_before;
+    let mut leaves = Vec::with_capacity(batch.actions.len());
+
+    for (offset, action) in batch.actions.iter().enumerate() {
+        assert_eq!(
+            action.fields.len(),
+            INNER_ACTION_FIELDS,
+            "invalid Zeko inner action width"
+        );
+        let fields = action
+            .fields
+            .iter()
+            .map(field_from_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(fields[0], StepField::from(0u8), "invalid inner action tag");
+
+        let event_hash = hash_with_prefix("MinaZkappEvent******", &fields);
+        let action_list_hash = hash_with_prefix(
+            "MinaZkappSeqEvents**",
+            &[empty_action_list_hash, event_hash],
+        );
+        replayed_state =
+            hash_with_prefix("MinaZkappSeqEvents**", &[replayed_state, action_list_hash]);
+
+        let global_index = start_index
+            .checked_add(u32::try_from(offset).expect("offset fits u32"))
+            .expect("inner action index overflow");
+        let action_fields_hash = hash_action_fields(&action.fields);
+        let leaf = match &action.withdrawal {
+            Some(withdrawal) => {
+                assert_native_withdrawal_preimage(&fields, withdrawal);
+                hash_native_withdrawal_leaf(
+                    settlement.chain_id,
+                    batch.bridge_address,
+                    global_index,
+                    withdrawal,
+                    action_fields_hash,
+                )
+            }
+            None => hash_raw_inner_action_leaf(
+                settlement.chain_id,
+                batch.bridge_address,
+                global_index,
+                action_fields_hash,
+            ),
+        };
+        leaves.push(leaf);
+    }
+
+    assert_eq!(
+        replayed_state, state_after,
+        "inner actions do not reach proof-bound action state"
+    );
+
+    SettlementPublicValuesV2 {
+        settlement,
+        bridge_address: batch.bridge_address,
+        inner_action_root: compute_inner_action_root(&leaves),
+        inner_action_start_index: start_index,
+        inner_action_count: count,
+    }
+}
+
+fn assert_native_withdrawal_preimage(fields: &[StepField], withdrawal: &NativeWithdrawalV2) {
+    assert!(
+        withdrawal.amount > 0,
+        "native withdrawal amount must be non-zero"
+    );
+    let recipient_x = field_from_address(withdrawal.recipient);
+    // `Withdrawal_params_base.typ` fields are: empty children digest, amount,
+    // compressed recipient x, compressed recipient parity. Ethereum synthetic
+    // keys always use even parity.
+    let expected_aux = hash_with_prefix(
+        "Withdrawal_params - qFB3jXP*)",
+        &[
+            StepField::from(0u8),
+            StepField::from(withdrawal.amount),
+            recipient_x,
+            StepField::from(0u8),
+        ],
+    );
+    assert_eq!(
+        fields[1], expected_aux,
+        "withdrawal preimage does not match action aux"
+    );
+}
+
+fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
+    encoded.extend_from_slice(&keccak256(ACTION_FIELDS_DOMAIN.as_bytes()).0);
+    encoded.extend_from_slice(&u32_word(
+        u32::try_from(fields.len()).expect("field count fits u32"),
+    ));
+    for field in fields {
+        encoded.extend_from_slice(field);
+    }
+    keccak256(encoded).0
+}
+
+fn hash_native_withdrawal_leaf(
+    chain_id: u64,
+    bridge_address: Address,
+    global_index: u32,
+    withdrawal: &NativeWithdrawalV2,
+    action_fields_hash: Bytes32,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(32 * 7);
+    encoded.extend_from_slice(&keccak256(NATIVE_WITHDRAWAL_LEAF_DOMAIN.as_bytes()).0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge_address));
+    encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&address_word(withdrawal.recipient));
+    encoded.extend_from_slice(&u64_word(withdrawal.amount));
+    encoded.extend_from_slice(&action_fields_hash);
+    keccak256(encoded).0
+}
+
+fn hash_raw_inner_action_leaf(
+    chain_id: u64,
+    bridge_address: Address,
+    global_index: u32,
+    action_fields_hash: Bytes32,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(32 * 5);
+    encoded.extend_from_slice(&keccak256(RAW_INNER_ACTION_LEAF_DOMAIN.as_bytes()).0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge_address));
+    encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&action_fields_hash);
+    keccak256(encoded).0
+}
+
+fn compute_inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
+    let zero_hashes = compute_zero_hashes();
+    if leaves.is_empty() {
+        return zero_hashes[INNER_ACTION_TREE_DEPTH];
+    }
+    let mut nodes = leaves.to_vec();
+    for level in 0..INNER_ACTION_TREE_DEPTH {
+        let mut parents = Vec::with_capacity(nodes.len().div_ceil(2));
+        for pair in nodes.chunks(2) {
+            let right = if pair.len() == 2 {
+                pair[1]
+            } else {
+                zero_hashes[level]
+            };
+            parents.push(hash_inner_action_node(pair[0], right));
+        }
+        nodes = parents;
+    }
+    assert_eq!(nodes.len(), 1, "invalid inner action tree");
+    nodes[0]
+}
+
+fn compute_zero_hashes() -> [Bytes32; INNER_ACTION_TREE_DEPTH + 1] {
+    let mut zero_hashes = [[0u8; 32]; INNER_ACTION_TREE_DEPTH + 1];
+    for level in 0..INNER_ACTION_TREE_DEPTH {
+        zero_hashes[level + 1] = hash_inner_action_node(zero_hashes[level], zero_hashes[level]);
+    }
+    zero_hashes
+}
+
+fn hash_inner_action_node(left: Bytes32, right: Bytes32) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(96);
+    encoded.extend_from_slice(&keccak256(INNER_ACTION_NODE_DOMAIN.as_bytes()).0);
+    encoded.extend_from_slice(&left);
+    encoded.extend_from_slice(&right);
+    keccak256(encoded).0
+}
+
+fn field_from_address(address: Address) -> StepField {
+    let mut bytes = [0u8; 32];
+    bytes[12..].copy_from_slice(&address);
+    field_from_bytes(&bytes)
+}
+
+fn field_bytes_to_u32(value: &Bytes32) -> u32 {
+    assert!(
+        value[..28].iter().all(|byte| *byte == 0),
+        "field does not fit u32"
+    );
+    u32::from_be_bytes(value[28..].try_into().expect("four-byte suffix"))
+}
+
+fn u64_word(value: u64) -> Bytes32 {
+    let mut output = [0u8; 32];
+    output[24..].copy_from_slice(&value.to_be_bytes());
+    output
+}
+
+fn u32_word(value: u32) -> Bytes32 {
+    let mut output = [0u8; 32];
+    output[28..].copy_from_slice(&value.to_be_bytes());
+    output
+}
+
+fn address_word(value: Address) -> Bytes32 {
+    let mut output = [0u8; 32];
+    output[12..].copy_from_slice(&value);
+    output
 }
 
 fn derive_receipt_for_app_state(
@@ -272,7 +522,8 @@ fn prefix_to_field(prefix: &str) -> StepField {
 mod tests {
     use super::*;
     use zeko_sp1_lib::{
-        ChunkedRandomOracleInputV1, MinaSignatureKindV1, SettlementBindingV1, SettlementContextV1,
+        ChunkedRandomOracleInputV1, InnerActionWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2,
+        SettlementBindingV1, SettlementContextV1,
     };
 
     fn field(value: u64) -> StepField {
@@ -335,6 +586,7 @@ mod tests {
                 mina_transaction_hash: [0x22; 32],
                 outer_action_state_length_before: 8,
             },
+            inner_action_batch: None,
         };
         (vec![body_digest, field(999)], witness)
     }
@@ -359,6 +611,87 @@ mod tests {
         assert_eq!(
             SettlementPublicValuesV1::decode(&receipt.encode()).unwrap(),
             receipt
+        );
+    }
+
+    #[test]
+    fn v2_replays_inner_actions_and_binds_native_withdrawal_leaf() {
+        let recipient = [0x22; 20];
+        let withdrawal = NativeWithdrawalV2 {
+            recipient,
+            amount: 1_000_000_000,
+        };
+        let aux = hash_with_prefix(
+            "Withdrawal_params - qFB3jXP*)",
+            &[
+                field(0),
+                field(withdrawal.amount),
+                field_from_address(recipient),
+                field(0),
+            ],
+        );
+        let fields = vec![field(0), aux, field(777)];
+        let before = field(900);
+        let event_hash = hash_with_prefix("MinaZkappEvent******", &fields);
+        let list_hash = hash_with_prefix(
+            "MinaZkappSeqEvents**",
+            &[empty_hash_with_prefix("MinaZkappActionsEmpty"), event_hash],
+        );
+        let after = hash_with_prefix("MinaZkappSeqEvents**", &[before, list_hash]);
+
+        let mut state_before = OuterStateV1::default();
+        state_before.fields[3] = field_to_bytes(before);
+        state_before.fields[4] = encoded(5);
+        let mut state_after = state_before.clone();
+        state_after.fields[3] = field_to_bytes(after);
+        state_after.fields[4] = encoded(6);
+
+        let settlement = SettlementPublicValuesV1 {
+            da_mode: SettlementDaMode::Multisig,
+            chain_id: 31337,
+            settlement_contract: [0x11; 20],
+            batch_sequence: 2,
+            vk_hash: [1; 32],
+            app_statement: [2; 32],
+            mina_transaction_hash: [3; 32],
+            state_before,
+            state_after,
+            outer_action_state_before: [4; 32],
+            outer_action_state_after: [5; 32],
+            outer_action_state_length_before: 9,
+            outer_action_state_length_after: 10,
+            synchronized_outer_action_state: [6; 32],
+            synchronized_outer_action_state_length: 9,
+            slot_lower: 1,
+            slot_upper: 2,
+        };
+        let batch = InnerActionBatchWitnessV2 {
+            bridge_address: [0x33; 20],
+            actions: vec![InnerActionWitnessV2 {
+                fields: fields.into_iter().map(field_to_bytes).collect(),
+                withdrawal: Some(withdrawal),
+            }],
+        };
+
+        let receipt = derive_v2_receipt(settlement, batch);
+        assert_eq!(receipt.inner_action_start_index, 5);
+        assert_eq!(receipt.inner_action_count, 1);
+        assert_ne!(receipt.inner_action_root, [0; 32]);
+        assert_eq!(
+            SettlementPublicValuesV2::decode(&receipt.encode()).unwrap(),
+            receipt
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "withdrawal preimage does not match action aux")]
+    fn v2_rejects_unbound_withdrawal_preimage() {
+        assert_native_withdrawal_preimage(
+            &[field(0), field(123), field(456)],
+            &NativeWithdrawalV2 {
+                recipient: [0x44; 20],
+                amount: 1,
+            },
         );
     }
 

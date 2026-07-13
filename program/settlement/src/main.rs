@@ -10,7 +10,7 @@ sp1_zkvm::entrypoint!(main);
 use pickles_verifier::serialize::decode_verifier_blob;
 use pickles_verifier::types::VerifiableProof;
 use pickles_verifier::verify;
-use settlement_program::derive_receipt;
+use settlement_program::derive_receipt_bytes;
 use zeko_sp1_lib::SettlementWitnessV1;
 
 #[repr(C, align(8))]
@@ -60,8 +60,8 @@ pub fn main() {
     assert!(proof_valid, "Pickles proof verification failed");
     match settlement {
         Some(witness) => {
-            let public_values = derive_receipt(&proof, witness, *VK_HASH);
-            sp1_zkvm::io::commit_slice(&public_values.encode());
+            let public_values = derive_receipt_bytes(&proof, witness, *VK_HASH);
+            sp1_zkvm::io::commit_slice(&public_values);
         }
         None => commit_zkapp_public_values(proof_valid),
     }

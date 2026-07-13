@@ -23,6 +23,31 @@ import {ZekoAddress, ZekoAddressLib} from "./ZekoAddress.sol";
 import {ISP1Verifier} from "./ZekoSettlement.sol";
 
 interface IZekoSettlementVerifier {
+    function actionState() external view returns (bytes32);
+
+    function appendOuterWitnessBatch(
+        bytes32 stateBefore,
+        bytes32 stateAfter,
+        uint32 count
+    ) external;
+
+    function currentVirtualSlot() external view returns (uint64);
+
+    function innerActionBatch(
+        uint64 sequence
+    )
+        external
+        view
+        returns (
+            bytes32 minaStateBefore,
+            bytes32 minaStateAfter,
+            bytes32 root,
+            uint32 startIndex,
+            uint32 count,
+            uint32 commitSlotUpper,
+            bool valid
+        );
+
     function isActionStateValid(
         bytes32 actionState
     ) external view returns (bool);
@@ -81,6 +106,14 @@ contract EthereumZekoBridge is
     error InvalidWithdrawToken(bytes32 token);
     error InvalidWithdrawRecipient(bytes32 recipient);
     error WithdrawAlreadyClaimed(bytes32 nullifier);
+    error LegacyWithdrawPathDisabled();
+    error WithdrawalNotYetClaimable(uint64 currentSlot, uint64 claimableSlot);
+    error WithdrawalIndexAlreadyProcessed(
+        address recipient,
+        uint32 currentIndex,
+        uint32 suppliedIndex
+    );
+    error InsufficientNativeEscrow(uint256 available, uint256 requested);
 
     // -------------------------------------------------------------------------
     // Constants
@@ -106,6 +139,12 @@ contract EthereumZekoBridge is
 
     bytes32 public constant WITHDRAW_MERKLE_NODE_DOMAIN =
         keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1");
+
+    bytes32 public constant NATIVE_WITHDRAWAL_LEAF_V2_DOMAIN =
+        keccak256("ZEKO_NATIVE_WITHDRAWAL_LEAF_V2");
+
+    bytes32 public constant INNER_ACTION_NODE_V2_DOMAIN =
+        keccak256("ZEKO_INNER_ACTION_NODE_V2");
 
     uint256 public constant WITHDRAW_MERKLE_TREE_DEPTH = 16;
     uint256 public constant MAX_WITHDRAW_COUNT =
@@ -213,6 +252,13 @@ contract EthereumZekoBridge is
     /// @notice Accepted withdrawal batch information by old action state.
     mapping(bytes32 => WithdrawalRootInfo) public withdrawalRootInfo;
 
+    // V2 native bridge storage. Appended for UUPS layout compatibility.
+    uint64 public bridgedDepositNonce;
+    mapping(address => uint32) public nextWithdrawalIndex;
+    uint32 public withdrawalDelaySlots;
+    uint256 public nativeEscrowLiability;
+    bool public legacyWithdrawEnabled;
+
     // -------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------
@@ -276,6 +322,16 @@ contract EthereumZekoBridge is
         bytes32 zekoAmount,
         uint256 ethereumAmount
     );
+    event NativeWithdrawalClaimed(
+        uint64 indexed settlementSequence,
+        uint32 indexed globalActionIndex,
+        address indexed recipient,
+        uint64 zekoAmount,
+        uint256 ethereumAmount,
+        bytes32 actionFieldsHash
+    );
+    event WithdrawalDelayUpdated(uint32 oldDelay, uint32 newDelay);
+    event LegacyWithdrawPathUpdated(bool enabled);
 
     // -------------------------------------------------------------------------
     // Initialization
@@ -306,6 +362,7 @@ contract EthereumZekoBridge is
         withdrawProgramVKey = withdrawProgramVKey_;
         currentDepositState = INITIAL_DEPOSIT_STATE;
         currentWithdrawState = bytes32(0);
+        withdrawalDelaySlots = 20;
         depositStateByNonce[0] = INITIAL_DEPOSIT_STATE;
 
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
@@ -394,6 +451,23 @@ contract EthereumZekoBridge is
         _unpause();
     }
 
+    function setWithdrawalDelaySlots(
+        uint32 newDelay
+    ) external onlyRole(ADMIN_ROLE) {
+        uint32 oldDelay = withdrawalDelaySlots;
+        withdrawalDelaySlots = newDelay;
+        emit WithdrawalDelayUpdated(oldDelay, newDelay);
+    }
+
+    /// @notice Compatibility switch for pre-V2 fixtures only. New deployments
+    /// leave this disabled and use settlement-bound inner-action roots.
+    function setLegacyWithdrawEnabled(
+        bool enabled
+    ) external onlyRole(ADMIN_ROLE) {
+        legacyWithdrawEnabled = enabled;
+        emit LegacyWithdrawPathUpdated(enabled);
+    }
+
     /// @notice Emergency withdrawal for stuck funds.
     /// @dev Use carefully. For a production bridge, prefer a timelock or governance flow.
     function emergencyWithdrawToken(
@@ -474,6 +548,30 @@ contract EthereumZekoBridge is
                 msg.value,
                 zekoRecipient,
                 timeout,
+                config
+            );
+    }
+
+    /// @notice Canonical native bridge deposit. The PoC deliberately has no
+    /// cancellation path, so timeout is fixed to Mina's maximum slot.
+    function depositETH(
+        ZekoAddress zekoRecipient
+    )
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
+    {
+        TokenConfig memory config = allowedToken[address(0)];
+        if (!config.allowed) revert TokenNotAllowed(address(0));
+        if (msg.value == 0) revert ZeroAmount();
+        return
+            _recordDeposit(
+                address(0),
+                msg.value,
+                zekoRecipient,
+                type(uint32).max,
                 config
             );
     }
@@ -598,6 +696,20 @@ contract EthereumZekoBridge is
             publicValues
         );
 
+        if (decoded.depositCount == 0) revert InvalidWithdrawProof();
+        if (decoded.ethereumNonceBefore != bridgedDepositNonce) {
+            revert InvalidDepositNonce(
+                bridgedDepositNonce,
+                decoded.ethereumNonceBefore
+            );
+        }
+        bytes32 settlementActionState = settlementVerifier.actionState();
+        if (decoded.zekoActionStateBefore != settlementActionState) {
+            revert InvalidSettlementActionState(
+                decoded.zekoActionStateBefore
+            );
+        }
+
         if (
             depositStateByNonce[decoded.ethereumNonceBefore] !=
             decoded.ethereumStateBefore
@@ -633,6 +745,12 @@ contract EthereumZekoBridge is
         }
 
         processedActionState[decoded.zekoActionStateAfter] = true;
+        bridgedDepositNonce = decoded.ethereumNonceAfter;
+        settlementVerifier.appendOuterWitnessBatch(
+            decoded.zekoActionStateBefore,
+            decoded.zekoActionStateAfter,
+            decoded.depositCount
+        );
 
         emit BridgeTransitionAccepted(
             decoded.zekoActionStateBefore,
@@ -647,6 +765,7 @@ contract EthereumZekoBridge is
         bytes calldata publicValues,
         bytes calldata proofBytes
     ) external onlyRole(PROVER_ROLE) whenNotPaused {
+        if (!legacyWithdrawEnabled) revert LegacyWithdrawPathDisabled();
         withdrawVerifier.verifyProof(
             withdrawProgramVKey,
             publicValues,
@@ -808,6 +927,7 @@ contract EthereumZekoBridge is
         uint256 withdrawIndex,
         bytes32[16] calldata merkleProof
     ) external nonReentrant whenNotPaused {
+        if (!legacyWithdrawEnabled) revert LegacyWithdrawPathDisabled();
         WithdrawalRootInfo memory info = withdrawalRootInfo[oldActionState];
         if (!info.valid) revert InvalidWithdrawProof();
         if (withdraw.amount == bytes32(0)) revert ZeroAmount();
@@ -865,6 +985,135 @@ contract EthereumZekoBridge is
             zekoAmount: withdraw.amount,
             ethereumAmount: ethereumAmount
         });
+    }
+
+    /// @notice Claims a native withdrawal directly from the Keccak tree bound
+    /// to a real Pickles settlement. No user-generated SNARK is required.
+    function claimNativeWithdrawal(
+        uint64 settlementSequence,
+        uint32 offset,
+        address recipient,
+        uint64 amount,
+        bytes32 actionFieldsHash,
+        bytes32[16] calldata merkleProof
+    ) external nonReentrant whenNotPaused {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+
+        (
+            ,
+            ,
+            bytes32 root,
+            uint32 startIndex,
+            uint32 count,
+            uint32 commitSlotUpper,
+            bool valid
+        ) = settlementVerifier.innerActionBatch(settlementSequence);
+        if (!valid || offset >= count) revert InvalidWithdrawProof();
+
+        uint32 globalActionIndex = startIndex + offset;
+        uint32 cursor = nextWithdrawalIndex[recipient];
+        if (globalActionIndex < cursor) {
+            revert WithdrawalIndexAlreadyProcessed(
+                recipient,
+                cursor,
+                globalActionIndex
+            );
+        }
+
+        uint64 currentSlot = settlementVerifier.currentVirtualSlot();
+        uint64 claimableSlot = uint64(commitSlotUpper) +
+            uint64(withdrawalDelaySlots);
+        if (currentSlot < claimableSlot) {
+            revert WithdrawalNotYetClaimable(currentSlot, claimableSlot);
+        }
+
+        bytes32 leaf = computeNativeWithdrawalLeaf(
+            globalActionIndex,
+            recipient,
+            amount,
+            actionFieldsHash
+        );
+        if (
+            !_verifyInnerActionMerkleProof(
+                leaf,
+                offset,
+                merkleProof,
+                root
+            )
+        ) revert InvalidWithdrawProof();
+
+        uint256 ethereumAmount = uint256(amount) * 1 gwei;
+        if (nativeEscrowLiability < ethereumAmount) {
+            revert InsufficientNativeEscrow(
+                nativeEscrowLiability,
+                ethereumAmount
+            );
+        }
+
+        nextWithdrawalIndex[recipient] = globalActionIndex + 1;
+        nativeEscrowLiability -= ethereumAmount;
+        totalDepositedByToken[address(0)] -= ethereumAmount;
+        (bool success, ) = payable(recipient).call{value: ethereumAmount}("");
+        if (!success) revert NativeTransferFailed();
+
+        emit NativeWithdrawalClaimed(
+            settlementSequence,
+            globalActionIndex,
+            recipient,
+            amount,
+            ethereumAmount,
+            actionFieldsHash
+        );
+    }
+
+    function computeNativeWithdrawalLeaf(
+        uint32 globalActionIndex,
+        address recipient,
+        uint64 amount,
+        bytes32 actionFieldsHash
+    ) public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    NATIVE_WITHDRAWAL_LEAF_V2_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    globalActionIndex,
+                    recipient,
+                    amount,
+                    actionFieldsHash
+                )
+            );
+    }
+
+    function _verifyInnerActionMerkleProof(
+        bytes32 leaf,
+        uint256 index,
+        bytes32[16] calldata proof,
+        bytes32 root
+    ) internal pure returns (bool) {
+        bytes32 computed = leaf;
+        for (uint256 i = 0; i < WITHDRAW_MERKLE_TREE_DEPTH; i++) {
+            bytes32 sibling = proof[i];
+            computed = (index & 1) == 0
+                ? keccak256(
+                    abi.encode(
+                        INNER_ACTION_NODE_V2_DOMAIN,
+                        computed,
+                        sibling
+                    )
+                )
+                : keccak256(
+                    abi.encode(
+                        INNER_ACTION_NODE_V2_DOMAIN,
+                        sibling,
+                        computed
+                    )
+                );
+            index >>= 1;
+        }
+        return computed == root;
     }
 
     function _hashMerkleNode(
@@ -926,6 +1175,7 @@ contract EthereumZekoBridge is
         currentDepositState = newDepositState;
         depositStateByNonce[nonce] = newDepositState;
         totalDepositedByToken[token] += amount;
+        if (token == address(0)) nativeEscrowLiability += amount;
 
         emit BridgeDeposit({
             nonce: nonce,

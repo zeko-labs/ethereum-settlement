@@ -5,7 +5,7 @@ use tokio::time::sleep;
 
 use crate::ethereum::{BlockRef, Ethereum};
 use serde_json::{json, Value};
-use zeko_sp1_lib::SettlementPublicValuesV1;
+use zeko_sp1_lib::{SettlementPublicValues, SettlementPublicValuesV1};
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -384,7 +384,8 @@ async fn apply_confirmed_settlement(
             .strip_prefix("0x")
             .unwrap_or(public_values_hex),
     )?;
-    let receipt = SettlementPublicValuesV1::decode(&bytes).map_err(anyhow::Error::msg)?;
+    let decoded = SettlementPublicValues::decode(&bytes).map_err(anyhow::Error::msg)?;
+    let receipt = decoded.settlement();
     let Some(submission) = input.get("submission") else {
         tracing::warn!(%job_id, "confirmed direct settlement has no Mina account metadata");
         return Ok(());
@@ -411,7 +412,7 @@ async fn apply_confirmed_settlement(
         &mut tx,
         job_id,
         outer_public_key,
-        &receipt,
+        receipt,
         block_number,
         block_hash,
     )

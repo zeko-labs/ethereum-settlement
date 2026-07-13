@@ -9,6 +9,7 @@ pickles-verifier = { path = "../../crates/pickles-verifier", default-features = 
 zeko_sp1_lib = { path = "../../lib" }
 ark-ff = { workspace = true }
 mina-poseidon = { workspace = true }
+alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
 sp1-lib = "6.1.0"

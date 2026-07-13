@@ -111,7 +111,9 @@ pub type ZekoAddress = Bytes32;
 
 pub const SETTLEMENT_PUBLIC_VALUES_MAGIC: [u8; 4] = *b"ZKST";
 pub const SETTLEMENT_PUBLIC_VALUES_VERSION: u16 = 1;
+pub const SETTLEMENT_PUBLIC_VALUES_V2_VERSION: u16 = 2;
 pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
+pub const SETTLEMENT_PUBLIC_VALUES_V2_LENGTH: usize = 828;
 
 /// Mina network domain used when hashing the account-update body that is the
 /// first field of the verified Zkapp statement.
@@ -173,6 +175,42 @@ pub struct SettlementContextV1 {
 pub struct SettlementWitnessV1 {
     pub binding: SettlementBindingV1,
     pub context: SettlementContextV1,
+    /// When present, the guest also proves the ordered inner-action range and
+    /// emits a V2 receipt containing its Keccak claim tree. Keeping this field
+    /// optional preserves the existing V1 fixture and execute checkpoint.
+    #[serde(default)]
+    pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
+}
+
+/// A clear native withdrawal whose preimage must match the OCaml action aux.
+/// Amounts use Zeko's native 9-decimal unit. Ethereum addresses are encoded as
+/// synthetic compressed Mina keys `(x = uint160(address), is_odd = false)`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWithdrawalV2 {
+    #[serde(with = "serde_address")]
+    pub recipient: Address,
+    pub amount: u64,
+}
+
+/// One exact OCaml `Rollup_state.Inner_action` action. `fields` is the raw
+/// three-field action emitted by Mina. Non-withdrawal actions intentionally
+/// omit `withdrawal` and become non-claimable leaves in the same ordered tree.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InnerActionWitnessV2 {
+    #[serde(with = "serde_vec_bytes32")]
+    pub fields: Vec<Bytes32>,
+    #[serde(default)]
+    pub withdrawal: Option<NativeWithdrawalV2>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InnerActionBatchWitnessV2 {
+    #[serde(with = "serde_address")]
+    pub bridge_address: Address,
+    pub actions: Vec<InnerActionWitnessV2>,
 }
 
 /// The exact eight-field OCaml `Rollup_state.Outer_state` app-state layout.
@@ -380,6 +418,109 @@ impl SettlementPublicValuesV1 {
     }
 }
 
+/// V2 extends the stable V1 prefix. The prefix has version 2 on the wire; all
+/// appended integers are big-endian, matching the V1 Solidity decoder.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV2 {
+    pub settlement: SettlementPublicValuesV1,
+    pub bridge_address: Address,
+    pub inner_action_root: Bytes32,
+    pub inner_action_start_index: u32,
+    pub inner_action_count: u32,
+}
+
+impl SettlementPublicValuesV2 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
+        output[..SETTLEMENT_PUBLIC_VALUES_V1_LENGTH].copy_from_slice(&self.settlement.encode());
+        output[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V1_LENGTH;
+        write_bytes(&mut output, &mut cursor, &self.bridge_address);
+        write_bytes(&mut output, &mut cursor, &self.inner_action_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.inner_action_start_index.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.inner_action_count.to_be_bytes(),
+        );
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V2_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V2_LENGTH {
+            return Err(format!(
+                "settlement V2 public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V2_LENGTH,
+                input.len()
+            ));
+        }
+        if input[..4] != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement V2 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != SETTLEMENT_PUBLIC_VALUES_V2_VERSION {
+            return Err(format!(
+                "settlement V2 public values: unsupported version {version}"
+            ));
+        }
+
+        let mut v1_prefix = [0u8; SETTLEMENT_PUBLIC_VALUES_V1_LENGTH];
+        v1_prefix.copy_from_slice(&input[..SETTLEMENT_PUBLIC_VALUES_V1_LENGTH]);
+        v1_prefix[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_VERSION.to_be_bytes());
+        let settlement = SettlementPublicValuesV1::decode(&v1_prefix)?;
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V1_LENGTH;
+        let bridge_address = read_array(input, &mut cursor);
+        let inner_action_root = read_array(input, &mut cursor);
+        let inner_action_start_index = u32::from_be_bytes(read_array(input, &mut cursor));
+        let inner_action_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            settlement,
+            bridge_address,
+            inner_action_root,
+            inner_action_start_index,
+            inner_action_count,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettlementPublicValues {
+    V1(SettlementPublicValuesV1),
+    V2(SettlementPublicValuesV2),
+}
+
+impl SettlementPublicValues {
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        match input.len() {
+            SETTLEMENT_PUBLIC_VALUES_V1_LENGTH => {
+                SettlementPublicValuesV1::decode(input).map(Self::V1)
+            }
+            SETTLEMENT_PUBLIC_VALUES_V2_LENGTH => {
+                SettlementPublicValuesV2::decode(input).map(Self::V2)
+            }
+            actual => Err(format!(
+                "settlement public values: unsupported length {actual}"
+            )),
+        }
+    }
+
+    pub fn settlement(&self) -> &SettlementPublicValuesV1 {
+        match self {
+            Self::V1(values) => values,
+            Self::V2(values) => &values.settlement,
+        }
+    }
+}
+
 fn write_bytes<const N: usize>(output: &mut [u8], cursor: &mut usize, bytes: &[u8; N]) {
     output[*cursor..*cursor + N].copy_from_slice(bytes);
     *cursor += N;
@@ -395,22 +536,12 @@ fn read_array<const N: usize>(input: &[u8], cursor: &mut usize) -> [u8; N] {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeDeposit {
-    #[serde(with = "serde_address")]
-    pub token: Address,
+    /// Native ETH amount in 18-decimal wei. The guest requires 1 gwei
+    /// granularity and derives the 9-decimal Zeko amount itself.
     #[serde(with = "serde_bytes32")]
     pub amount: Bytes32,
     #[serde(with = "serde_bytes32")]
-    pub zeko_amount: Bytes32,
-    #[serde(with = "serde_bytes32")]
     pub zeko_recipient: ZekoAddress,
-    pub timeout: u64,
-    /// Digest of the zkapp call forest attached to this deposit action (fields[2]).
-    #[serde(with = "serde_bytes32")]
-    pub children_digest: Bytes32,
-    /// Mina slot range lower bound for this deposit batch (fields[3]).
-    pub slot_range_lower: u64,
-    /// Mina slot range upper bound for this deposit batch (fields[4]).
-    pub slot_range_upper: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -891,6 +1022,7 @@ mod tests {
                 mina_transaction_hash: [0x77; 32],
                 outer_action_state_length_before: 3,
             },
+            inner_action_batch: None,
         };
         let encoded = bincode::serialize(&witness).unwrap();
         assert_eq!(

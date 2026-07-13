@@ -9,7 +9,9 @@ use sp1_core_executor_runner::MinimalExecutorRunner;
 use sp1_sdk::{include_elf, Elf, SP1Stdin};
 use std::path::Path;
 use std::sync::Arc;
-use zeko_sp1_lib::{SettlementBindingV1, SettlementContextV1, SettlementWitnessV1};
+use zeko_sp1_lib::{
+    InnerActionBatchWitnessV2, SettlementBindingV1, SettlementContextV1, SettlementWitnessV1,
+};
 
 pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
 pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
@@ -50,6 +52,8 @@ pub struct SettlementProofBundle {
     pub binding: Option<SettlementBindingV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<SettlementContextV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
 }
 
 pub fn settlement_stdin(fixture_dir: &str) -> Result<SP1Stdin> {
@@ -63,6 +67,7 @@ pub fn settlement_stdin_from_bundle(bundle: &SettlementProofBundle) -> Result<SP
         (Some(binding), Some(context)) => Some(SettlementWitnessV1 {
             binding: binding.clone(),
             context: context.clone(),
+            inner_action_batch: bundle.inner_action_batch.clone(),
         }),
         (None, None) => None,
         _ => anyhow::bail!("settlement binding and context must either both be present or absent"),
@@ -98,6 +103,7 @@ fn load_verifiable(fixture_dir: &Path) -> Result<VerifiableProof> {
         app_statement_json: app_stmt_json,
         binding: None,
         context: None,
+        inner_action_batch: None,
     })
 }
 
