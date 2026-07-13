@@ -9772,6 +9772,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sp1-build",
+ "sp1-core-executor",
+ "sp1-core-executor-runner",
  "sp1-sdk",
  "tokio",
  "zeko_sp1_lib",

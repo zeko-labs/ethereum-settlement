@@ -56,6 +56,4 @@ pub fn main() {
 
     assert!(proof_valid, "Pickles proof verification failed");
     commit_zkapp_public_values(proof_valid);
-
-    sp1_zkvm::syscalls::syscall_halt(0);
 }

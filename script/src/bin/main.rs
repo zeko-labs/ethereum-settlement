@@ -3,11 +3,14 @@
 use clap::Parser;
 use pickles_verifier::types::VerifiableProof;
 use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
+use sp1_core_executor::Program;
+use sp1_core_executor_runner::MinimalExecutorRunner;
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
-    include_elf, Elf, HashableKey, ProvingKey, SP1Stdin,
+    include_elf, Elf, ProvingKey, SP1Stdin,
 };
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use zeko_sp1_lib::ZkappPublicValues;
 
@@ -38,34 +41,22 @@ fn main() {
     let mut stdin = SP1Stdin::new();
     stdin.write(&verifiable);
 
-    let client = ProverClient::from_env();
-
     if args.execute {
-        let (output, report) = client
-            .execute(ZKAPP_ELF, stdin)
-            .run()
-            .expect("execution failed");
+        let (output, cycles) = execute_minimal(ZKAPP_ELF, stdin).expect("execution failed");
 
         println!("Program executed successfully");
-        println!("  cycles   : {}", report.total_instruction_count());
-        println!("  total gas: {:?}", report.gas());
-
-        let mut entries: Vec<(&String, &u64)> = report.cycle_tracker.iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (name, cycles) in entries {
-            println!("  [{name}] cycles: {cycles}");
-        }
+        println!("  cycles   : {cycles}");
+        println!("  total gas: not calculated");
 
         let public_values: ZkappPublicValues =
-            bincode::deserialize(output.as_slice()).expect("decode public values");
+            bincode::deserialize(&output).expect("decode public values");
 
         print_public_values(&public_values);
 
-        let pk = client.setup(ZKAPP_ELF).expect("failed to setup ELF");
-        println!("Program Verification Key: {}", pk.verifying_key().bytes32());
         assert!(public_values.proof_valid, "Pickles proof invalid");
         println!("Pickles proof verified successfully");
     } else {
+        let client = ProverClient::from_env();
         let pk = client.setup(ZKAPP_ELF).expect("failed to setup ELF");
 
         println!("Generating proof...");
@@ -88,6 +79,31 @@ fn main() {
         proof.save("proofs/proof.bin").expect("save proof");
         println!("Proof saved to proofs/proof.bin");
     }
+}
+
+fn execute_minimal(elf: Elf, stdin: SP1Stdin) -> anyhow::Result<(Vec<u8>, u64)> {
+    let program = Arc::new(
+        Program::from(&*elf).map_err(|e| anyhow::anyhow!("failed to disassemble program: {e}"))?,
+    );
+    let mut executor = MinimalExecutorRunner::simple(program);
+
+    for input in stdin.buffer {
+        executor.with_input(&input);
+    }
+
+    while executor
+        .try_execute_chunk()
+        .map_err(|e| anyhow::anyhow!("execute chunk failed: {e}"))?
+        .is_some()
+    {}
+
+    let exit_code = executor.exit_code();
+    if exit_code != 0 {
+        anyhow::bail!("program exited with status {exit_code}");
+    }
+
+    let cycles = executor.global_clk();
+    Ok((executor.into_public_values_stream(), cycles))
 }
 
 fn load_verifiable(fixture_dir: &Path) -> VerifiableProof {
