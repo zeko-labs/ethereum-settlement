@@ -380,7 +380,7 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 [[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' \
-  <<<"${indexed_witness:-{}}") == 1 ]]
+  <<<"$indexed_witness") == 1 ]]
 [[ $("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" 'actionState()(bytes32)' \
   --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]') == \
   "$(jq -r '.outerActionStateAfterDeposit | ascii_downcase' \
