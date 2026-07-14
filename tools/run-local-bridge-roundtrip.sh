@@ -25,6 +25,7 @@ FORGE=${FORGE:-$HOME/.foundry/bin/forge}
 ANVIL=${ANVIL:-$HOME/.foundry/bin/anvil}
 API_BIN=${API_BIN:-$ROOT/target/release/zeko-proof-api}
 ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
+NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 
 for command in bc curl docker jq date; do
   command -v "$command" >/dev/null || {
@@ -38,6 +39,10 @@ for executable in "$CAST" "$FORGE" "$ANVIL"; do
     exit 1
   }
 done
+[[ -x "$NIX" ]] || {
+  echo "Missing Nix executable: $NIX" >&2
+  exit 1
+}
 [[ -f "$ZEKO_UI_ROOT/packages/eth-bridge-sdk/package.json" ]] || {
   echo "Missing Ethereum bridge SDK checkout: $ZEKO_UI_ROOT" >&2
   exit 1
@@ -217,7 +222,7 @@ ACTIONS_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:$PG_PORT/actions"
 (
   cd "$ZEKO_UI_ROOT"
   DATABASE_URL="$ACTIONS_DATABASE_URL" \
-    nix develop -c pnpm exec moon run actions-api:db-migrate
+    "$NIX" develop -c pnpm exec moon run actions-api:db-migrate
 ) >/dev/null
 (
   cd "$ZEKO_UI_ROOT"
@@ -226,13 +231,13 @@ ACTIONS_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:$PG_PORT/actions"
     L1_FINALITY=1 L2_ARCHIVE_URL="$API_URL/graphql" L2_FINALITY_TIME_H=1 \
     OUTER_PK="$outer_public_key" INNER_PK="$outer_public_key" \
     INDEX_OUTER=true INDEX_INNER=false ENVIRONMENT=LOCAL \
-    nix develop -c pnpm exec moon run actions-indexer:start
+    "$NIX" develop -c pnpm exec moon run actions-indexer:start
 ) >"$ACTIONS_INDEXER_LOG" 2>&1 &
 ACTIONS_INDEXER_PID=$!
 (
   cd "$ZEKO_UI_ROOT"
   DATABASE_URL="$ACTIONS_DATABASE_URL" ENVIRONMENT=local \
-    nix develop -c pnpm exec moon run actions-api:dev -- \
+    "$NIX" develop -c pnpm exec moon run actions-api:dev -- \
       --port "$ACTIONS_API_PORT" --var ENVIRONMENT:local \
       --var "DATABASE_URL:$ACTIONS_DATABASE_URL"
 ) >"$ACTIONS_API_LOG" 2>&1 &
@@ -264,7 +269,7 @@ run_eth_sdk() {
     cd "$ZEKO_UI_ROOT"
     GATEWAY_URL="$API_URL" RPC_URL="$RPC_URL" CHAIN_ID=31337 \
       ETHEREUM_ACCOUNT="$ADMIN_ADDRESS" E2E_OUTPUT="$SDK_OUTPUT" "$@" \
-      nix develop -c pnpm exec moon run eth-bridge-sdk:e2e -- "$command"
+      "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:e2e -- "$command"
   )
 }
 
