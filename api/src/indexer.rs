@@ -243,7 +243,8 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
                  updated_at = NOW()
              WHERE kind = 'settlement' AND id <> $1
                AND status IN (
-                 'queued', 'validating', 'proof_requested', 'proving',
+                 'queued', 'validating', 'awaiting_approval', 'approved',
+                 'proof_requested', 'proving',
                  'submitting', 'submitted', 'confirmed'
                )",
         )
@@ -253,7 +254,11 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     }
     sqlx::query(
         "UPDATE proof_jobs
-         SET status = 'queued', transaction_hash = NULL,
+         SET status = CASE
+               WHEN approved_at IS NOT NULL THEN 'approved'::proof_status
+               ELSE 'queued'::proof_status
+             END,
+             transaction_hash = NULL,
              submitted_block_number = NULL, submitted_block_hash = NULL,
              confirmations = 0, completed_at = NULL,
              error = 'Ethereum submission was removed by a chain reorganization',
@@ -807,7 +812,7 @@ async fn store_inner_action_leaves(
                  zeko_amount, inner_action_root, commit_slot_upper,
                  ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11, $12,
                      $13, FALSE)
              ON CONFLICT (settlement_sequence, action_offset) DO UPDATE SET
                  global_action_index = EXCLUDED.global_action_index,

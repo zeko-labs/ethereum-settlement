@@ -1,0 +1,393 @@
+name: zeko-sepolia-poc
+
+x-zeko-environment: &zeko-environment
+  ZEKO_PROGRESS_STYLE: percent
+  ZEKO_SIGNATURE_KIND: zeko-testnet
+  ZEKO_CIRCUITS_CONFIG: /config/circuits.json
+  RABBITMQ_USER: zeko
+  DA_PUBLIC_KEYS: ${DA_PUBLIC_KEYS:?set the three comma-separated DA public keys}
+  SEQUENCER_PUBLIC_KEY: ${SEQUENCER_PUBLIC_KEY:?set the even sequencer public key}
+
+x-zeko-service: &zeko-service
+  image: ${ZEKO_IMAGE:?set ZEKO_IMAGE to an immutable repo@sha256 digest}
+  restart: unless-stopped
+  networks: [backend]
+  environment: *zeko-environment
+  volumes:
+    - ./config:/config:ro
+
+x-da-service: &da-service
+  image: ${ZEKO_DA_IMAGE:?set ZEKO_DA_IMAGE to an immutable repo@sha256 digest}
+  restart: unless-stopped
+  networks: [backend]
+  environment:
+    ZEKO_SIGNATURE_KIND: zeko-testnet
+
+services:
+  gateway-db:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to an immutable repo@sha256 digest}
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: zeko_gateway
+      POSTGRES_USER: zeko_gateway
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-gateway-password
+    volumes:
+      - gateway-db:/var/lib/postgresql/data
+      - ./secrets/postgres-gateway-password:/run/secrets/postgres-gateway-password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeko_gateway -d zeko_gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sequencer-db:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to an immutable repo@sha256 digest}
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_DB: zeko_sequencer
+      POSTGRES_USER: zeko_sequencer
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-sequencer-password
+    volumes:
+      - sequencer-db:/var/lib/postgresql/data
+      - ./secrets/postgres-sequencer-password:/run/secrets/postgres-sequencer-password:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zeko_sequencer -d zeko_sequencer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: ${RABBITMQ_IMAGE:?set RABBITMQ_IMAGE to an immutable repo@sha256 digest}
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+      - ./secrets/rabbitmq-password:/run/secrets/rabbitmq-password:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export RABBITMQ_DEFAULT_USER=zeko
+        export RABBITMQ_DEFAULT_PASS="$$(cat /run/secrets/rabbitmq-password)"
+        rabbitmq-plugins enable --offline rabbitmq_management
+        exec docker-entrypoint.sh rabbitmq-server
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  gateway:
+    image: ${GATEWAY_IMAGE:?set GATEWAY_IMAGE to an immutable repo@sha256 digest}
+    restart: unless-stopped
+    networks: [backend, edge]
+    depends_on:
+      gateway-db:
+        condition: service_healthy
+    env_file: [./gateway.env]
+    environment:
+      API_EXECUTE_ONLY: "false"
+      API_LOCAL_MOCK_SUBMIT: "false"
+      API_REQUIRE_PROOF_APPROVAL: "true"
+    volumes:
+      - ./config:/config:ro
+      - ./secrets/postgres-gateway-password:/run/zeko-secrets/postgres-gateway-password:ro
+      - ./secrets/proof-api-key:/run/zeko-secrets/proof-api-key:ro
+      - ./secrets/network-private-key:/run/zeko-secrets/network-private-key:ro
+      - ./secrets/settlement-private-key:/run/zeko-secrets/settlement-private-key:ro
+      - ./secrets/bridge-private-key:/run/zeko-secrets/bridge-private-key:ro
+      - ./secrets/withdraw-private-key:/run/zeko-secrets/withdraw-private-key:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export DATABASE_URL="postgres://zeko_gateway:$$(cat /run/zeko-secrets/postgres-gateway-password)@gateway-db:5432/zeko_gateway"
+        export PROOF_API_KEY="$$(cat /run/zeko-secrets/proof-api-key)"
+        export NETWORK_PRIVATE_KEY="$$(cat /run/zeko-secrets/network-private-key)"
+        export SETTLEMENT_PRIVATE_KEY="$$(cat /run/zeko-secrets/settlement-private-key)"
+        export BRIDGE_PRIVATE_KEY="$$(cat /run/zeko-secrets/bridge-private-key)"
+        export WITHDRAW_PRIVATE_KEY="$$(cat /run/zeko-secrets/withdraw-private-key)"
+        exec zeko-proof-api
+    ports:
+      - "${GATEWAY_BIND_ADDRESS:-127.0.0.1}:${GATEWAY_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  sequencer-signer:
+    <<: *zeko-service
+    volumes:
+      - ./config:/config:ro
+      - ./secrets/sequencer-private-key:/run/zeko-secrets/sequencer-private-key:ro
+      - ./secrets/sequencer-signer-token:/run/zeko-secrets/sequencer-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+      - ./secrets/signer-tls.key:/run/zeko-secrets/signer-tls.key:ro
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export MINA_PRIVATE_KEY="$$(cat /run/zeko-secrets/sequencer-private-key)"
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/sequencer-signer-token)"
+        exec zeko-signer run --host 0.0.0.0 --port 9000 \
+          --allow-zkapp-signing --max-fee 10 --max-balance-change 1000000 \
+          --tls-cert-file /run/zeko-secrets/signer-tls.crt \
+          --tls-key-file /run/zeko-secrets/signer-tls.key
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9000'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da1-signer:
+    <<: *da-service
+    volumes:
+      - ./secrets/da1-private-key:/run/zeko-secrets/da1-private-key:ro
+      - ./secrets/da1-signer-token:/run/zeko-secrets/da1-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+      - ./secrets/signer-tls.key:/run/zeko-secrets/signer-tls.key:ro
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export MINA_PRIVATE_KEY="$$(cat /run/zeko-secrets/da1-private-key)"
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da1-signer-token)"
+        exec zeko-signer run --host 0.0.0.0 --port 9001 --allow-field-signing \
+          --tls-cert-file /run/zeko-secrets/signer-tls.crt \
+          --tls-key-file /run/zeko-secrets/signer-tls.key
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9001'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da2-signer:
+    <<: *da-service
+    volumes:
+      - ./secrets/da2-private-key:/run/zeko-secrets/da2-private-key:ro
+      - ./secrets/da2-signer-token:/run/zeko-secrets/da2-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+      - ./secrets/signer-tls.key:/run/zeko-secrets/signer-tls.key:ro
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export MINA_PRIVATE_KEY="$$(cat /run/zeko-secrets/da2-private-key)"
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da2-signer-token)"
+        exec zeko-signer run --host 0.0.0.0 --port 9002 --allow-field-signing \
+          --tls-cert-file /run/zeko-secrets/signer-tls.crt \
+          --tls-key-file /run/zeko-secrets/signer-tls.key
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9002'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da3-signer:
+    <<: *da-service
+    volumes:
+      - ./secrets/da3-private-key:/run/zeko-secrets/da3-private-key:ro
+      - ./secrets/da3-signer-token:/run/zeko-secrets/da3-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+      - ./secrets/signer-tls.key:/run/zeko-secrets/signer-tls.key:ro
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export MINA_PRIVATE_KEY="$$(cat /run/zeko-secrets/da3-private-key)"
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da3-signer-token)"
+        exec zeko-signer run --host 0.0.0.0 --port 9003 --allow-field-signing \
+          --tls-cert-file /run/zeko-secrets/signer-tls.crt \
+          --tls-key-file /run/zeko-secrets/signer-tls.key
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/9003'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da1:
+    <<: *da-service
+    depends_on:
+      da1-signer: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da1-signer-token)"
+        export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
+        exec zeko-da run-node --port 8555 --healthcheck-port 8558 \
+          --db-dir /data/db --signer da1-signer:9001 --network-id zeko-testnet
+    volumes:
+      - da1:/data
+      - ./secrets/da1-signer-token:/run/zeko-secrets/da1-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8558'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da2:
+    <<: *da-service
+    depends_on:
+      da2-signer: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da2-signer-token)"
+        export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
+        exec zeko-da run-node --port 8556 --healthcheck-port 8559 \
+          --db-dir /data/db --signer da2-signer:9002 --network-id zeko-testnet
+    volumes:
+      - da2:/data
+      - ./secrets/da2-signer-token:/run/zeko-secrets/da2-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8559'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  da3:
+    <<: *da-service
+    depends_on:
+      da3-signer: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da3-signer-token)"
+        export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
+        exec zeko-da run-node --port 8557 --healthcheck-port 8560 \
+          --db-dir /data/db --signer da3-signer:9003 --network-id zeko-testnet
+    volumes:
+      - da3:/data
+      - ./secrets/da3-signer-token:/run/zeko-secrets/da3-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8560'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  prover:
+    <<: *zeko-service
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    volumes:
+      - ./config:/config:ro
+      - ./secrets/rabbitmq-password:/run/zeko-secrets/rabbitmq-password:ro
+    command:
+      - |
+        export RABBITMQ_PASSWORD="$$(cat /run/zeko-secrets/rabbitmq-password)"
+        exec zeko-prover run-server --mq-host rabbitmq:5672
+
+  prover-ready:
+    image: ${GATEWAY_IMAGE:?set GATEWAY_IMAGE to an immutable repo@sha256 digest}
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      prover: {condition: service_started}
+    volumes:
+      - ./secrets/rabbitmq-password:/run/zeko-secrets/rabbitmq-password:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        password="$$(cat /run/zeko-secrets/rabbitmq-password)"
+        for attempt in $$(seq 1 900); do
+          consumers="$$(curl -fsS -u "zeko:$$password" \
+            http://rabbitmq:15672/api/consumers 2>/dev/null \
+            | grep -o '"consumer_tag"' | wc -l || true)"
+          if [ "$$consumers" -ge 1 ]; then
+            echo "OCaml prover is accepting jobs"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "Timed out waiting for the OCaml prover to compile circuits" >&2
+        exit 1
+
+  bootstrap-da:
+    <<: *zeko-service
+    restart: "no"
+    depends_on:
+      gateway: {condition: service_healthy}
+      da1: {condition: service_healthy}
+      da2: {condition: service_healthy}
+      da3: {condition: service_healthy}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        mkdir -p /artifacts
+        exec zeko-deploy generate-deploy-command \
+          --l1-uri http://gateway:8080/graphql \
+          --sender-pk "$$SEQUENCER_PUBLIC_KEY" \
+          --ledger-input /config/bridge-genesis-ledger.json \
+          --da-node da1:8555 --da-node da2:8556 --da-node da3:8557 \
+          --pause-key "$$SEQUENCER_PUBLIC_KEY" \
+          --sequencer-key "$$SEQUENCER_PUBLIC_KEY" \
+          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
+          --account-creation-fee 1 \
+          --command-output /artifacts/deploy-command.json
+    volumes:
+      - ./config:/config:ro
+      - ./artifacts:/artifacts
+
+  sequencer:
+    <<: *zeko-service
+    depends_on:
+      gateway: {condition: service_healthy}
+      sequencer-db: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+      sequencer-signer: {condition: service_healthy}
+      da1: {condition: service_healthy}
+      da2: {condition: service_healthy}
+      da3: {condition: service_healthy}
+      bootstrap-da: {condition: service_completed_successfully}
+      prover-ready: {condition: service_completed_successfully}
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/sequencer-signer-token)"
+        export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
+        export ZEKO_ETHEREUM_GATEWAY_TOKEN="$$(cat /run/zeko-secrets/proof-api-key)"
+        export RABBITMQ_PASSWORD="$$(cat /run/zeko-secrets/rabbitmq-password)"
+        export POSTGRES_URI="postgres://zeko_sequencer:$$(cat /run/zeko-secrets/postgres-sequencer-password)@sequencer-db:5432/zeko_sequencer"
+        exec zeko-run -p 1923 \
+          --l1-uri http://gateway:8080/graphql \
+          --archive-uri http://gateway:8080/graphql \
+          --max-pool-size 20 --commitment-period 900 --inner-sync-period 30 \
+          --signer sequencer-signer:9000 \
+          --da-node da1:8555 --da-node da2:8556 --da-node da3:8557 \
+          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
+          --mq-host rabbitmq:5672 --db-dir /data/db \
+          --checkpoints-dir /data/checkpoints --postgres-uri "$$POSTGRES_URI" \
+          --deposit-delay-blocks 0 --fee-modifier 1.0 --minimum-fee 0.01 \
+          --slot-acceptance 60 --commit-validity-period 2400 \
+          --commit-fee 1 --bridge-txn-fee 0.1
+    volumes:
+      - sequencer:/data
+      - ./config:/config:ro
+      - ./secrets/sequencer-signer-token:/run/zeko-secrets/sequencer-signer-token:ro
+      - ./secrets/signer-tls.crt:/run/zeko-secrets/signer-tls.crt:ro
+      - ./secrets/rabbitmq-password:/run/zeko-secrets/rabbitmq-password:ro
+      - ./secrets/postgres-sequencer-password:/run/zeko-secrets/postgres-sequencer-password:ro
+      - ./secrets/proof-api-key:/run/zeko-secrets/proof-api-key:ro
+    ports:
+      - "${SEQUENCER_BIND_ADDRESS:-127.0.0.1}:${SEQUENCER_PORT:-1923}:1923"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/1923'"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+volumes:
+  gateway-db:
+  sequencer-db:
+  rabbitmq:
+  sequencer:
+  da1:
+  da2:
+  da3:

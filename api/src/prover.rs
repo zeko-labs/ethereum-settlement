@@ -3,9 +3,9 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use sp1_sdk::{
     blocking::{Prover as BlockingProver, ProverClient as BlockingProverClient},
-    network::{NetworkMode, B256},
-    HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofWithPublicValues,
-    SP1Stdin,
+    network::{proto::GetProofRequestParamsResponse, NetworkMode, B256},
+    HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofMode,
+    SP1ProofWithPublicValues, SP1Stdin,
 };
 use zeko_sp1_lib::{
     BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues,
@@ -36,6 +36,19 @@ pub struct RequestMetrics {
     pub base_fee_prove: Option<String>,
     pub max_price_per_pgu: Option<String>,
     pub actual_cost_prove: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuctionQuote {
+    pub proof_system: String,
+    pub base_fee_atto_prove: String,
+    pub base_fee_prove: String,
+    pub network_max_price_per_pgu: String,
+    pub approved_max_pgu: String,
+    pub approved_max_price_per_pgu: String,
+    pub maximum_cost_atto_prove: String,
+    pub maximum_cost_prove: String,
 }
 
 pub enum Preflight {
@@ -72,6 +85,29 @@ impl Preflight {
             | Preflight::Withdraw { cycles, .. } => *cycles,
         }
     }
+
+    pub fn decode(kind: &str, public_values: Vec<u8>, cycles: u64) -> Result<Self> {
+        match kind {
+            "settlement" => Ok(Self::Settlement {
+                values: SettlementPublicValues::decode(&public_values)
+                    .map_err(anyhow::Error::msg)?,
+                public_values,
+                cycles,
+            }),
+            "bridge" => Ok(Self::Bridge {
+                values: BridgeTransitionPublicValuesV2::decode(&public_values)
+                    .map_err(anyhow::Error::msg)?,
+                public_values,
+                cycles,
+            }),
+            "withdraw" => Ok(Self::Withdraw {
+                values: bincode::deserialize(&public_values)?,
+                public_values,
+                cycles,
+            }),
+            _ => anyhow::bail!("unsupported proof kind: {kind}"),
+        }
+    }
 }
 
 pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
@@ -81,28 +117,55 @@ pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
         let (elf, stdin) = stdin_for(&kind, &input)?;
         let (public_values, cycles) =
             execute_minimal(elf, stdin).context("execute SP1 preflight")?;
-        match kind.as_str() {
-            "settlement" => Ok(Preflight::Settlement {
-                values: SettlementPublicValues::decode(&public_values)
-                    .map_err(anyhow::Error::msg)?,
-                public_values,
-                cycles,
-            }),
-            "bridge" => Ok(Preflight::Bridge {
-                values: BridgeTransitionPublicValuesV2::decode(&public_values)
-                    .map_err(anyhow::Error::msg)?,
-                public_values,
-                cycles,
-            }),
-            "withdraw" => Ok(Preflight::Withdraw {
-                values: bincode::deserialize(&public_values)?,
-                public_values,
-                cycles,
-            }),
-            _ => anyhow::bail!("unsupported proof kind: {kind}"),
-        }
+        Preflight::decode(&kind, public_values, cycles)
     })
     .await?
+}
+
+pub async fn auction_quote(
+    system: &str,
+    max_pgu: u64,
+    approved_max_price_per_pgu: Option<u64>,
+) -> Result<AuctionQuote> {
+    let mode = match system {
+        "groth16" => SP1ProofMode::Groth16,
+        "plonk" => SP1ProofMode::Plonk,
+        _ => anyhow::bail!("unsupported proof system: {system}"),
+    };
+    let client = ProverClient::builder()
+        .network_for(NetworkMode::Mainnet)
+        // Pricing is public and this fixed throwaway signer never creates a
+        // request. Paid proving uses NETWORK_PRIVATE_KEY in request_proof.
+        .private_key("0x0000000000000000000000000000000000000000000000000000000000000001")
+        .build()
+        .await;
+    let GetProofRequestParamsResponse::Auction(params) =
+        client.get_proof_request_params(mode).await?
+    else {
+        anyhow::bail!("auction pricing is unavailable")
+    };
+    let base_fee =
+        U256::from_str_radix(&params.base_fee, 10).context("invalid network base fee")?;
+    let network_max_price = U256::from_str_radix(&params.max_price_per_pgu, 10)
+        .context("invalid network max price per PGU")?;
+    let approved_max_price_per_pgu = approved_max_price_per_pgu.unwrap_or(
+        params
+            .max_price_per_pgu
+            .parse()
+            .context("network max price per PGU does not fit the SP1 SDK u64 cap")?,
+    );
+    let maximum_cost = base_fee
+        .saturating_add(U256::from(max_pgu).saturating_mul(U256::from(approved_max_price_per_pgu)));
+    Ok(AuctionQuote {
+        proof_system: system.to_owned(),
+        base_fee_atto_prove: base_fee.to_string(),
+        base_fee_prove: format_prove(base_fee),
+        network_max_price_per_pgu: network_max_price.to_string(),
+        approved_max_pgu: max_pgu.to_string(),
+        approved_max_price_per_pgu: approved_max_price_per_pgu.to_string(),
+        maximum_cost_atto_prove: maximum_cost.to_string(),
+        maximum_cost_prove: format_prove(maximum_cost),
+    })
 }
 
 pub async fn request_proof(
@@ -272,6 +335,27 @@ fn stdin_for(kind: &str, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prove_amounts_are_formatted_without_float_rounding() {
+        assert_eq!(format_prove(U256::ZERO), "0");
+        assert_eq!(format_prove(U256::from(1_u64)), "0.000000000000000001");
+        assert_eq!(
+            format_prove(U256::from(1_500_000_000_000_000_000_u64)),
+            "1.5"
+        );
+        assert_eq!(
+            format_prove(U256::from(12_345_678_901_234_567_890_u128)),
+            "12.34567890123456789"
+        );
+    }
+
+    #[test]
+    fn prove_amount_parser_rejects_non_decimal_values() {
+        assert_eq!(parse_prove("1000000000000000000").unwrap(), "1");
+        assert!(parse_prove("1.5").is_err());
+        assert!(parse_prove("0x1").is_err());
+    }
 
     #[tokio::test]
     #[ignore = "slow SP1 execution test"]

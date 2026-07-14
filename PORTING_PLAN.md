@@ -31,18 +31,22 @@ companion `~/zeko` tree:
 - the gateway exposes the Mina GraphQL subset used by the sequencer, owns local
   SP1 preflight and network proving, submits Ethereum transactions, records
   proving/Ethereum cost metrics, and waits for confirmation depth;
+- paid network requests stop after local execution until an operator approves
+  the exact input digest, PGU cap, and price cap against a fresh live quote;
 - the Ethereum indexer maintains the virtual Mina account/pool/action views and
   rolls them back on reorg while retaining the paid SP1 proof request.
 
-Deployment and acceptance steps are in `TESTNET_POC.md`. A real three-commit
-OCaml sequence now exports from the real sequencer prover and its first commit
-has passed SP1 execute plus an Anvil settlement transition. Remaining items for
-an actual testnet launch are operational: retain a stable testnet genesis
-fixture, obtain an explicitly approved network proof, deploy/configure the
-contracts and gateway, and run the listed multi-commit acceptance tests. Native
-ETH bridging has a local contract/glue E2E checkpoint; cancellation, ERC20
-bridging, proof fees, live bridge proof fixtures, and blob DA remain outside
-this milestone.
+Deployment and acceptance steps are in `TESTNET_POC.md`. The real sequencer
+prover now exports a two-commit native-bridge sequence with multisig DA quorum
+2 of 3: the first commit synchronizes the Ethereum deposit and the second binds
+the exact inner withdrawal action and its archived preimage. The complete local
+path now executes the bridge guest and both Pickles settlements, confirms their
+contract transitions, indexes the depth-16 withdrawal path, and releases the
+native claim without user proving. Remaining items for an actual testnet launch
+are operational: retain a stable testnet genesis, build and pin images from
+that identity, obtain explicitly approved network proofs, deploy/configure the
+contracts and gateway, and run the acceptance script on Sepolia. Cancellation,
+ERC20 bridging, proof fees, and blob DA remain outside this milestone.
 
 ## Current PoC Boundary
 
@@ -295,9 +299,9 @@ Implemented for the native-only PoC:
 - Rust and OCaml cross-language vectors assert the same three deposit aux
   values.
 
-Remaining beyond this PoC: generate real OCaml deposit/commit proof fixtures,
-add the cancellation/refund protocol if desired, add circuit proof fees, and
-design ERC20 asset/token-ID semantics.
+Remaining beyond this PoC: retain the generated proof fixture as a testnet
+release identity, add the cancellation/refund protocol if desired, add circuit
+proof fees, and design ERC20 asset/token-ID semantics.
 
 ### Withdrawals
 
@@ -315,9 +319,9 @@ Implemented for the native-only PoC:
 - The gateway reconstructs and validates the root after confirmation and serves
   withdrawal proofs through a public endpoint.
 
-Remaining beyond this PoC: generate a real OCaml withdrawal/commit proof
-fixture, define ERC20 withdrawals, and specify how emergency/governance state
-changes interact with pending claims.
+Remaining beyond this PoC: retain the generated proof fixture as a testnet
+release identity, define ERC20 withdrawals, and specify how
+emergency/governance state changes interact with pending claims.
 
 ### Shared Bridge Work
 
@@ -390,7 +394,7 @@ Current settlement verification status:
 
 - `cargo check --offline -p settlement-program -p zkapp-script -p zeko_sp1_lib
   -p zeko-proof-api` passes.
-- `cargo test --offline -p pickles-verifier` passes: 22 native tests, including
+- `cargo test --offline -p pickles-verifier` passes: 25 native tests, including
   full verification over the copied o1 fixture matrix and mutation failures.
 - A real generated OCaml commit passes through the low-memory direct executor
   at 52,188,766,765 cycles and advances the marked local settlement contract.
@@ -479,8 +483,8 @@ not part of this verification target.
 10. **Multisig gateway done; blob batcher pending:** the gateway owns proving,
     Ethereum submission and canonical checkpoint indexing. Extend it to derive
     blob payloads and bridge inputs from Ethereum logs in the production phase.
-11. **Local contract/glue checkpoint done:** Ethereum deposit -> proven outer
-    action -> synchronized settlement -> settlement-bound inner root -> delayed
-    Ethereum withdrawal. Replace the mocked verifier boundary with real
-    OCaml/SP1 bridge fixtures for the live testnet, then add blob DA in the
-    production phase.
+11. **Local contract/glue checkpoint done with real OCaml fixtures:** Ethereum
+    deposit -> proven outer action -> synchronized settlement ->
+    settlement-bound inner root -> delayed Ethereum withdrawal. Replace only
+    the local SP1 verifier mock with explicitly approved network proofs for the
+    live testnet, then add blob DA in the production phase.

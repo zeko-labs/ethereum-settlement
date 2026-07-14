@@ -34,6 +34,7 @@ OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
   echo "Missing fixture: $FIXTURE_DIR/settlement.json" >&2
   exit 1
 }
+BRIDGE_SCENARIO="$FIXTURE_DIR/../bridge-scenario.json"
 
 vkey() {
   local program=$1
@@ -120,9 +121,14 @@ export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
       "$FIXTURE_DIR/settlement.json")
     echo "INITIAL_OUTER_STATE_$index=$value"
   done
-  echo "INITIAL_OUTER_ACTION_STATE=$(jq -r \
-    '.proof.binding.accountUpdateBody.fieldElements[36]' \
-    "$FIXTURE_DIR/settlement.json")"
+  if [[ -f "$BRIDGE_SCENARIO" ]]; then
+    echo "INITIAL_OUTER_ACTION_STATE=$(jq -er \
+      '.outerActionStateBeforeDeposit' "$BRIDGE_SCENARIO")"
+  else
+    echo "INITIAL_OUTER_ACTION_STATE=$(jq -r \
+      '.proof.binding.accountUpdateBody.fieldElements[36]' \
+      "$FIXTURE_DIR/settlement.json")"
+  fi
 } >"$OUTPUT_DIR/deployment.env"
 
 echo "Prepared PoC artifacts:"

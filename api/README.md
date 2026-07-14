@@ -25,6 +25,12 @@ waits for configurable finality.
 - `GET /v1/bridge/withdrawals/:sequence/:offset` — returns the ordinary
   Keccak Merkle proof, delay/cursor status, and claim data for one withdrawal
 - `GET /v1/proofs` and `GET /v1/proofs/:id`
+- `GET /v1/proofs/:id/quote` — reads current auction parameters without
+  creating a proof request
+- `POST /v1/proofs/:id/approve` — approves one preflight digest with explicit
+  PGU and price caps
+- `POST /v1/proofs/:id/cancel` — rejects a job only while no network request
+  exists
 - `GET /health`
 
 Proof-job and proof-creation routes require `x-api-key`; bridge discovery and
@@ -146,3 +152,36 @@ Ethereum without generating a Mina or SP1 proof.
 The worker records `cycleCount`, `proverGas`, the network base/max prices,
 actual PROVE deduction after refund, Ethereum gas, confirmations, and explorer
 URL when those values are available.
+
+## Paid proof approval
+
+Persistent testnet deployments should set `API_REQUIRE_PROOF_APPROVAL=true`.
+Every job then runs the full local SP1 preflight and pauses in
+`awaiting_approval`; the worker cannot call the Succinct network from that
+state. Inspect the job and read a quote:
+
+```sh
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID"
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID/quote?maxPgu=$MAX_PGU&maxPricePerPgu=$MAX_PRICE"
+```
+
+Approve the exact `preflightInputDigest` returned by the job. Numeric caps are
+strings so JSON clients cannot round 64-bit values:
+
+```sh
+jq -n --arg digest "$PREFLIGHT_INPUT_DIGEST" \
+  --arg maxPgu "$MAX_PGU" --arg maxPricePerPgu "$MAX_PRICE" \
+  '{inputDigest:$digest,maxPgu:$maxPgu,maxPricePerPgu:$maxPricePerPgu}' \
+| curl -H "x-api-key: $PROOF_API_KEY" -H 'content-type: application/json' \
+    --data-binary @- "$GATEWAY_URL/v1/proofs/$JOB_ID/approve"
+```
+
+Approval revalidates the persisted public values against live contracts and,
+for settlements, requires at least `PROVER_MIN_REMAINING_SLOTS` before the
+proof-bound upper slot. `PROVER_GAS_LIMIT` and
+`PROVER_MAX_PRICE_PER_PGU` remain deployment-wide hard ceilings; a per-job
+approval can only be tighter. The approval response snapshots a read-only
+auction quote, but it still does not create the paid request. The worker does
+that only after atomically claiming the `approved` job.

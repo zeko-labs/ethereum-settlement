@@ -19,7 +19,7 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 use zeko_sp1_lib::{
     BridgeDeposit, BridgeTransitionInput, EthereumBridgeState, SettlementContextV1,
-    WithdrawTransitionInput, ZekoBridgeState,
+    SettlementPublicValues, WithdrawTransitionInput, ZekoBridgeState,
 };
 use zkapp_script::SettlementProofBundle;
 
@@ -38,6 +38,8 @@ struct AppState {
     network_explorer_base: Arc<str>,
     execute_only: bool,
     local_mock_submit: bool,
+    require_proof_approval: bool,
+    min_remaining_slots: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -55,6 +57,27 @@ struct CreatedJob {
     id: Uuid,
     status: &'static str,
     status_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproveProofRequest {
+    input_digest: String,
+    max_pgu: String,
+    max_price_per_pgu: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProofQuoteResponse {
+    id: Uuid,
+    kind: String,
+    status: String,
+    input_digest: String,
+    cycle_count: u64,
+    remaining_slots: Option<u64>,
+    quote: prover::AuctionQuote,
+    note: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +134,13 @@ struct ListJobsQuery {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProofQuoteQuery {
+    max_pgu: Option<String>,
+    max_price_per_pgu: Option<String>,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 struct ProofJob {
@@ -128,6 +158,7 @@ struct ProofJob {
     started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
     input_digest: String,
+    preflight_input_digest: Option<String>,
     cycle_count: Option<i64>,
     prover_gas: Option<i64>,
     base_fee_prove: Option<String>,
@@ -136,6 +167,13 @@ struct ProofJob {
     ethereum_gas_used: Option<i64>,
     confirmations: i32,
     explorer_url: Option<String>,
+    approval_input_digest: Option<String>,
+    approval_max_pgu: Option<i64>,
+    approval_max_price_per_pgu: Option<i64>,
+    approval_base_fee_atto_prove: Option<String>,
+    approval_network_max_price_per_pgu: Option<String>,
+    approval_max_cost_atto_prove: Option<String>,
+    approved_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, FromRow)]
@@ -144,6 +182,11 @@ struct ClaimedJob {
     kind: String,
     input: Value,
     proof_request_id: Option<String>,
+    claimed_status: String,
+    public_values: Option<String>,
+    cycle_count: Option<i64>,
+    approval_max_pgu: Option<i64>,
+    approval_max_price_per_pgu: Option<i64>,
 }
 
 #[tokio::main]
@@ -172,9 +215,14 @@ async fn main() -> Result<()> {
         .into();
     let execute_only = bool_env("API_EXECUTE_ONLY")?;
     let local_mock_submit = bool_env("API_LOCAL_MOCK_SUBMIT")?;
+    let require_proof_approval = bool_env("API_REQUIRE_PROOF_APPROVAL")?;
     anyhow::ensure!(
         !(execute_only && local_mock_submit),
         "API_EXECUTE_ONLY and API_LOCAL_MOCK_SUBMIT are mutually exclusive"
+    );
+    anyhow::ensure!(
+        !(require_proof_approval && (execute_only || local_mock_submit)),
+        "API_REQUIRE_PROOF_APPROVAL is only valid for network proving"
     );
     if local_mock_submit {
         ethereum.ensure_local_mock_verifiers().await?;
@@ -186,6 +234,12 @@ async fn main() -> Result<()> {
         gas_limit: optional_u64_env("PROVER_GAS_LIMIT")?,
         max_price_per_pgu: optional_u64_env("PROVER_MAX_PRICE_PER_PGU")?,
     };
+    if require_proof_approval {
+        anyhow::ensure!(
+            prover_config.gas_limit.is_some() && prover_config.max_price_per_pgu.is_some(),
+            "API_REQUIRE_PROOF_APPROVAL requires PROVER_GAS_LIMIT and PROVER_MAX_PRICE_PER_PGU hard caps"
+        );
+    }
     let network_explorer_base: Arc<str> = env::var("PROVER_EXPLORER_BASE_URL")
         .unwrap_or_else(|_| "https://explorer.succinct.xyz/request".to_owned())
         .trim_end_matches('/')
@@ -208,7 +262,11 @@ async fn main() -> Result<()> {
     initialize_gateway_config(&pool).await?;
     sqlx::query(
         "UPDATE proof_jobs
-         SET status = 'queued', error = 'worker restarted before completion', updated_at = NOW()
+         SET status = CASE
+               WHEN approved_at IS NOT NULL THEN 'approved'::proof_status
+               ELSE 'queued'::proof_status
+             END,
+             error = 'worker restarted before completion', updated_at = NOW()
          WHERE status IN ('validating', 'proof_requested', 'proving', 'submitting')",
     )
     .execute(&pool)
@@ -223,6 +281,8 @@ async fn main() -> Result<()> {
         network_explorer_base,
         execute_only,
         local_mock_submit,
+        require_proof_approval,
+        min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
@@ -241,15 +301,15 @@ async fn main() -> Result<()> {
         .route("/v1/proofs/bridge", post(create_bridge))
         .route("/v1/bridge/deposits/prove", post(create_deposit_batch))
         .route("/v1/proofs/withdraw", post(create_withdraw))
+        .route("/v1/proofs/:id/quote", get(get_proof_quote))
+        .route("/v1/proofs/:id/approve", post(approve_proof))
+        .route("/v1/proofs/:id/cancel", post(cancel_proof))
         .route("/v1/proofs", get(list_jobs))
         .route("/v1/proofs/:id", get(get_job))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
 
     let app = Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(serde_json::json!({"status": "ok"})) }),
-        )
+        .route("/health", get(health))
         .route("/graphql", post(graphql::handle))
         .route(
             "/v1/bridge/withdrawals/:sequence/:offset",
@@ -262,9 +322,43 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!(%bind, execute_only, local_mock_submit, "proof API listening");
+    tracing::info!(
+        %bind,
+        execute_only,
+        local_mock_submit,
+        require_proof_approval,
+        "proof API listening"
+    );
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn health(State(state): State<AppState>) -> Response {
+    let database = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.pool)
+        .await;
+    let chain_id = state.ethereum.chain_id().await;
+    let virtual_slot = state.ethereum.current_virtual_slot().await;
+    match (database, chain_id, virtual_slot) {
+        (Ok(1), Ok(chain_id), Ok(virtual_slot)) => Json(serde_json::json!({
+            "status": "ok",
+            "database": "ok",
+            "ethereum": "ok",
+            "chainId": chain_id,
+            "currentVirtualSlot": virtual_slot
+        }))
+        .into_response(),
+        (database, chain_id, virtual_slot) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "unavailable",
+                "database": database.err().map(|error| error.to_string()),
+                "ethereum": chain_id.err().map(|error| error.to_string()),
+                "settlement": virtual_slot.err().map(|error| error.to_string())
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
@@ -921,7 +1015,7 @@ async fn create_withdraw(
 
 async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Value) -> Response {
     let id = Uuid::new_v4();
-    let input_digest = format!("0x{}", hex::encode(Sha256::digest(input.to_string())));
+    let input_digest = proof_input_digest(&input);
     let idempotency_key = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok());
@@ -996,8 +1090,8 @@ async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result
              SELECT 1 FROM proof_jobs
              WHERE kind::text = $1
                AND status IN (
-                 'queued', 'validating', 'proof_requested', 'proving',
-                 'submitting', 'submitted'
+                 'queued', 'validating', 'awaiting_approval', 'approved',
+                 'proof_requested', 'proving', 'submitting', 'submitted'
                )
          )",
     )
@@ -1006,14 +1100,285 @@ async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result
     .await?)
 }
 
+async fn get_proof_quote(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ProofQuoteQuery>,
+) -> Response {
+    match load_proof_quote(&state, id, query).await {
+        Ok(quote) => Json(quote).into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, &error.to_string()),
+    }
+}
+
+async fn load_proof_quote(
+    state: &AppState,
+    id: Uuid,
+    query: ProofQuoteQuery,
+) -> Result<ProofQuoteResponse> {
+    let row = sqlx::query(
+        "SELECT kind::text AS kind, status::text AS status,
+                COALESCE(preflight_input_digest, input_digest) AS input_digest,
+                public_values, cycle_count, approval_max_pgu,
+                approval_max_price_per_pgu
+         FROM proof_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .context("proof job not found")?;
+    let kind: String = row.try_get("kind")?;
+    let status: String = row.try_get("status")?;
+    anyhow::ensure!(
+        !matches!(
+            status.as_str(),
+            "queued" | "validating" | "failed" | "rejected"
+        ),
+        "proof job has not completed preflight"
+    );
+    let cycle_count = u64::try_from(
+        row.try_get::<Option<i64>, _>("cycle_count")?
+            .context("proof job has no cycle count")?,
+    )?;
+    let max_pgu = parse_optional_u64(query.max_pgu, "maxPgu")?
+        .or(row
+            .try_get::<Option<i64>, _>("approval_max_pgu")?
+            .map(u64::try_from)
+            .transpose()?)
+        .or(state.prover_config.gas_limit)
+        // SP1 executor cycles are not exact PGU. This fallback only makes the
+        // read-only quote useful before an operator supplies a simulation cap.
+        .unwrap_or(cycle_count);
+    let max_price_per_pgu = parse_optional_u64(query.max_price_per_pgu, "maxPricePerPgu")?
+        .or(row
+            .try_get::<Option<i64>, _>("approval_max_price_per_pgu")?
+            .map(u64::try_from)
+            .transpose()?)
+        .or(state.prover_config.max_price_per_pgu);
+    let quote = prover::auction_quote(&state.proof_system, max_pgu, max_price_per_pgu).await?;
+    let public_values: String = row
+        .try_get::<Option<String>, _>("public_values")?
+        .context("proof job has no public values")?;
+    let remaining_slots = proof_remaining_slots(state, &kind, &public_values).await?;
+    Ok(ProofQuoteResponse {
+        id,
+        kind,
+        status,
+        input_digest: row.try_get("input_digest")?,
+        cycle_count,
+        remaining_slots,
+        quote,
+        note: "Read-only auction parameters; executor cycles are not an exact PGU estimate and no proof request was created",
+    })
+}
+
+async fn approve_proof(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(request): Json<ApproveProofRequest>,
+) -> Response {
+    match approve_proof_inner(&state, id, request).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => api_error(StatusCode::CONFLICT, &error.to_string()),
+    }
+}
+
+async fn approve_proof_inner(
+    state: &AppState,
+    id: Uuid,
+    request: ApproveProofRequest,
+) -> Result<Value> {
+    anyhow::ensure!(
+        state.require_proof_approval,
+        "proof approval mode is disabled"
+    );
+    let max_pgu = parse_positive_u64(&request.max_pgu, "maxPgu")?;
+    let max_price_per_pgu = parse_positive_u64(&request.max_price_per_pgu, "maxPricePerPgu")?;
+    if let Some(hard_cap) = state.prover_config.gas_limit {
+        anyhow::ensure!(
+            max_pgu <= hard_cap,
+            "maxPgu exceeds the configured hard cap"
+        );
+    }
+    if let Some(hard_cap) = state.prover_config.max_price_per_pgu {
+        anyhow::ensure!(
+            max_price_per_pgu <= hard_cap,
+            "maxPricePerPgu exceeds the configured hard cap"
+        );
+    }
+    let max_pgu_i64 = i64::try_from(max_pgu).context("maxPgu exceeds PostgreSQL BIGINT")?;
+    let max_price_i64 =
+        i64::try_from(max_price_per_pgu).context("maxPricePerPgu exceeds PostgreSQL BIGINT")?;
+    let row = sqlx::query(
+        "SELECT kind::text AS kind, status::text AS status, input,
+                COALESCE(preflight_input_digest, input_digest) AS input_digest,
+                public_values, cycle_count
+         FROM proof_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?
+    .context("proof job not found")?;
+    let status: String = row.try_get("status")?;
+    anyhow::ensure!(
+        status == "awaiting_approval",
+        "proof job is not awaiting approval"
+    );
+    let input_digest: String = row.try_get("input_digest")?;
+    anyhow::ensure!(
+        request.input_digest == input_digest,
+        "approval input digest does not match the preflighted job"
+    );
+    let kind: String = row.try_get("kind")?;
+    let public_values_hex: String = row
+        .try_get::<Option<String>, _>("public_values")?
+        .context("proof job has no public values")?;
+    let public_values = decode_hex_bytes(&public_values_hex, "public values")?;
+    let cycles = u64::try_from(
+        row.try_get::<Option<i64>, _>("cycle_count")?
+            .context("proof job has no cycle count")?,
+    )?;
+    let preflight = prover::Preflight::decode(&kind, public_values, cycles)?;
+    validate_preflight(state, &kind, &row.try_get::<Value, _>("input")?, &preflight).await?;
+    require_proof_lifetime(state, &kind, &public_values_hex).await?;
+    let quote =
+        prover::auction_quote(&state.proof_system, max_pgu, Some(max_price_per_pgu)).await?;
+    let result = sqlx::query(
+        "UPDATE proof_jobs
+         SET status = 'approved', approval_input_digest = $2,
+             approval_max_pgu = $3, approval_max_price_per_pgu = $4,
+             approval_base_fee_atto_prove = $5,
+             approval_network_max_price_per_pgu = $6,
+             approval_max_cost_atto_prove = $7,
+             approved_at = NOW(), error = NULL, updated_at = NOW()
+         WHERE id = $1 AND status = 'awaiting_approval'
+           AND COALESCE(preflight_input_digest, input_digest) = $2",
+    )
+    .bind(id)
+    .bind(&input_digest)
+    .bind(max_pgu_i64)
+    .bind(max_price_i64)
+    .bind(&quote.base_fee_atto_prove)
+    .bind(&quote.network_max_price_per_pgu)
+    .bind(&quote.maximum_cost_atto_prove)
+    .execute(&state.pool)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "proof job approval raced with another update"
+    );
+    Ok(serde_json::json!({
+        "id": id,
+        "status": "approved",
+        "inputDigest": input_digest,
+        "quote": quote,
+        "statusUrl": format!("/v1/proofs/{id}")
+    }))
+}
+
+async fn cancel_proof(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
+    let result = sqlx::query(
+        "UPDATE proof_jobs SET status = 'rejected',
+                error = 'cancelled by operator before network proof request',
+                completed_at = NOW(), updated_at = NOW()
+         WHERE id = $1 AND proof_request_id IS NULL
+           AND status IN ('queued', 'validating', 'awaiting_approval', 'approved')",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await;
+    match result {
+        Ok(result) if result.rows_affected() == 1 => {
+            let _ = sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .execute(&state.pool)
+                .await;
+            Json(serde_json::json!({"id": id, "status": "rejected"})).into_response()
+        }
+        Ok(_) => api_error(
+            StatusCode::CONFLICT,
+            "proof job cannot be cancelled after a network request or terminal transition",
+        ),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn proof_remaining_slots(
+    state: &AppState,
+    kind: &str,
+    public_values_hex: &str,
+) -> Result<Option<u64>> {
+    if kind != "settlement" {
+        return Ok(None);
+    }
+    let public_values = decode_hex_bytes(public_values_hex, "settlement public values")?;
+    let values = SettlementPublicValues::decode(&public_values).map_err(anyhow::Error::msg)?;
+    let current = state.ethereum.current_virtual_slot().await?;
+    Ok(Some(
+        u64::from(values.settlement().slot_upper).saturating_sub(current),
+    ))
+}
+
+async fn require_proof_lifetime(
+    state: &AppState,
+    kind: &str,
+    public_values_hex: &str,
+) -> Result<()> {
+    if let Some(remaining) = proof_remaining_slots(state, kind, public_values_hex).await? {
+        anyhow::ensure!(
+            remaining >= state.min_remaining_slots,
+            "settlement proof has {remaining} slots remaining; at least {} are required",
+            state.min_remaining_slots
+        );
+    }
+    Ok(())
+}
+
+fn decode_hex_bytes(value: &str, name: &str) -> Result<Vec<u8>> {
+    let value = value
+        .strip_prefix("0x")
+        .with_context(|| format!("{name} must start with 0x"))?;
+    hex::decode(value).with_context(|| format!("invalid {name} hex"))
+}
+
+fn proof_input_digest(input: &Value) -> String {
+    format!("0x{}", hex::encode(Sha256::digest(input.to_string())))
+}
+
+fn parse_positive_u64(value: &str, name: &str) -> Result<u64> {
+    let value = value
+        .parse::<u64>()
+        .with_context(|| format!("{name} must be an unsigned integer string"))?;
+    anyhow::ensure!(value > 0, "{name} must be greater than zero");
+    Ok(value)
+}
+
+fn parse_optional_u64(value: Option<String>, name: &str) -> Result<Option<u64>> {
+    value
+        .map(|value| parse_positive_u64(&value, name))
+        .transpose()
+}
+
+fn database_safe_error(error: &anyhow::Error) -> String {
+    // JSON-RPC revert diagnostics may contain decoded NUL bytes. PostgreSQL
+    // TEXT rejects NUL, and losing the failure transition would strand a job
+    // in its active state.
+    format!("{error:#}").replace('\0', "\\0")
+}
+
 async fn get_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     let job = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
                 proof_request_id, transaction_hash, error, attempts, created_at,
-                updated_at, started_at, completed_at, input_digest, cycle_count,
+                updated_at, started_at, completed_at, input_digest,
+                preflight_input_digest, cycle_count,
                 prover_gas, base_fee_prove, max_price_per_pgu,
                 actual_cost_prove, ethereum_gas_used,
-                confirmations, explorer_url
+                confirmations, explorer_url, approval_input_digest,
+                approval_max_pgu, approval_max_price_per_pgu,
+                approval_base_fee_atto_prove,
+                approval_network_max_price_per_pgu,
+                approval_max_cost_atto_prove, approved_at
          FROM proof_jobs WHERE id = $1",
     )
     .bind(id)
@@ -1038,10 +1403,15 @@ async fn list_jobs(State(state): State<AppState>, Query(query): Query<ListJobsQu
     let jobs = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
                 proof_request_id, transaction_hash, error, attempts, created_at,
-                updated_at, started_at, completed_at, input_digest, cycle_count,
+                updated_at, started_at, completed_at, input_digest,
+                preflight_input_digest, cycle_count,
                 prover_gas, base_fee_prove, max_price_per_pgu,
                 actual_cost_prove, ethereum_gas_used,
-                confirmations, explorer_url
+                confirmations, explorer_url, approval_input_digest,
+                approval_max_pgu, approval_max_price_per_pgu,
+                approval_base_fee_atto_prove,
+                approval_network_max_price_per_pgu,
+                approval_max_cost_atto_prove, approved_at
          FROM proof_jobs
          WHERE ($1::text IS NULL OR kind::text = $1)
            AND ($2::text IS NULL OR status::text = $2)
@@ -1089,24 +1459,26 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
         .await?;
     let job = sqlx::query_as::<_, ClaimedJob>(
         "SELECT queued.id, queued.kind::text AS kind, queued.input,
-                queued.proof_request_id
+                queued.proof_request_id, queued.status::text AS claimed_status,
+                queued.public_values, queued.cycle_count,
+                queued.approval_max_pgu, queued.approval_max_price_per_pgu
          FROM proof_jobs queued
-         WHERE queued.status = 'queued'
+         WHERE queued.status IN ('queued', 'approved')
            AND (queued.kind <> 'settlement' OR NOT EXISTS (
              SELECT 1 FROM proof_jobs active
-             WHERE active.kind = 'settlement'
+             WHERE active.id <> queued.id AND active.kind = 'settlement'
                AND active.status IN (
-                 'validating', 'proof_requested', 'proving',
-                 'submitting', 'submitted'
+                 'validating', 'awaiting_approval', 'approved', 'proof_requested',
+                 'proving', 'submitting', 'submitted'
                )
            ))
            AND (queued.kind NOT IN ('settlement', 'bridge') OR NOT EXISTS (
              SELECT 1 FROM proof_jobs active
-             WHERE active.kind <> queued.kind
+             WHERE active.id <> queued.id AND active.kind <> queued.kind
                AND active.kind IN ('settlement', 'bridge')
                AND active.status IN (
-                 'validating', 'proof_requested', 'proving',
-                 'submitting', 'submitted'
+                 'validating', 'awaiting_approval', 'approved', 'proof_requested',
+                 'proving', 'submitting', 'submitted'
                )
            ))
          ORDER BY queued.created_at
@@ -1118,7 +1490,11 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
     if let Some(ref job) = job {
         sqlx::query(
             "UPDATE proof_jobs
-             SET status = 'validating', attempts = attempts + 1,
+             SET status = CASE
+                   WHEN status = 'approved' THEN 'proving'::proof_status
+                   ELSE 'validating'::proof_status
+                 END,
+                 attempts = attempts + 1,
                  started_at = COALESCE(started_at, NOW()), updated_at = NOW()
              WHERE id = $1",
         )
@@ -1132,49 +1508,101 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
 
 async fn process_job(state: &AppState, mut job: ClaimedJob) {
     let result = async {
-        if job.kind == "settlement" {
-            hydrate_queued_settlement(state, &mut job.input).await?;
-            let result = sqlx::query(
-                "UPDATE proof_jobs SET input = $2, updated_at = NOW()
+        let (preflight, request_config) = if job.claimed_status == "approved" {
+            let public_values_hex = job
+                .public_values
+                .as_deref()
+                .context("approved proof job has no public values")?;
+            require_proof_lifetime(state, &job.kind, public_values_hex).await?;
+            let public_values = decode_hex_bytes(public_values_hex, "public values")?;
+            let cycles = u64::try_from(
+                job.cycle_count
+                    .context("approved proof job has no cycle count")?,
+            )?;
+            let preflight = prover::Preflight::decode(&job.kind, public_values, cycles)?;
+            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let mut config = state.prover_config.clone();
+            config.gas_limit = Some(u64::try_from(
+                job.approval_max_pgu
+                    .context("approved proof job has no max PGU")?,
+            )?);
+            config.max_price_per_pgu = Some(u64::try_from(
+                job.approval_max_price_per_pgu
+                    .context("approved proof job has no max price per PGU")?,
+            )?);
+            (preflight, config)
+        } else {
+            if job.kind == "settlement" {
+                hydrate_queued_settlement(state, &mut job.input).await?;
+                let result = sqlx::query(
+                    "UPDATE proof_jobs SET input = $2, updated_at = NOW()
+                     WHERE id = $1 AND status = 'validating'",
+                )
+                .bind(job.id)
+                .bind(&job.input)
+                .execute(&state.pool)
+                .await?;
+                anyhow::ensure!(result.rows_affected() == 1, "settlement job was cancelled");
+            }
+            let preflight_input_digest = proof_input_digest(&job.input);
+            let digest_result = sqlx::query(
+                "UPDATE proof_jobs SET preflight_input_digest = $2, updated_at = NOW()
                  WHERE id = $1 AND status = 'validating'",
             )
             .bind(job.id)
-            .bind(&job.input)
+            .bind(preflight_input_digest)
             .execute(&state.pool)
             .await?;
-            anyhow::ensure!(result.rows_affected() == 1, "settlement job was cancelled");
-        }
-        let preflight = prover::preflight(&job.kind, &job.input).await?;
-        validate_preflight(state, &job.kind, &job.input, &preflight).await?;
-        let cycle_count = i64::try_from(preflight.cycles())
-            .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
-        let result = sqlx::query(
-            "UPDATE proof_jobs SET public_values = $2, cycle_count = $3,
-                    updated_at = NOW()
-             WHERE id = $1 AND status = 'validating'",
-        )
-        .bind(job.id)
-        .bind(format!("0x{}", hex::encode(preflight.public_values())))
-        .bind(cycle_count)
-        .execute(&state.pool)
-        .await?;
-        anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
-        if state.execute_only {
+            anyhow::ensure!(
+                digest_result.rows_affected() == 1,
+                "proof job was cancelled"
+            );
+            let preflight = prover::preflight(&job.kind, &job.input).await?;
+            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let cycle_count = i64::try_from(preflight.cycles())
+                .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
+            let public_values_hex = format!("0x{}", hex::encode(preflight.public_values()));
             let result = sqlx::query(
-                "UPDATE proof_jobs SET status = 'executed',
-                        completed_at = NOW(), updated_at = NOW()
+                "UPDATE proof_jobs SET public_values = $2, cycle_count = $3,
+                        updated_at = NOW()
                  WHERE id = $1 AND status = 'validating'",
             )
             .bind(job.id)
+            .bind(&public_values_hex)
+            .bind(cycle_count)
             .execute(&state.pool)
             .await?;
             anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
-            return Result::<()>::Ok(());
-        }
-        if state.local_mock_submit {
-            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
-            return Result::<()>::Ok(());
-        }
+            if state.execute_only {
+                let result = sqlx::query(
+                    "UPDATE proof_jobs SET status = 'executed',
+                            completed_at = NOW(), updated_at = NOW()
+                     WHERE id = $1 AND status = 'validating'",
+                )
+                .bind(job.id)
+                .execute(&state.pool)
+                .await?;
+                anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
+                return Result::<()>::Ok(());
+            }
+            if state.local_mock_submit {
+                submit_local_mock(state, job.id, &job.kind, &preflight).await?;
+                return Result::<()>::Ok(());
+            }
+            if state.require_proof_approval {
+                let result = sqlx::query(
+                    "UPDATE proof_jobs SET status = 'awaiting_approval',
+                            completed_at = NULL, updated_at = NOW()
+                     WHERE id = $1 AND status = 'validating'",
+                )
+                .bind(job.id)
+                .execute(&state.pool)
+                .await?;
+                anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
+                return Result::<()>::Ok(());
+            }
+            (preflight, state.prover_config.clone())
+        };
 
         set_status(&state.pool, job.id, "proving").await?;
 
@@ -1185,7 +1613,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                     &job.kind,
                     &job.input,
                     &state.proof_system,
-                    &state.prover_config,
+                    &request_config,
                 )
                 .await?;
                 let result = sqlx::query(
@@ -1267,15 +1695,19 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
 
     if let Err(error) = result {
         tracing::error!(job_id = %job.id, %error, "proof job failed");
-        let _ = sqlx::query(
+        let error_message = database_safe_error(&error);
+        if let Err(update_error) = sqlx::query(
             "UPDATE proof_jobs SET status = 'failed', error = $2,
                     completed_at = NOW(), updated_at = NOW()
-             WHERE id = $1 AND status <> 'reorged'",
+             WHERE id = $1 AND status NOT IN ('reorged', 'rejected')",
         )
         .bind(job.id)
-        .bind(format!("{error:#}"))
+        .bind(error_message)
         .execute(&state.pool)
-        .await;
+        .await
+        {
+            tracing::error!(job_id = %job.id, %update_error, "could not persist proof failure");
+        }
         let _ = sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
             .bind(job.id)
             .execute(&state.pool)
@@ -1668,6 +2100,24 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_caps_are_positive_unsigned_integer_strings() {
+        assert_eq!(parse_positive_u64("1", "maxPgu").unwrap(), 1);
+        assert_eq!(
+            parse_positive_u64("18446744073709551615", "maxPgu").unwrap(),
+            u64::MAX
+        );
+        for value in ["0", "-1", "1.0", "", " 1"] {
+            assert!(parse_positive_u64(value, "maxPgu").is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn database_errors_escape_nul_bytes() {
+        let error = anyhow::anyhow!("revert\0payload").context("submit");
+        assert_eq!(database_safe_error(&error), "submit: revert\\0payload");
+    }
 
     #[test]
     fn withdrawal_proof_uses_fixed_depth_and_preserves_offsets() {

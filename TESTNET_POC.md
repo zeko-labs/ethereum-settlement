@@ -68,9 +68,12 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 9. Start with `API_EXECUTE_ONLY=true`. Produce one real OCaml commit and verify
    that the job reaches `executed` and its public values match the initialized
    contract.
-10. Fund the Succinct requester account, switch execute-only off, and submit
-    one settlement. Confirm the contract state, gateway account view, pending
-    pool, actions query, job cost fields and confirmation count.
+10. Fund the Succinct requester account and switch execute-only off with
+    `API_REQUIRE_PROOF_APPROVAL=true`. Let the job complete local execution,
+    inspect `GET /v1/proofs/:id/quote`, then approve the exact input digest with
+    explicit per-job PGU and price caps. Confirm the contract state, gateway
+    account view, pending pool, actions query, cost fields and confirmation
+    count.
 
 ## Required configuration
 
@@ -96,6 +99,13 @@ Gateway startup recomputes all embedded program vkeys and refuses to run if any
 differ from the live contracts. Preparation derives `FORK_SLOT` from the
 fixture's proof-bound lower slot so the deployment and gateway cannot silently
 start at slot zero for a nonzero commit range.
+
+The pinned persistent profile and secret/bootstrap workflow live under
+`deploy/testnet/`. It runs one real sequencer/prover, three retained DA nodes at
+quorum two, the gateway, both databases, RabbitMQ, isolated signers, bounded DA
+bootstrap, and a prover-readiness barrier. Run `tools/testnet-preflight.sh`
+before starting it; tags, mismatched vkeys/roles/identities, bypass modes, and
+non-Sepolia RPCs are rejected.
 
 ## Acceptance tests
 
@@ -223,7 +233,35 @@ proof-bound account update. No SP1 proof was generated.
 
 ## Local native-bridge checkpoint
 
-Run the contract/glue E2E without producing an SP1 proof:
+Generate the real two-commit bridge fixture and run the complete local
+roundtrip without producing an SP1 proof:
+
+```sh
+tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+tools/run-local-bridge-roundtrip.sh
+```
+
+The runner creates fresh Anvil and PostgreSQL instances, deploys the real
+settlement and bridge implementations behind deterministic proxies, locks 10
+ETH, executes the bridge guest, executes both OCaml-produced settlements,
+checks the synchronized deposit, moves Anvil to each proof's lower slot and
+then through the withdrawal delay, obtains the public depth-16 Merkle path from
+the gateway, and claims the 5 ETH withdrawal. Empty proof bytes are accepted
+only by the marked chain-31337 `LocalSP1Verifier`; all three guests execute and
+validate their public values first.
+
+The 2026-07-14 native round-trip checkpoint used the real two-commit OCaml
+export at DA quorum 2 of 3. The bridge guest executed in 3,433,016 cycles and
+used 218,288 Ethereum gas. The deposit-synchronizing settlement executed in
+52,186,638,600 cycles and used 275,837 gas; the withdrawal-bearing settlement
+executed in 52,189,369,576 cycles and used 318,590 gas. Both settlements
+confirmed, the gateway indexed the withdrawal preimage/root, and the depth-16
+claim transaction released the configured 5 ETH. The runner fixes Anvil's
+block-timestamp interval while SP1 is executing so the real 20-slot OCaml
+window neither stalls below its lower bound nor expires through wall-clock
+drift. No SP1 proof or network request was generated.
+
+The faster Solidity component checkpoint remains:
 
 ```sh
 cd contracts
@@ -239,10 +277,11 @@ Merkle proof. It checks the bridge liability and per-recipient cursor after the
 claim.
 
 The verifier is mocked only at the SP1 contract boundary. Proof-side coverage
-comes from the Rust guest tests and `ethereum_bridge_vectors.exe`, which asserts
-the same native-deposit Poseidon aux values in OCaml. A fully live testnet still
-needs freshly generated OCaml deposit/withdraw/commit fixtures built for the
-chosen bridge address and real deployed SP1 vkeys.
+comes from the executed guests, Rust negative tests, and
+`ethereum_bridge_vectors.exe`, which asserts the same native-deposit Poseidon
+aux values in OCaml. A live testnet must regenerate the fixture with retained
+identities, a 2400-slot validity period, the final bridge address, and the exact
+SP1 vkeys used for deployment.
 
 ## Native bridge user flow
 
