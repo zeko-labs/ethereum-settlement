@@ -2,7 +2,7 @@ use alloy::primitives::{keccak256, Address, B256, U256};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,7 +15,10 @@ use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool, Row};
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::time::sleep;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{AllowOrigin, Any, CorsLayer},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 use zeko_sp1_lib::{
     BridgeDeposit, BridgeTransitionInput, EthereumBridgeState, SettlementContextV1,
@@ -40,6 +43,7 @@ struct AppState {
     local_mock_submit: bool,
     require_proof_approval: bool,
     min_remaining_slots: u64,
+    ethereum_confirmations: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -87,7 +91,7 @@ struct NativeWithdrawalProof {
     offset: u32,
     global_action_index: u32,
     recipient: String,
-    amount: u64,
+    amount: String,
     action_fields_hash: String,
     siblings: Vec<String>,
     inner_action_root: String,
@@ -118,6 +122,14 @@ struct NativeDepositStatus {
     synchronized_settlement_sequence: Option<u64>,
     status: String,
     next_action: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListDepositsQuery {
+    zeko_recipient: Option<String>,
+    after: Option<u64>,
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -272,6 +284,7 @@ async fn main() -> Result<()> {
     .execute(&pool)
     .await
     .context("recover interrupted jobs")?;
+    let ethereum_confirmations = u64_env("ETHEREUM_CONFIRMATIONS", 12)?;
     let state = AppState {
         pool,
         api_key,
@@ -283,17 +296,25 @@ async fn main() -> Result<()> {
         local_mock_submit,
         require_proof_approval,
         min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
+        ethereum_confirmations,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
     let indexer_config = indexer::Config {
         start_block: optional_u64_env("ETHEREUM_INDEXER_START_BLOCK")?,
-        confirmations: u64_env("ETHEREUM_CONFIRMATIONS", 12)?,
+        confirmations: ethereum_confirmations,
         poll_interval: Duration::from_secs(u64_env("ETHEREUM_POLL_INTERVAL_SECS", 3)?),
     };
     let indexer_pool = state.pool.clone();
     let indexer_ethereum = state.ethereum.clone();
     tokio::spawn(async move { indexer::run(indexer_pool, indexer_ethereum, indexer_config).await });
+    if bool_env("BRIDGE_AUTO_PROVE_DEPOSITS")? {
+        let auto_bridge_state = state.clone();
+        let interval = Duration::from_secs(u64_env("BRIDGE_AUTO_PROVE_POLL_SECS", 5)?);
+        tokio::spawn(
+            async move { automatic_deposit_batch_loop(auto_bridge_state, interval).await },
+        );
+    }
 
     let protected = Router::new()
         .route("/v1/proofs/settlement", post(create_settlement))
@@ -311,13 +332,16 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/graphql", post(graphql::handle))
+        .route("/v1/bridge/config", get(get_bridge_config))
         .route(
             "/v1/bridge/withdrawals/:sequence/:offset",
             get(get_native_withdrawal_proof),
         )
         .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
+        .route("/v1/bridge/deposits", get(list_native_deposits))
         .route("/v1/bridge/deposits/:nonce", get(get_native_deposit))
         .merge(protected)
+        .layer(cors_layer()?)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -358,6 +382,42 @@ async fn health(State(state): State<AppState>) -> Response {
             })),
         )
             .into_response(),
+    }
+}
+
+async fn get_bridge_config(State(state): State<AppState>) -> Response {
+    let values = tokio::join!(
+        state.ethereum.chain_id(),
+        state.ethereum.withdrawal_delay_slots(),
+        state.ethereum.current_virtual_slot()
+    );
+    match values {
+        (Ok(chain_id), Ok(withdrawal_delay_slots), Ok(current_virtual_slot)) => {
+            Json(serde_json::json!({
+                "schemaVersion": 1,
+                "chainId": chain_id,
+                "bridgeAddress": state.ethereum.bridge_address().to_string(),
+                "settlementAddress": state.ethereum.settlement_address().to_string(),
+                "ethereumDecimals": 18,
+                "zekoNativeDecimals": 9,
+                "ethereumConfirmations": state.ethereum_confirmations,
+                "withdrawalDelaySlots": withdrawal_delay_slots,
+                "currentVirtualSlot": current_virtual_slot
+            }))
+            .into_response()
+        }
+        (chain_id, delay, slot) => {
+            tracing::error!(
+                chain_id = ?chain_id.err(),
+                withdrawal_delay = ?delay.err(),
+                virtual_slot = ?slot.err(),
+                "read public bridge configuration"
+            );
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "could not read bridge configuration",
+            )
+        }
     }
 }
 
@@ -539,17 +599,115 @@ async fn create_deposit_batch(State(state): State<AppState>, headers: HeaderMap)
             );
         }
     }
-    match canonical_deposit_batch(&state).await {
-        Ok(input) => {
-            create_job(
-                &state,
-                &headers,
-                "bridge",
-                serde_json::to_value(input).expect("serialize bridge input"),
-            )
-            .await
-        }
+    match queue_canonical_deposit_batch(&state, &headers, true).await {
+        Ok(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
         Err(error) => api_error(StatusCode::CONFLICT, &error.to_string()),
+    }
+}
+
+async fn queue_canonical_deposit_batch(
+    state: &AppState,
+    headers: &HeaderMap,
+    allow_terminal_retry: bool,
+) -> Result<CreatedJob> {
+    let input = canonical_deposit_batch(state).await?;
+    let first_nonce = input
+        .ethereum
+        .deposit_nonce
+        .checked_add(1)
+        .context("bridge deposit nonce overflow")?;
+    let last_nonce = input
+        .ethereum
+        .deposit_nonce
+        .checked_add(u64::try_from(input.deposits.len())?)
+        .context("bridge deposit nonce overflow")?;
+    let input = serde_json::to_value(input).expect("serialize bridge input");
+    let input_digest = proof_input_digest(&input);
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok());
+    let id = Uuid::new_v4();
+    let mut tx = state.pool.begin().await?;
+    let eligible = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)
+         FROM gateway_bridge_deposits deposits
+         LEFT JOIN proof_jobs previous ON previous.id = deposits.bridge_job_id
+         WHERE deposits.nonce BETWEEN $1 AND $2 AND NOT deposits.removed
+           AND (
+             deposits.bridge_job_id IS NULL
+             OR deposits.bridge_job_id = $3
+             OR ($4 AND previous.status IN (
+               'executed', 'failed', 'proof_failed', 'ethereum_reverted',
+               'reorged', 'rejected'
+             ))
+           )",
+    )
+    .bind(i64::try_from(first_nonce)?)
+    .bind(i64::try_from(last_nonce)?)
+    .bind(id)
+    .bind(allow_terminal_retry)
+    .fetch_one(&mut *tx)
+    .await?;
+    anyhow::ensure!(
+        eligible == i64::try_from(last_nonce - first_nonce + 1)?,
+        "deposit batch already has a proof job; an operator must retry a failed batch"
+    );
+    let actual_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO proof_jobs (id, kind, input, idempotency_key, input_digest)
+         VALUES ($1, 'bridge', $2, $3, $4)
+         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+         DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+         WHERE proof_jobs.input_digest = EXCLUDED.input_digest
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(&input)
+    .bind(idempotency_key)
+    .bind(input_digest)
+    .fetch_optional(&mut *tx)
+    .await?
+    .context("idempotency key already exists with a different payload")?;
+    let updated = sqlx::query(
+        "UPDATE gateway_bridge_deposits
+         SET bridge_job_id = $1
+         WHERE nonce BETWEEN $2 AND $3 AND NOT removed",
+    )
+    .bind(actual_id)
+    .bind(i64::try_from(first_nonce)?)
+    .bind(i64::try_from(last_nonce)?)
+    .execute(&mut *tx)
+    .await?;
+    anyhow::ensure!(
+        updated.rows_affected() == last_nonce - first_nonce + 1,
+        "canonical deposit batch changed while it was queued"
+    );
+    tx.commit().await?;
+    Ok(CreatedJob {
+        id: actual_id,
+        status: "queued",
+        status_url: format!("/v1/proofs/{actual_id}"),
+    })
+}
+
+async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
+    loop {
+        match conflicting_outer_writer(&state.pool, "bridge").await {
+            Ok(false) => {
+                match queue_canonical_deposit_batch(&state, &HeaderMap::new(), false).await {
+                    Ok(job) => {
+                        tracing::info!(job_id = %job.id, "automatically queued deposit proof batch")
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "no automatic deposit proof batch queued")
+                    }
+                }
+            }
+            Ok(true) => {}
+            Err(error) => {
+                tracing::warn!(%error, "could not check for an active outer-state writer")
+            }
+        }
+        sleep(interval).await;
     }
 }
 
@@ -714,16 +872,87 @@ async fn get_native_deposit(State(state): State<AppState>, Path(nonce): Path<u64
     }
 }
 
+async fn list_native_deposits(
+    State(state): State<AppState>,
+    Query(query): Query<ListDepositsQuery>,
+) -> Response {
+    let zeko_recipient = match query.zeko_recipient {
+        Some(recipient) => match recipient.parse::<B256>() {
+            Ok(recipient) => Some(recipient.to_string()),
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "zekoRecipient must be a 32-byte packed Zeko address",
+                )
+            }
+        },
+        None => None,
+    };
+    let after = match query.after.map(i64::try_from).transpose() {
+        Ok(after) => after,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
+    };
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let rows = sqlx::query(
+        "SELECT deposits.nonce, deposits.token, deposits.sender,
+                deposits.zeko_recipient,
+                deposits.ethereum_amount::text AS ethereum_amount,
+                deposits.zeko_amount::text AS zeko_amount, deposits.timeout,
+                deposits.ethereum_tx_hash, blocks.finalized,
+                deposits.bridge_job_id, bridge_jobs.status::text AS bridge_job_status,
+                deposits.outer_action_sequence, deposits.outer_action_state_after,
+                deposits.synchronized_settlement_sequence
+         FROM gateway_bridge_deposits deposits
+         JOIN gateway_blocks blocks
+           ON blocks.block_number = deposits.ethereum_block_number
+          AND blocks.block_hash = deposits.ethereum_block_hash
+         LEFT JOIN proof_jobs bridge_jobs ON bridge_jobs.id = deposits.bridge_job_id
+         WHERE NOT deposits.removed AND blocks.canonical
+           AND ($1::text IS NULL OR lower(deposits.zeko_recipient) = lower($1))
+           AND ($2::bigint IS NULL OR deposits.nonce > $2)
+         ORDER BY deposits.nonce
+         LIMIT $3",
+    )
+    .bind(zeko_recipient)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+    match rows {
+        Ok(rows) => match rows
+            .into_iter()
+            .map(native_deposit_from_row)
+            .collect::<Result<Vec<_>>>()
+        {
+            Ok(deposits) => Json(deposits).into_response(),
+            Err(error) => {
+                tracing::error!(%error, "decode indexed bridge deposits");
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid indexed deposit")
+            }
+        },
+        Err(error) => {
+            tracing::error!(%error, "list indexed bridge deposits");
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "could not list deposits")
+        }
+    }
+}
+
 fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositStatus> {
     let finalized: bool = row.try_get("finalized")?;
     let bridge_job_id: Option<Uuid> = row.try_get("bridge_job_id")?;
+    let bridge_job_status: Option<String> = row.try_get("bridge_job_status")?;
+    let outer_action_sequence = row
+        .try_get::<Option<i64>, _>("outer_action_sequence")?
+        .map(u32::try_from)
+        .transpose()?;
     let synchronized_settlement_sequence = row
         .try_get::<Option<i64>, _>("synchronized_settlement_sequence")?
         .map(u64::try_from)
         .transpose()?;
     let (status, next_action) = native_deposit_progress(
         finalized,
-        bridge_job_id.is_some(),
+        bridge_job_status.as_deref(),
+        outer_action_sequence.is_some(),
         synchronized_settlement_sequence.is_some(),
     );
     Ok(NativeDepositStatus {
@@ -737,11 +966,8 @@ fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositSt
         ethereum_transaction_hash: row.try_get("ethereum_tx_hash")?,
         ethereum_finalized: finalized,
         bridge_job_id,
-        bridge_job_status: row.try_get("bridge_job_status")?,
-        outer_action_sequence: row
-            .try_get::<Option<i64>, _>("outer_action_sequence")?
-            .map(u32::try_from)
-            .transpose()?,
+        bridge_job_status,
+        outer_action_sequence,
         outer_action_state_after: row.try_get("outer_action_state_after")?,
         synchronized_settlement_sequence,
         status: status.to_owned(),
@@ -751,17 +977,30 @@ fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositSt
 
 fn native_deposit_progress(
     finalized: bool,
+    bridge_job_status: Option<&str>,
     bridge_proven: bool,
     synchronized: bool,
 ) -> (&'static str, &'static str) {
     if !finalized {
         ("confirming", "waitForEthereumFinality")
-    } else if !bridge_proven {
-        ("locked", "requestBridgeProof")
-    } else if !synchronized {
+    } else if synchronized {
+        ("synchronized", "finalizeDepositOnZeko")
+    } else if bridge_proven {
         ("bridgeProven", "waitForSettlementSynchronization")
     } else {
-        ("synchronized", "finalizeDepositOnZeko")
+        match bridge_job_status {
+            None => ("locked", "requestBridgeProof"),
+            Some("queued" | "validating") => ("proofQueued", "waitForBridgeProof"),
+            Some("awaiting_approval") => ("awaitingProofApproval", "waitForOperatorApproval"),
+            Some("approved" | "proof_requested" | "proving") => ("proving", "waitForBridgeProof"),
+            Some("submitting" | "submitted") => ("submitting", "waitForEthereumSubmission"),
+            Some("executed") => ("executed", "operatorSubmissionRequired"),
+            Some("failed" | "proof_failed" | "ethereum_reverted" | "reorged" | "rejected") => {
+                ("proofFailed", "retryBridgeProof")
+            }
+            Some("confirmed") => ("bridgeProven", "waitForSettlementSynchronization"),
+            Some(_) => ("proofQueued", "waitForBridgeProof"),
+        }
     }
 }
 
@@ -900,8 +1139,10 @@ async fn load_native_withdrawal_proof_at(
         .context("inner action is not a claimable native withdrawal")?;
     let amount = target
         .try_get::<Option<String>, _>("zeko_amount")?
-        .context("withdrawal amount missing")?
-        .parse::<u64>()?;
+        .context("withdrawal amount missing")?;
+    amount
+        .parse::<u64>()
+        .context("withdrawal amount is outside the supported native range")?;
     let leaves = rows
         .iter()
         .map(|row| -> Result<[u8; 32]> {
@@ -1992,6 +2233,33 @@ fn api_error(status: StatusCode, message: &str) -> Response {
     (status, Json(serde_json::json!({"error": message}))).into_response()
 }
 
+fn cors_layer() -> Result<CorsLayer> {
+    let layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([header::CONTENT_TYPE]);
+    let Some(configured) = nonempty_env("API_CORS_ALLOWED_ORIGINS") else {
+        return Ok(layer);
+    };
+    if configured.trim() == "*" {
+        return Ok(layer.allow_origin(Any));
+    }
+    let origins = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .map(|origin| {
+            origin
+                .parse::<HeaderValue>()
+                .with_context(|| format!("invalid API_CORS_ALLOWED_ORIGINS entry {origin}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !origins.is_empty(),
+        "API_CORS_ALLOWED_ORIGINS must contain an origin"
+    );
+    Ok(layer.allow_origin(AllowOrigin::list(origins)))
+}
+
 fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
 }
@@ -2159,19 +2427,27 @@ mod tests {
     #[test]
     fn deposit_progress_requires_finality_proof_and_synchronization() {
         assert_eq!(
-            native_deposit_progress(false, false, false),
+            native_deposit_progress(false, None, false, false),
             ("confirming", "waitForEthereumFinality")
         );
         assert_eq!(
-            native_deposit_progress(true, false, false),
+            native_deposit_progress(true, None, false, false),
             ("locked", "requestBridgeProof")
         );
         assert_eq!(
-            native_deposit_progress(true, true, false),
+            native_deposit_progress(true, Some("proving"), false, false),
+            ("proving", "waitForBridgeProof")
+        );
+        assert_eq!(
+            native_deposit_progress(true, Some("failed"), false, false),
+            ("proofFailed", "retryBridgeProof")
+        );
+        assert_eq!(
+            native_deposit_progress(true, Some("confirmed"), true, false),
             ("bridgeProven", "waitForSettlementSynchronization")
         );
         assert_eq!(
-            native_deposit_progress(true, true, true),
+            native_deposit_progress(true, Some("confirmed"), true, true),
             ("synchronized", "finalizeDepositOnZeko")
         );
     }

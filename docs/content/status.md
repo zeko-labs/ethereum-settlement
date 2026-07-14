@@ -24,6 +24,12 @@ promoted to a persistent live Sepolia deployment.
 - The gateway implements the sequencer's Mina GraphQL subset, persists proof
   jobs, gates paid requests on approval, waits for confirmations, and rolls its
   virtual Mina view back on Ethereum reorgs.
+- Public browser APIs expose deployment config, resumable deposit state, and
+  precision-safe withdrawal proofs. Finalized deposits can be queued
+  automatically without an operator API call.
+- `@zeko-labs/eth-bridge-sdk` owns Ethereum wallet operations and composes the
+  existing bridge SDK for sequencer-side deposit finalization and withdrawal
+  requests. The Actions services consume the gateway's Mina archive shape.
 
 ## Verified local checkpoint
 

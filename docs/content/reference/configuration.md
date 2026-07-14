@@ -30,6 +30,9 @@ environment file.
 | `ETHEREUM_CONFIRMATIONS` | Canonical confirmation depth; reference profile requires 12. |
 | `ETHEREUM_POLL_INTERVAL_SECS` | Receipt/indexer poll interval. |
 | `ETHEREUM_INDEXER_START_BLOCK` | Contract deployment block. |
+| `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized native-deposit batch automatically. Enable for the browser PoC. |
+| `BRIDGE_AUTO_PROVE_POLL_SECS` | Automatic batch scan interval; reference value 5. |
+| `API_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins, or `*` for isolated local development. |
 
 `ETHEREUM_PRIVATE_KEY` is a development fallback for the three per-kind keys.
 Use credential files and the explicit variables in a persistent deployment.

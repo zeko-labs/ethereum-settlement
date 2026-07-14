@@ -15,6 +15,7 @@ The gateway implements only operations used by
 | `pooledZkappCommands` | Pending settlement commands persisted by the gateway. |
 | `pooledUserCommands` | Pending signed commands, when present. |
 | `actions` | Exact proof-emitted outer actions indexed from confirmed Ethereum receipts. |
+| `networkState` | Canonical/finalized Ethereum heights used by the Actions indexer. |
 | `events` | Empty list; the current sequencer path does not require event data. |
 | `genesisConstants` | Configured genesis timestamp and account-creation fee. |
 | `runtimeConfig` | Configured fork slot. |
@@ -57,6 +58,8 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 
 | Method and path | Purpose |
 | --- | --- |
+| `GET /v1/bridge/config` | Chain, contract, decimal, confirmation, and withdrawal-delay discovery for browser clients. |
+| `GET /v1/bridge/deposits?zekoRecipient=0x...&after=N&limit=N` | Recover a wallet's deposits after a page reload. |
 | `GET /v1/bridge/deposits/:nonce` | Deposit finality, proof, synchronization, and next user action. |
 | `GET /v1/bridge/withdrawals?recipient=0x...&after=N` | Discover indexed native claims. |
 | `GET /v1/bridge/withdrawals/:sequence/:offset` | Return one fixed-depth Merkle proof and live delay/cursor status. |
@@ -67,16 +70,32 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 Bind the gateway and sequencer to a private address. Put a TLS reverse proxy in
 front of them and apply route-specific policy:
 
-- `/graphql` is accessible only to the sequencer/operator network unless a
-  specific read-only query policy is implemented.
+- `/graphql` serves Mina-compatible account/archive reads to the sequencer and
+  bridge clients; settlement submission still requires `gatewayToken`.
 - proof job, quote, approval, and cancellation routes require both network
   restriction and API-key authentication.
-- the three bridge discovery routes may be public and rate limited.
+- bridge config, deposit/withdrawal discovery, and read-only GraphQL operations
+  may be public and rate limited.
 - PostgreSQL, RabbitMQ, DA RPC, and signer RPC must not be publicly reachable.
 
 Do not expose the gateway directly to the Internet merely because it has an API
 key. Its GraphQL handler uses a deliberately narrow operation recognizer, not a
 full public GraphQL security layer.
+
+`API_CORS_ALLOWED_ORIGINS` controls browser origins. Use an exact comma-separated
+allowlist in a deployment; `*` is intended only for isolated development.
+
+## Browser status model
+
+Deposit responses expose both a stable `status` and `nextAction`. The status
+progression is `confirming` → `locked` → `proofQueued`/`proving` →
+`bridgeProven` → `synchronized`; approval mode inserts
+`awaitingProofApproval`. A terminal proof error is `proofFailed`. Browser code
+should display the server status and resume by nonce instead of keeping its own
+authoritative state machine.
+
+Withdrawal amounts are decimal strings, not JSON numbers. This preserves the
+full Solidity/Mina `uint64` range in JavaScript.
 
 ## Virtual Mina state
 

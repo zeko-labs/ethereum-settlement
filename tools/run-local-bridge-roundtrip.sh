@@ -7,6 +7,8 @@ DEPLOY_DIR=${POC_DEPLOY_DIR:-$ROOT/build/poc/bridge-roundtrip}
 RPC_PORT=${RPC_PORT:-8547}
 PG_PORT=${PG_PORT:-55432}
 API_PORT=${API_PORT:-8081}
+ACTIONS_INDEXER_PORT=${ACTIONS_INDEXER_PORT:-3601}
+ACTIONS_API_PORT=${ACTIONS_API_PORT:-9101}
 RPC_URL="http://127.0.0.1:$RPC_PORT"
 API_URL="http://127.0.0.1:$API_PORT"
 API_KEY=${PROOF_API_KEY:-local-bridge-roundtrip-key}
@@ -16,10 +18,13 @@ POSTGRES_CONTAINER=${POSTGRES_CONTAINER:-zeko-bridge-roundtrip-postgres-$$}
 POSTGRES_IMAGE=${POSTGRES_IMAGE:-postgres:17-bookworm}
 LOG_FILE=${POC_API_LOG:-/tmp/zeko-bridge-roundtrip-api-$$.log}
 ANVIL_LOG=${POC_ANVIL_LOG:-/tmp/zeko-bridge-roundtrip-anvil-$$.log}
+ACTIONS_INDEXER_LOG=${POC_ACTIONS_INDEXER_LOG:-/tmp/zeko-bridge-roundtrip-actions-indexer-$$.log}
+ACTIONS_API_LOG=${POC_ACTIONS_API_LOG:-/tmp/zeko-bridge-roundtrip-actions-api-$$.log}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
 FORGE=${FORGE:-$HOME/.foundry/bin/forge}
 ANVIL=${ANVIL:-$HOME/.foundry/bin/anvil}
 API_BIN=${API_BIN:-$ROOT/target/release/zeko-proof-api}
+ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
 
 for command in bc curl docker jq date; do
   command -v "$command" >/dev/null || {
@@ -33,6 +38,10 @@ for executable in "$CAST" "$FORGE" "$ANVIL"; do
     exit 1
   }
 done
+[[ -f "$ZEKO_UI_ROOT/packages/eth-bridge-sdk/package.json" ]] || {
+  echo "Missing Ethereum bridge SDK checkout: $ZEKO_UI_ROOT" >&2
+  exit 1
+}
 for fixture in \
   "$FIXTURE_ROOT/bridge-scenario.json" \
   "$FIXTURE_ROOT/deposit-sync/settlement.json" \
@@ -54,11 +63,22 @@ cleanup() {
     kill "$ANVIL_PID" 2>/dev/null || true
     wait "$ANVIL_PID" 2>/dev/null || true
   fi
+  if [[ -n ${ACTIONS_INDEXER_PID:-} ]]; then
+    kill "$ACTIONS_INDEXER_PID" 2>/dev/null || true
+    wait "$ACTIONS_INDEXER_PID" 2>/dev/null || true
+  fi
+  if [[ -n ${ACTIONS_API_PID:-} ]]; then
+    kill "$ACTIONS_API_PID" 2>/dev/null || true
+    wait "$ACTIONS_API_PID" 2>/dev/null || true
+  fi
   docker rm -f "$POSTGRES_CONTAINER" >/dev/null 2>&1 || true
   rm -f "${ACCOUNT_FILE:-}"
+  rm -f "${SDK_OUTPUT:-}"
   if [[ $status -ne 0 ]]; then
     echo "Gateway log: $LOG_FILE" >&2
     echo "Anvil log: $ANVIL_LOG" >&2
+    echo "Actions indexer log: $ACTIONS_INDEXER_LOG" >&2
+    echo "Actions API log: $ACTIONS_API_LOG" >&2
   fi
   exit "$status"
 }
@@ -72,6 +92,12 @@ if curl -fsS "$API_URL/health" >/dev/null 2>&1; then
   echo "API port $API_PORT is already in use" >&2
   exit 1
 fi
+for port in "$ACTIONS_INDEXER_PORT" "$ACTIONS_API_PORT"; do
+  if curl -fsS "http://127.0.0.1:$port" >/dev/null 2>&1; then
+    echo "Actions service port $port is already in use" >&2
+    exit 1
+  fi
+done
 
 "$ANVIL" --silent --chain-id 31337 --port "$RPC_PORT" >"$ANVIL_LOG" 2>&1 &
 ANVIL_PID=$!
@@ -127,6 +153,7 @@ for _ in $(seq 1 30); do
 done
 docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d zeko_proofs \
   >/dev/null
+docker exec "$POSTGRES_CONTAINER" createdb -U postgres actions
 
 outer_public_key=$(jq -r '.outerAccountPublicKey' \
   "$FIXTURE_ROOT/deposit-sync/settlement.json")
@@ -162,6 +189,9 @@ export ETHEREUM_PRIVATE_KEY="$PRIVATE_KEY"
 export ETHEREUM_CONFIRMATIONS=1
 export ETHEREUM_POLL_INTERVAL_SECS=1
 export ETHEREUM_INDEXER_START_BLOCK=0
+export BRIDGE_AUTO_PROVE_DEPOSITS=true
+export BRIDGE_AUTO_PROVE_POLL_SECS=1
+export API_CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173
 VIRTUAL_MINA_GENESIS_TIMESTAMP=$(date -u -d "@$genesis_timestamp" +%Y-%m-%dT%H:%M:%SZ)
 export VIRTUAL_MINA_GENESIS_TIMESTAMP
 export VIRTUAL_MINA_FORK_SLOT="$FORK_SLOT"
@@ -182,6 +212,61 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -fsS "$API_URL/health" >/dev/null
+
+ACTIONS_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:$PG_PORT/actions"
+(
+  cd "$ZEKO_UI_ROOT"
+  DATABASE_URL="$ACTIONS_DATABASE_URL" \
+    nix develop -c pnpm exec moon run actions-api:db-migrate
+) >/dev/null
+(
+  cd "$ZEKO_UI_ROOT"
+  DATABASE_URL="$ACTIONS_DATABASE_URL" AUTH_TOKEN=local-actions-token \
+    PORT="$ACTIONS_INDEXER_PORT" L1_ARCHIVE_URL="$API_URL/graphql" \
+    L1_FINALITY=1 L2_ARCHIVE_URL="$API_URL/graphql" L2_FINALITY_TIME_H=1 \
+    OUTER_PK="$outer_public_key" INNER_PK="$outer_public_key" \
+    INDEX_OUTER=true INDEX_INNER=false ENVIRONMENT=LOCAL \
+    nix develop -c pnpm exec moon run actions-indexer:start
+) >"$ACTIONS_INDEXER_LOG" 2>&1 &
+ACTIONS_INDEXER_PID=$!
+(
+  cd "$ZEKO_UI_ROOT"
+  DATABASE_URL="$ACTIONS_DATABASE_URL" ENVIRONMENT=local \
+    nix develop -c pnpm exec moon run actions-api:dev -- \
+      --port "$ACTIONS_API_PORT" --var ENVIRONMENT:local \
+      --var "DATABASE_URL:$ACTIONS_DATABASE_URL"
+) >"$ACTIONS_API_LOG" 2>&1 &
+ACTIONS_API_PID=$!
+for _ in $(seq 1 120); do
+  if curl -fsS "http://127.0.0.1:$ACTIONS_API_PORT/health" \
+      | jq -e '.status == "healthy"' >/dev/null 2>&1; then
+    break
+  fi
+  kill -0 "$ACTIONS_API_PID" 2>/dev/null || exit 1
+  sleep 1
+done
+curl -fsS "http://127.0.0.1:$ACTIONS_API_PORT/health" \
+  | jq -e '.status == "healthy"' >/dev/null
+for _ in $(seq 1 120); do
+  if curl -fsS -H 'authorization: Bearer local-actions-token' \
+      "http://127.0.0.1:$ACTIONS_INDEXER_PORT/status" >/dev/null 2>&1; then
+    break
+  fi
+  kill -0 "$ACTIONS_INDEXER_PID" 2>/dev/null || exit 1
+  sleep 1
+done
+
+SDK_OUTPUT=$(mktemp)
+run_eth_sdk() {
+  local command=$1
+  shift
+  (
+    cd "$ZEKO_UI_ROOT"
+    GATEWAY_URL="$API_URL" RPC_URL="$RPC_URL" CHAIN_ID=31337 \
+      ETHEREUM_ACCOUNT="$ADMIN_ADDRESS" E2E_OUTPUT="$SDK_OUTPUT" "$@" \
+      nix develop -c pnpm exec moon run eth-bridge-sdk:e2e -- "$command"
+  )
+}
 
 wait_job() {
   local id=$1
@@ -244,25 +329,43 @@ submit_settlement() {
   wait_job "$id"
 }
 
-zeko_recipient=$(jq -r '.zekoRecipient' "$FIXTURE_ROOT/bridge-scenario.json")
+zeko_recipient_public_key=$(jq -r '.zekoRecipientPublicKey' \
+  "$FIXTURE_ROOT/bridge-scenario.json")
 deposit_amount=$(jq -r '.depositAmountZeko' "$FIXTURE_ROOT/bridge-scenario.json")
 ((deposit_amount % 1000000000 == 0))
-deposit_eth=$((deposit_amount / 1000000000))
-"$CAST" send "$BRIDGE_CONTRACT_ADDRESS" 'depositETH(uint256)' "$zeko_recipient" \
-  --value "${deposit_eth}ether" --private-key "$PRIVATE_KEY" \
-  --rpc-url "$RPC_URL" >/dev/null
+deposit_value_wei=$(bc <<<"$deposit_amount * 1000000000")
+run_eth_sdk deposit env ZEKO_RECIPIENT_PUBLIC_KEY="$zeko_recipient_public_key" \
+  DEPOSIT_VALUE_WEI="$deposit_value_wei" >/dev/null
+deposit_nonce=$(jq -r '.nonce' "$SDK_OUTPUT")
+deposit_tx_hash=$(jq -r '.hash' "$SDK_OUTPUT")
+[[ $deposit_nonce == 1 ]]
 "$CAST" rpc anvil_mine 0x2 --rpc-url "$RPC_URL" >/dev/null
 
 for _ in $(seq 1 60); do
-  deposit_status=$(curl -fsS "$API_URL/v1/bridge/deposits/1" 2>/dev/null \
-    | jq -r '.status // empty' || true)
-  [[ $deposit_status == locked ]] && break
+  deposit=$(curl -fsS "$API_URL/v1/bridge/deposits/$deposit_nonce" 2>/dev/null || true)
+  bridge_job=$(jq -r '.bridgeJobId // empty' <<<"$deposit")
+  [[ -n $bridge_job ]] && break
   sleep 1
 done
-[[ ${deposit_status:-} == locked ]]
-bridge_job=$(curl -fsS -H "x-api-key: $API_KEY" -X POST \
-  "$API_URL/v1/bridge/deposits/prove" | jq -r '.id')
+[[ -n ${bridge_job:-} ]]
 wait_job "$bridge_job"
+"$CAST" rpc anvil_mine 0x1 --rpc-url "$RPC_URL" >/dev/null
+deposit_aux_decimal=$(
+  "$CAST" to-dec "$(jq -r '.depositAux' "$FIXTURE_ROOT/bridge-scenario.json")"
+)
+for _ in $(seq 1 120); do
+  indexed_witness=$(jq -n --arg aux "$deposit_aux_decimal" \
+    '{query:"query($input: OuterWitnessesFromAuxesInput!) { outerWitnessesFromAuxes(input:$input) { aux index beforeState afterState finalityStatus } }",variables:{input:{auxes:[$aux]}}}' \
+    | curl -fsS -H 'content-type: application/json' --data-binary @- \
+        "http://127.0.0.1:$ACTIONS_API_PORT/graphql" 2>/dev/null || true)
+  if [[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' \
+      <<<"$indexed_witness") == 1 ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' \
+  <<<"${indexed_witness:-{}}") == 1 ]]
 [[ $("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" 'actionState()(bytes32)' \
   --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]') == \
   "$(jq -r '.outerActionStateAfterDeposit | ascii_downcase' \
@@ -301,18 +404,11 @@ withdrawal=$(curl -fsS \
   | jq -e '.[0]')
 [[ $(jq -r '.status' <<<"$withdrawal") == claimable ]]
 
-sequence=$(jq -r '.settlementSequence' <<<"$withdrawal")
-offset=$(jq -r '.offset' <<<"$withdrawal")
 amount=$(jq -r '.amount' <<<"$withdrawal")
-action_fields_hash=$(jq -r '.actionFieldsHash' <<<"$withdrawal")
-proof=$(jq -r '.siblings | "[" + join(",") + "]"' <<<"$withdrawal")
 liability_before=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
-"$CAST" send "$BRIDGE_CONTRACT_ADDRESS" \
-  'claimNativeWithdrawal(uint64,uint32,address,uint64,bytes32,bytes32[16])' \
-  "$sequence" "$offset" "$withdrawal_recipient" "$amount" \
-  "$action_fields_hash" "$proof" --private-key "$PRIVATE_KEY" \
-  --rpc-url "$RPC_URL" >/dev/null
+run_eth_sdk claim env WITHDRAWAL_RECIPIENT="$withdrawal_recipient" >/dev/null
+claim_tx_hash=$(jq -r '.hash' "$SDK_OUTPUT")
 liability_after=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
 expected_wei=$((amount * 1000000000))
@@ -321,8 +417,13 @@ released_wei=$(bc <<<"$liability_before - $liability_after")
 
 jq -n --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
   --arg settlement "$SETTLEMENT_CONTRACT_ADDRESS" \
+  --arg depositTransactionHash "$deposit_tx_hash" \
+  --arg claimTransactionHash "$claim_tx_hash" \
   --arg recipient "$withdrawal_recipient" --arg amountZeko "$amount" \
   '{status:"passed",bridge:$bridge,settlement:$settlement,
+    depositTransactionHash:$depositTransactionHash,
+    claimTransactionHash:$claimTransactionHash,
+    actionsWitnessIndexed:true,
     withdrawalRecipient:$recipient,withdrawalAmountZeko:$amountZeko,
     ocamlCommits:2,sp1ProofsGenerated:0}'
 echo "ETH deposit -> bridge execute -> two real OCaml settlements -> Merkle withdrawal claim passed."

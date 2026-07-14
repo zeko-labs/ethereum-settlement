@@ -69,6 +69,9 @@ async fn execute(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
             }
         }));
     }
+    if query.contains("networkState") {
+        return network_state(state).await;
+    }
     if query.contains("bestChain") {
         return best_chain(state, request).await;
     }
@@ -225,11 +228,17 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
     let public_key = variable_string(request, "pk")?;
     let from = variable_optional_string(request, "fromActionState");
     let end = variable_optional_string(request, "endActionState");
+    let from_block = variable_optional_i64(request, "from");
+    let to_block = variable_optional_i64(request, "to");
     let rows = sqlx::query(
-        "SELECT sequence, state_before, state_after, action_data,
-                ethereum_block_number
-         FROM gateway_actions
-         WHERE address = $1 AND NOT removed
+        "SELECT actions.sequence, actions.state_before, actions.state_after,
+                actions.action_data, actions.ethereum_block_number,
+                actions.ethereum_tx_hash, blocks.finalized, blocks.indexed_at
+         FROM gateway_actions actions
+         JOIN gateway_blocks blocks
+           ON blocks.block_number = actions.ethereum_block_number
+          AND blocks.block_hash = actions.ethereum_block_hash
+         WHERE actions.address = $1 AND NOT actions.removed AND blocks.canonical
            AND ($2::text IS NULL OR sequence >= COALESCE((
                 SELECT MIN(sequence) FROM gateway_actions
                 WHERE address = $1 AND NOT removed AND state_after = $2
@@ -239,15 +248,18 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
                 SELECT MIN(sequence) FROM gateway_actions
                 WHERE address = $1 AND NOT removed AND state_after = $3
            ), 9223372036854775807))
-         ORDER BY sequence",
+           AND ($4::bigint IS NULL OR actions.ethereum_block_number >= $4)
+           AND ($5::bigint IS NULL OR actions.ethereum_block_number < $5)
+         ORDER BY actions.sequence",
     )
     .bind(public_key)
     .bind(from)
     .bind(end)
+    .bind(from_block)
+    .bind(to_block)
     .fetch_all(&state.pool)
     .await?;
-    let config = config(state).await?;
-    let tip: i64 = config.try_get("block_height")?;
+    let tip = ethereum_tip(state).await?;
     let actions = rows
         .into_iter()
         .map(|row| {
@@ -255,6 +267,22 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
             let after: String = row.try_get("state_after")?;
             let action_data: Value = row.try_get("action_data")?;
             let height: i64 = row.try_get("ethereum_block_number")?;
+            let transaction_hash: String = row.try_get("ethereum_tx_hash")?;
+            let finalized: bool = row.try_get("finalized")?;
+            let indexed_at: chrono::DateTime<chrono::Utc> = row.try_get("indexed_at")?;
+            let action_data = action_data
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("gateway action data must be an array"))?
+                .iter()
+                .map(|data| {
+                    Ok(json!({
+                        "data": data
+                            .as_array()
+                            .ok_or_else(|| anyhow::anyhow!("gateway action must be an array"))?,
+                        "transactionInfo": {"hash": transaction_hash.clone()}
+                    }))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(json!({
                 "actionState": {
                     "actionStateOne": after,
@@ -262,13 +290,42 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
                 },
                 "actionData": action_data,
                 "blockInfo": {
+                    "timestamp": indexed_at.timestamp_millis().to_string(),
                     "height": height,
-                    "distanceFromMaxBlockHeight": tip.saturating_sub(height)
+                    "distanceFromMaxBlockHeight": tip.saturating_sub(height),
+                    "chainStatus": if finalized { "canonical" } else { "pending" }
                 }
             }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(json!({"actions": actions}))
+}
+
+async fn network_state(state: &AppState) -> anyhow::Result<Value> {
+    let pending = ethereum_tip(state).await?;
+    let canonical = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(block_number) FROM gateway_blocks WHERE canonical AND finalized",
+    )
+    .fetch_one(&state.pool)
+    .await?
+    .unwrap_or(0);
+    Ok(json!({
+        "networkState": {
+            "maxBlockHeight": {
+                "canonicalMaxBlockHeight": canonical,
+                "pendingMaxBlockHeight": pending
+            }
+        }
+    }))
+}
+
+async fn ethereum_tip(state: &AppState) -> anyhow::Result<i64> {
+    Ok(sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(block_number) FROM gateway_blocks WHERE canonical",
+    )
+    .fetch_one(&state.pool)
+    .await?
+    .unwrap_or(0))
 }
 
 async fn best_chain(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<Value> {
@@ -318,4 +375,8 @@ fn variable_string<'a>(request: &'a GraphqlRequest, name: &str) -> anyhow::Resul
 
 fn variable_optional_string<'a>(request: &'a GraphqlRequest, name: &str) -> Option<&'a str> {
     request.variables.get(name).and_then(Value::as_str)
+}
+
+fn variable_optional_i64(request: &GraphqlRequest, name: &str) -> Option<i64> {
+    request.variables.get(name).and_then(Value::as_i64)
 }

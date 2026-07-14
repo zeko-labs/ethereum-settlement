@@ -50,19 +50,24 @@ With a prepared bridge identity and the generated two-commit fixture under
 tools/run-local-bridge-roundtrip.sh
 ```
 
-The runner creates isolated Anvil and PostgreSQL instances and then:
+The runner creates isolated Anvil and PostgreSQL instances, starts the gateway,
+the outer Actions indexer, and Actions API, and drives user-owned Ethereum
+operations through `@zeko-labs/eth-bridge-sdk`. It then:
 
 1. builds the gateway/guest against the fixture verifier index
 2. deploys deterministic settlement and bridge proxies with
    `LocalSP1Verifier`
-3. locks 10 ETH in the bridge
-4. indexes the finalized deposit and executes the bridge guest
+3. discovers chain/contract configuration through the public gateway API and
+   locks 10 ETH through the browser SDK
+4. indexes the finalized deposit, automatically queues it, and executes the bridge guest
 5. submits the validated bridge receipt with empty proof bytes
 6. executes and submits the real deposit-synchronizing OCaml settlement
 7. executes and submits the real withdrawal-bearing OCaml settlement
-8. obtains the public Merkle path from the gateway
-9. advances through the configured withdrawal delay and claims 5 ETH
-10. checks contract state, liability, action synchronization, and recipient
+8. verifies the deposit Witness is consumable through Actions API
+9. obtains the public Merkle path from the gateway
+10. advances through the configured withdrawal delay and claims 5 ETH through
+    the browser SDK
+11. checks contract state, liability, action synchronization, and recipient
     cursor
 
 Mock proof acceptance is hard-limited to the repository verifier on chain ID
@@ -104,5 +109,7 @@ release storage before treating it as testnet identity.
 - the deposit is not reported synchronized before the first settlement
 - the V2 inner root matches the gateway-reconstructed tree
 - the claim is rejected before delay and succeeds afterward
+- the SDK can recover deposit status and claim data using only public APIs
+- the production Actions indexer/API pair accepts the gateway archive shape
 - bridge native liability falls by the claimed value
 - no Succinct request ID exists in the job records
