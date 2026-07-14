@@ -18,12 +18,17 @@ waits for configurable finality.
   the next contiguous finalized `BridgeDeposit` logs; callers cannot supply
   deposit contents
 - `POST /v1/proofs/withdraw`
+- `GET /v1/bridge/deposits/:nonce` — reports Ethereum finality, the exact
+  bridge-proved outer action, synchronization, and the next user action
+- `GET /v1/bridge/withdrawals?recipient=0x...&after=<index>` — discovers
+  settlement-bound native withdrawals and returns their ordinary Merkle paths
 - `GET /v1/bridge/withdrawals/:sequence/:offset` — returns the ordinary
-  Keccak Merkle proof and claim data for a settlement-bound native withdrawal
+  Keccak Merkle proof, delay/cursor status, and claim data for one withdrawal
 - `GET /v1/proofs` and `GET /v1/proofs/:id`
 - `GET /health`
 
-All `/v1` routes require `x-api-key`. Mutations are idempotent and a Mina
+Proof-job and proof-creation routes require `x-api-key`; bridge discovery and
+withdrawal Merkle proofs are public. Mutations are idempotent and a Mina
 transaction hash cannot be reused for different input. Multiple OCaml commits
 may queue, but only one settlement can be proving or submitted at a time. The
 gateway assigns its Ethereum batch/action context only when it reaches the
@@ -93,6 +98,18 @@ For execute-only validation with no network proof and no Ethereum write:
 API_EXECUTE_ONLY=true docker compose up --build -d
 ```
 
+For a full local contract transition after the same SP1 execution, deploy the
+contracts with `LOCAL_MOCK_VERIFIER=true` and run the gateway with:
+
+```sh
+API_LOCAL_MOCK_SUBMIT=true docker compose up --build -d
+```
+
+This mode submits the preflight public values with an empty proof. Startup
+fails unless every configured verifier is the repository's
+`LocalSP1Verifier` and the chain ID is exactly `31337`. It is mutually
+exclusive with `API_EXECUTE_ONLY` and cannot be used for testnet proving.
+
 Locally:
 
 ```sh
@@ -100,6 +117,12 @@ createdb zeko_proofs
 set -a; source .env.api; set +a
 cargo run --release -p zeko-proof-api
 ```
+
+At startup the gateway derives all three vkeys from its embedded ELFs and
+compares them with the settlement and bridge contracts. A binary built against
+the wrong OCaml settlement VK therefore exits before accepting jobs. Use
+`tools/prepare-poc.sh` to build the gateway and deployment manifest from one
+fixture identity.
 
 `VIRTUAL_MINA_ACCOUNTS_PATH` points to a JSON array of complete Mina GraphQL
 account objects for the outer account and fee payer. Existing rows are not
@@ -113,9 +136,12 @@ state, and exposes those same fields through Mina-compatible `actions` reads.
 For the native bridge PoC, the gateway also indexes canonical bridge deposits
 and settlement V2 inner-action batches. Deposit proof jobs are constructed only
 from contiguous finalized logs beginning at the bridge contract's proven
-nonce. Settlement confirmation stores the ordered inner-action leaves. The
-public withdrawal endpoint returns a depth-16 Keccak proof, so a user can claim
-on Ethereum without generating a Mina or SP1 proof.
+nonce. A confirmed bridge receipt binds each deposit nonce to its exact outer
+action sequence; a later settlement marks only the covered synchronized
+sequences. Settlement confirmation also stores the ordered inner-action leaves.
+The public withdrawal endpoints return depth-16 Keccak proofs and read the live
+virtual slot plus per-recipient cursor, so a user can discover and claim on
+Ethereum without generating a Mina or SP1 proof.
 
 The worker records `cycleCount`, `proverGas`, the network base/max prices,
 actual PROVE deduction after refund, Ethereum gas, confirmations, and explorer

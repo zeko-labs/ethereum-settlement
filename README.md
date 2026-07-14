@@ -408,9 +408,14 @@ To read the current network fee parameters and calculate a maximum-cost bound
 without registering a program or requesting a proof:
 
 ```sh
-cargo run --bin network_quote -- <estimated-pgu>
+cargo run --release --bin network_quote -- --proof-system groth16
+# After SP1 simulation reports a PGU value:
+cargo run --release --bin network_quote -- --proof-system groth16 --pgu <pgu>
 ```
 
-The result is an upper bound (`base fee + estimated PGU × current maximum
-price`). Actual auction cost can be lower. No static PROVE estimate is kept in
-the repository because the market price changes.
+The optional total is an upper bound (`base fee + PGU × current maximum
+price`). Raw executor cycles are not a substitute for network PGU; use the
+value returned by SP1 simulation or a proof request. Actual auction cost can be
+lower. No static PROVE estimate is kept in the repository because the market
+price changes. The command only reads auction parameters and never requests a
+proof.

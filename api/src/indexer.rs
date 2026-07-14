@@ -211,6 +211,30 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     .bind(ancestor)
     .execute(&mut *tx)
     .await?;
+    sqlx::query(
+        "UPDATE gateway_bridge_deposits deposits
+         SET synchronized_settlement_job_id = NULL,
+             synchronized_settlement_sequence = NULL
+         FROM proof_jobs jobs
+         WHERE deposits.synchronized_settlement_job_id = jobs.id
+           AND jobs.submitted_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE gateway_bridge_deposits deposits
+         SET bridge_job_id = NULL, outer_action_sequence = NULL,
+             outer_action_state_after = NULL,
+             synchronized_settlement_job_id = NULL,
+             synchronized_settlement_sequence = NULL
+         FROM proof_jobs jobs
+         WHERE deposits.bridge_job_id = jobs.id
+           AND jobs.submitted_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
     if let Some(retry_id) = retry_settlement {
         sqlx::query(
             "UPDATE proof_jobs
@@ -455,15 +479,6 @@ async fn apply_confirmed_settlement(
     block_hash: &str,
     transaction_hash: &str,
 ) -> Result<()> {
-    if sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM gateway_account_history WHERE job_id = $1)",
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await?
-    {
-        return Ok(());
-    }
     let bytes = hex::decode(
         public_values_hex
             .strip_prefix("0x")
@@ -471,8 +486,33 @@ async fn apply_confirmed_settlement(
     )?;
     let decoded = SettlementPublicValues::decode(&bytes).map_err(anyhow::Error::msg)?;
     let receipt = decoded.settlement();
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "UPDATE gateway_bridge_deposits
+         SET synchronized_settlement_job_id = $1,
+             synchronized_settlement_sequence = $2
+         WHERE NOT removed AND bridge_job_id IS NOT NULL
+           AND outer_action_sequence <= $3
+           AND synchronized_settlement_job_id IS NULL",
+    )
+    .bind(job_id)
+    .bind(i64::try_from(receipt.batch_sequence)?)
+    .bind(i64::from(receipt.synchronized_outer_action_state_length))
+    .execute(&mut *tx)
+    .await?;
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM gateway_account_history WHERE job_id = $1)",
+    )
+    .bind(job_id)
+    .fetch_one(&mut *tx)
+    .await?
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
     let Some(submission) = input.get("submission") else {
         tracing::warn!(%job_id, "confirmed direct settlement has no Mina account metadata");
+        tx.commit().await?;
         return Ok(());
     };
     let outer_public_key = submission
@@ -492,7 +532,6 @@ async fn apply_confirmed_settlement(
         .cloned()
         .context("settlement actions missing")?;
 
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE gateway_config SET outer_public_key = $1, updated_at = NOW()
          WHERE id = TRUE",
@@ -564,15 +603,6 @@ async fn apply_confirmed_bridge(
     block_hash: &str,
     transaction_hash: &str,
 ) -> Result<()> {
-    if sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM gateway_account_history WHERE job_id = $1)",
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await?
-    {
-        return Ok(());
-    }
     let bytes = hex::decode(
         public_values_hex
             .strip_prefix("0x")
@@ -598,6 +628,45 @@ async fn apply_confirmed_bridge(
     );
 
     let mut tx = pool.begin().await?;
+    for (offset, action) in decoded.actions.iter().enumerate() {
+        let nonce = decoded
+            .ethereum_nonce_before
+            .checked_add(u64::try_from(offset)?)
+            .and_then(|value| value.checked_add(1))
+            .context("bridge deposit nonce overflow")?;
+        let sequence = decoded
+            .zeko_action_state_length_before
+            .checked_add(u32::try_from(offset)?)
+            .and_then(|value| value.checked_add(1))
+            .context("bridge action sequence overflow")?;
+        let updated = sqlx::query(
+            "UPDATE gateway_bridge_deposits
+             SET bridge_job_id = $1, outer_action_sequence = $2,
+                 outer_action_state_after = $3
+             WHERE nonce = $4 AND NOT removed
+               AND (bridge_job_id IS NULL OR bridge_job_id = $1)",
+        )
+        .bind(job_id)
+        .bind(i64::from(sequence))
+        .bind(field_decimal(action.state_after))
+        .bind(i64::try_from(nonce)?)
+        .execute(&mut *tx)
+        .await?;
+        anyhow::ensure!(
+            updated.rows_affected() == 1,
+            "confirmed bridge receipt does not map to canonical deposit nonce {nonce}"
+        );
+    }
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM gateway_account_history WHERE job_id = $1)",
+    )
+    .bind(job_id)
+    .fetch_one(&mut *tx)
+    .await?
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
     let outer_public_key = sqlx::query_scalar::<_, Option<String>>(
         "SELECT outer_public_key FROM gateway_config WHERE id = TRUE FOR UPDATE",
     )

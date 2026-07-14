@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
@@ -37,6 +37,7 @@ struct AppState {
     prover_config: prover::NetworkRequestConfig,
     network_explorer_base: Arc<str>,
     execute_only: bool,
+    local_mock_submit: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -69,6 +70,38 @@ struct NativeWithdrawalProof {
     inner_action_root: String,
     commit_slot_upper: u32,
     claimable_slot: u64,
+    current_virtual_slot: u64,
+    recipient_cursor: u32,
+    status: String,
+    next_action: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeDepositStatus {
+    nonce: u64,
+    token: String,
+    sender: String,
+    zeko_recipient: String,
+    ethereum_amount: String,
+    zeko_amount: String,
+    timeout: u64,
+    ethereum_transaction_hash: String,
+    ethereum_finalized: bool,
+    bridge_job_id: Option<Uuid>,
+    bridge_job_status: Option<String>,
+    outer_action_sequence: Option<u32>,
+    outer_action_state_after: Option<String>,
+    synchronized_settlement_sequence: Option<u64>,
+    status: String,
+    next_action: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListWithdrawalsQuery {
+    recipient: Option<String>,
+    after: Option<u64>,
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +171,15 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "groth16".to_owned())
         .into();
     let execute_only = bool_env("API_EXECUTE_ONLY")?;
+    let local_mock_submit = bool_env("API_LOCAL_MOCK_SUBMIT")?;
+    anyhow::ensure!(
+        !(execute_only && local_mock_submit),
+        "API_EXECUTE_ONLY and API_LOCAL_MOCK_SUBMIT are mutually exclusive"
+    );
+    if local_mock_submit {
+        ethereum.ensure_local_mock_verifiers().await?;
+    }
+    validate_program_vkeys(&ethereum).await?;
     let prover_config = prover::NetworkRequestConfig {
         timeout: Duration::from_secs(u64_env("PROVER_TIMEOUT_SECS", 21_600)?),
         min_auction_period: u64_env("PROVER_MIN_AUCTION_PERIOD_SECS", 15)?,
@@ -180,6 +222,7 @@ async fn main() -> Result<()> {
         prover_config,
         network_explorer_base,
         execute_only,
+        local_mock_submit,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
@@ -212,13 +255,31 @@ async fn main() -> Result<()> {
             "/v1/bridge/withdrawals/:sequence/:offset",
             get(get_native_withdrawal_proof),
         )
+        .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
+        .route("/v1/bridge/deposits/:nonce", get(get_native_deposit))
         .merge(protected)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!(%bind, execute_only, "proof API listening");
+    tracing::info!(%bind, execute_only, local_mock_submit, "proof API listening");
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
+    let configured = ethereum.configured_program_vkeys().await?;
+    for (index, kind) in ["settlement", "bridge", "withdraw"].iter().enumerate() {
+        let embedded = prover::program_vkey(kind)
+            .await?
+            .parse::<B256>()
+            .with_context(|| format!("invalid embedded {kind} program vkey"))?;
+        anyhow::ensure!(
+            embedded == configured[index],
+            "embedded {kind} program vkey {embedded} does not match contract {}",
+            configured[index]
+        );
+    }
     Ok(())
 }
 
@@ -520,10 +581,206 @@ async fn get_native_withdrawal_proof(
     }
 }
 
+async fn get_native_deposit(State(state): State<AppState>, Path(nonce): Path<u64>) -> Response {
+    let row = sqlx::query(
+        "SELECT deposits.nonce, deposits.token, deposits.sender,
+                deposits.zeko_recipient,
+                deposits.ethereum_amount::text AS ethereum_amount,
+                deposits.zeko_amount::text AS zeko_amount, deposits.timeout,
+                deposits.ethereum_tx_hash, blocks.finalized,
+                deposits.bridge_job_id, bridge_jobs.status::text AS bridge_job_status,
+                deposits.outer_action_sequence, deposits.outer_action_state_after,
+                deposits.synchronized_settlement_sequence
+         FROM gateway_bridge_deposits deposits
+         JOIN gateway_blocks blocks
+           ON blocks.block_number = deposits.ethereum_block_number
+          AND blocks.block_hash = deposits.ethereum_block_hash
+         LEFT JOIN proof_jobs bridge_jobs ON bridge_jobs.id = deposits.bridge_job_id
+         WHERE deposits.nonce = $1 AND NOT deposits.removed AND blocks.canonical",
+    )
+    .bind(match i64::try_from(nonce) {
+        Ok(nonce) => nonce,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "deposit nonce is too large"),
+    })
+    .fetch_optional(&state.pool)
+    .await;
+    match row {
+        Ok(Some(row)) => match native_deposit_from_row(row) {
+            Ok(deposit) => Json(deposit).into_response(),
+            Err(error) => {
+                tracing::error!(%error, nonce, "decode indexed bridge deposit");
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid indexed deposit")
+            }
+        },
+        Ok(None) => api_error(StatusCode::NOT_FOUND, "canonical deposit not found"),
+        Err(error) => {
+            tracing::error!(%error, nonce, "read indexed bridge deposit");
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, "could not read deposit")
+        }
+    }
+}
+
+fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositStatus> {
+    let finalized: bool = row.try_get("finalized")?;
+    let bridge_job_id: Option<Uuid> = row.try_get("bridge_job_id")?;
+    let synchronized_settlement_sequence = row
+        .try_get::<Option<i64>, _>("synchronized_settlement_sequence")?
+        .map(u64::try_from)
+        .transpose()?;
+    let (status, next_action) = native_deposit_progress(
+        finalized,
+        bridge_job_id.is_some(),
+        synchronized_settlement_sequence.is_some(),
+    );
+    Ok(NativeDepositStatus {
+        nonce: u64::try_from(row.try_get::<i64, _>("nonce")?)?,
+        token: row.try_get("token")?,
+        sender: row.try_get("sender")?,
+        zeko_recipient: row.try_get("zeko_recipient")?,
+        ethereum_amount: row.try_get("ethereum_amount")?,
+        zeko_amount: row.try_get("zeko_amount")?,
+        timeout: u64::try_from(row.try_get::<i64, _>("timeout")?)?,
+        ethereum_transaction_hash: row.try_get("ethereum_tx_hash")?,
+        ethereum_finalized: finalized,
+        bridge_job_id,
+        bridge_job_status: row.try_get("bridge_job_status")?,
+        outer_action_sequence: row
+            .try_get::<Option<i64>, _>("outer_action_sequence")?
+            .map(u32::try_from)
+            .transpose()?,
+        outer_action_state_after: row.try_get("outer_action_state_after")?,
+        synchronized_settlement_sequence,
+        status: status.to_owned(),
+        next_action: next_action.to_owned(),
+    })
+}
+
+fn native_deposit_progress(
+    finalized: bool,
+    bridge_proven: bool,
+    synchronized: bool,
+) -> (&'static str, &'static str) {
+    if !finalized {
+        ("confirming", "waitForEthereumFinality")
+    } else if !bridge_proven {
+        ("locked", "requestBridgeProof")
+    } else if !synchronized {
+        ("bridgeProven", "waitForSettlementSynchronization")
+    } else {
+        ("synchronized", "finalizeDepositOnZeko")
+    }
+}
+
+async fn list_native_withdrawals(
+    State(state): State<AppState>,
+    Query(query): Query<ListWithdrawalsQuery>,
+) -> Response {
+    let recipient = match query.recipient {
+        Some(recipient) => match recipient.parse::<Address>() {
+            Ok(recipient) => Some(recipient.to_string()),
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "recipient must be a 20-byte Ethereum address",
+                )
+            }
+        },
+        None => None,
+    };
+    let after = match query.after.map(i64::try_from).transpose() {
+        Ok(after) => after,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
+    };
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let rows = sqlx::query(
+        "SELECT settlement_sequence, action_offset
+         FROM gateway_inner_action_leaves
+         WHERE recipient IS NOT NULL AND NOT removed
+           AND ($1::text IS NULL OR lower(recipient) = lower($1))
+           AND ($2::bigint IS NULL OR global_action_index > $2)
+         ORDER BY global_action_index
+         LIMIT $3",
+    )
+    .bind(recipient)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "list native withdrawals");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not list withdrawals",
+            );
+        }
+    };
+    let current_slot = match state.ethereum.current_virtual_slot().await {
+        Ok(slot) => slot,
+        Err(error) => {
+            tracing::error!(%error, "read current virtual slot");
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                "could not read settlement virtual slot",
+            );
+        }
+    };
+    let delay = match state.ethereum.withdrawal_delay_slots().await {
+        Ok(delay) => delay,
+        Err(error) => {
+            tracing::error!(%error, "read withdrawal delay");
+            return api_error(StatusCode::BAD_GATEWAY, "could not read withdrawal delay");
+        }
+    };
+    let mut withdrawals = Vec::with_capacity(rows.len());
+    for row in rows {
+        let location = (|| -> Result<(u64, u32)> {
+            Ok((
+                u64::try_from(row.try_get::<i64, _>("settlement_sequence")?)?,
+                u32::try_from(row.try_get::<i32, _>("action_offset")?)?,
+            ))
+        })();
+        let (sequence, offset) = match location {
+            Ok(location) => location,
+            Err(error) => {
+                tracing::error!(%error, "decode indexed withdrawal location");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid indexed withdrawal location",
+                );
+            }
+        };
+        match load_native_withdrawal_proof_at(&state, sequence, offset, current_slot, delay).await {
+            Ok(proof) => withdrawals.push(proof),
+            Err(error) => {
+                tracing::error!(%error, sequence, offset, "build native withdrawal proof");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not build withdrawal proof",
+                );
+            }
+        }
+    }
+    Json(withdrawals).into_response()
+}
+
 async fn load_native_withdrawal_proof(
     state: &AppState,
     sequence: u64,
     offset: u32,
+) -> Result<NativeWithdrawalProof> {
+    let current_slot = state.ethereum.current_virtual_slot().await?;
+    let delay = state.ethereum.withdrawal_delay_slots().await?;
+    load_native_withdrawal_proof_at(state, sequence, offset, current_slot, delay).await
+}
+
+async fn load_native_withdrawal_proof_at(
+    state: &AppState,
+    sequence: u64,
+    offset: u32,
+    current_slot: u64,
+    delay: u32,
 ) -> Result<NativeWithdrawalProof> {
     let rows = sqlx::query(
         "SELECT action_offset, global_action_index, action_fields_hash, leaf,
@@ -565,20 +822,53 @@ async fn load_native_withdrawal_proof(
         .map(|hash| format!("0x{}", hex::encode(hash)))
         .collect();
     let commit_slot_upper = u32::try_from(target.try_get::<i64, _>("commit_slot_upper")?)?;
-    let delay = state.ethereum.withdrawal_delay_slots().await?;
+    let global_action_index = u32::try_from(target.try_get::<i64, _>("global_action_index")?)?;
+    let recipient_address = recipient
+        .parse::<Address>()
+        .context("indexed withdrawal recipient is invalid")?;
+    let recipient_cursor = state
+        .ethereum
+        .next_withdrawal_index(recipient_address)
+        .await?;
+    let claimable_slot = u64::from(commit_slot_upper) + u64::from(delay);
+    let (status, next_action) = native_withdrawal_progress(
+        global_action_index,
+        recipient_cursor,
+        current_slot,
+        claimable_slot,
+    );
 
     Ok(NativeWithdrawalProof {
         settlement_sequence: sequence,
         offset,
-        global_action_index: u32::try_from(target.try_get::<i64, _>("global_action_index")?)?,
+        global_action_index,
         recipient,
         amount,
         action_fields_hash: target.try_get("action_fields_hash")?,
         siblings,
         inner_action_root: target.try_get("inner_action_root")?,
         commit_slot_upper,
-        claimable_slot: u64::from(commit_slot_upper) + u64::from(delay),
+        claimable_slot,
+        current_virtual_slot: current_slot,
+        recipient_cursor,
+        status: status.to_owned(),
+        next_action: next_action.to_owned(),
     })
+}
+
+fn native_withdrawal_progress(
+    global_action_index: u32,
+    recipient_cursor: u32,
+    current_slot: u64,
+    claimable_slot: u64,
+) -> (&'static str, &'static str) {
+    if global_action_index < recipient_cursor {
+        ("processed", "none")
+    } else if current_slot < claimable_slot {
+        ("waitingForDelay", "waitForWithdrawalDelay")
+    } else {
+        ("claimable", "claimNativeWithdrawal")
+    }
 }
 
 fn inner_action_merkle_proof(leaves: &[[u8; 32]], target: usize) -> [[u8; 32]; 16] {
@@ -856,20 +1146,33 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         }
         let preflight = prover::preflight(&job.kind, &job.input).await?;
         validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+        let cycle_count = i64::try_from(preflight.cycles())
+            .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
+        let result = sqlx::query(
+            "UPDATE proof_jobs SET public_values = $2, cycle_count = $3,
+                    updated_at = NOW()
+             WHERE id = $1 AND status = 'validating'",
+        )
+        .bind(job.id)
+        .bind(format!("0x{}", hex::encode(preflight.public_values())))
+        .bind(cycle_count)
+        .execute(&state.pool)
+        .await?;
+        anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
         if state.execute_only {
-            let cycle_count = i64::try_from(preflight.cycles())
-                .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
             let result = sqlx::query(
-                "UPDATE proof_jobs SET status = 'executed', public_values = $2,
-                        cycle_count = $3, completed_at = NOW(), updated_at = NOW()
+                "UPDATE proof_jobs SET status = 'executed',
+                        completed_at = NOW(), updated_at = NOW()
                  WHERE id = $1 AND status = 'validating'",
             )
             .bind(job.id)
-            .bind(format!("0x{}", hex::encode(preflight.public_values())))
-            .bind(cycle_count)
             .execute(&state.pool)
             .await?;
             anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
+            return Result::<()>::Ok(());
+        }
+        if state.local_mock_submit {
+            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
             return Result::<()>::Ok(());
         }
 
@@ -978,6 +1281,53 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             .execute(&state.pool)
             .await;
     }
+}
+
+async fn submit_local_mock(
+    state: &AppState,
+    job_id: Uuid,
+    kind: &str,
+    preflight: &prover::Preflight,
+) -> Result<()> {
+    set_status(&state.pool, job_id, "submitting").await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let still_submitting =
+        sqlx::query_scalar::<_, bool>("SELECT status = 'submitting' FROM proof_jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    anyhow::ensure!(
+        still_submitting,
+        "proof job was cancelled before submission"
+    );
+
+    let transaction_hash = state
+        .ethereum
+        .submit(kind, preflight.public_values().to_vec(), Vec::new())
+        .await?;
+    let cycle_count = i64::try_from(preflight.cycles())
+        .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
+    let result = sqlx::query(
+        "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
+                transaction_hash = $3, cycle_count = $4, confirmations = 0,
+                updated_at = NOW()
+         WHERE id = $1 AND status = 'submitting'",
+    )
+    .bind(job_id)
+    .bind(format!("0x{}", hex::encode(preflight.public_values())))
+    .bind(transaction_hash.to_string())
+    .bind(cycle_count)
+    .execute(&mut *tx)
+    .await?;
+    anyhow::ensure!(
+        result.rows_affected() == 1,
+        "proof job was cancelled after local submission"
+    );
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn hydrate_queued_settlement(state: &AppState, input: &mut Value) -> Result<()> {
@@ -1354,5 +1704,41 @@ mod tests {
             }
             assert_eq!(computed, nodes[0]);
         }
+    }
+
+    #[test]
+    fn deposit_progress_requires_finality_proof_and_synchronization() {
+        assert_eq!(
+            native_deposit_progress(false, false, false),
+            ("confirming", "waitForEthereumFinality")
+        );
+        assert_eq!(
+            native_deposit_progress(true, false, false),
+            ("locked", "requestBridgeProof")
+        );
+        assert_eq!(
+            native_deposit_progress(true, true, false),
+            ("bridgeProven", "waitForSettlementSynchronization")
+        );
+        assert_eq!(
+            native_deposit_progress(true, true, true),
+            ("synchronized", "finalizeDepositOnZeko")
+        );
+    }
+
+    #[test]
+    fn withdrawal_progress_observes_recipient_cursor_before_delay() {
+        assert_eq!(
+            native_withdrawal_progress(9, 10, 100, 90),
+            ("processed", "none")
+        );
+        assert_eq!(
+            native_withdrawal_progress(10, 10, 89, 90),
+            ("waitingForDelay", "waitForWithdrawalDelay")
+        );
+        assert_eq!(
+            native_withdrawal_progress(10, 10, 90, 90),
+            ("claimable", "claimNativeWithdrawal")
+        );
     }
 }

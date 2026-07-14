@@ -6,6 +6,7 @@
 
 # Profile-guided optimization
 /tmp
+/build
 pgo-data.profdata
 logs/
 

@@ -23,8 +23,9 @@ companion `~/zeko` tree:
   and rejects unsupported lookup features and mutated deferred/accumulator data;
 - OCaml exports the real wrap proof/VK, full statement skeleton, two-field zkApp
   statement, account-update body input, actions and source outer state;
-- the settlement guest derives a versioned 768-byte outer-commit receipt from
-  proof-bound data instead of accepting a host-provided next state;
+- the settlement guest derives versioned proof-bound outer-commit receipts
+  (768-byte V1 and 828-byte bridge-aware V2) instead of accepting a
+  host-provided next state;
 - Solidity tracks all eight outer-state fields, action state/length, batch
   sequence, accepted inner action states and the virtual Mina slot clock;
 - the gateway exposes the Mina GraphQL subset used by the sequencer, owns local
@@ -33,12 +34,15 @@ companion `~/zeko` tree:
 - the Ethereum indexer maintains the virtual Mina account/pool/action views and
   rolls them back on reorg while retaining the paid SP1 proof request.
 
-Deployment and acceptance steps are in `TESTNET_POC.md`. Remaining items for an
-actual testnet launch are operational: build the ELF with a real OCaml Zeko VK,
-generate the first real commit fixture, deploy/configure contracts and gateway,
-and run the listed end-to-end acceptance tests. Native ETH bridging now has a
-local contract/glue E2E checkpoint; cancellation, ERC20 bridging, proof fees,
-real bridge proof fixtures, and blob DA remain outside this milestone.
+Deployment and acceptance steps are in `TESTNET_POC.md`. A real three-commit
+OCaml sequence now exports from the real sequencer prover and its first commit
+has passed SP1 execute plus an Anvil settlement transition. Remaining items for
+an actual testnet launch are operational: retain a stable testnet genesis
+fixture, obtain an explicitly approved network proof, deploy/configure the
+contracts and gateway, and run the listed multi-commit acceptance tests. Native
+ETH bridging has a local contract/glue E2E checkpoint; cancellation, ERC20
+bridging, proof fees, live bridge proof fixtures, and blob DA remain outside
+this milestone.
 
 ## Current PoC Boundary
 
@@ -57,11 +61,11 @@ The current repository has useful PoC pieces:
 - `contracts/src/EthereumZekoBridge.sol` has real ETH/ERC20 custody,
   deposit-state, withdrawal-state, nullifier, and claim accounting.
 
-It should still be treated as a PoC. The settlement contract now represents all
+It should still be treated as a PoC. The settlement contract represents all
 eight fields of Zeko's normal multisig outer state and its action-state length,
-but that path still needs its first real OCaml-produced end-to-end fixture. The
-native bridge implements the deliberately reduced no-cancellation PoC path
-described below, but not the full bridge protocol in the OCaml design docs.
+and that path has a real OCaml-produced local checkpoint. The native bridge
+implements the deliberately reduced no-cancellation PoC path described below,
+but not the full bridge protocol in the OCaml design docs.
 
 ## Settlement Binding
 
@@ -95,8 +99,10 @@ belongs inside the proof system, not in hand-written Solidity parsing.
   - account-set/hash fields if they are needed by bridge safety checks
 - Implemented: a shared schema version and byte-length check so the SP1 guest
   and Solidity decoder cannot silently drift.
-- Remaining: generate a genuine OCaml commit fixture and assert its exact L1
-  transition in the Solidity suite.
+- Implemented locally: generate a genuine three-commit OCaml sequence and
+  assert the first exact proof-bound transition against an Anvil deployment.
+- Remaining: retain a deterministic testnet-genesis fixture and add the genuine
+  sequence to a repeatable CI tier on a runner sized for the SP1 execute cost.
 
 It is acceptable that this is not fully implemented yet, because the original
 scope appears to have been a PoC. It must be implemented before this can be
@@ -152,8 +158,11 @@ Hardening status:
   evaluations and require verification failure.
 - The guest derives the full V1 outer-state receipt from the proof-bound body
   and action rather than accepting a host-provided next state.
-- Remaining: regenerate fixtures from the OCaml Zeko state-transition prover,
-  not only the o1 example fixtures.
+- Implemented locally: `tools/export-sequential-ocaml-fixtures.sh` runs the real
+  sequencer prover with three multisig DA nodes, exports a proof-bound
+  three-commit state chain, and verifies one common VK and bridge address.
+- Remaining: retain stable release fixtures instead of relying only on
+  generated local artifacts.
 
 ## Data Availability With Ethereum Blobs
 
@@ -383,8 +392,9 @@ Current settlement verification status:
   -p zeko-proof-api` passes.
 - `cargo test --offline -p pickles-verifier` passes: 22 native tests, including
   full verification over the copied o1 fixture matrix and mutation failures.
-- SP1 `zkapp --execute` passes through the low-memory direct executor at
-  52,153,051,519 cycles. This is execute-only; local proving remains disabled.
+- A real generated OCaml commit passes through the low-memory direct executor
+  at 52,188,766,765 cycles and advances the marked local settlement contract.
+  This is execute-only; local proving remains disabled.
 - The old static RKYV SRS blobs are gone. The o1 verifier blob is produced at
   build time from the wrap VK and proof-systems SRS data.
 - The guest checks the Pickles Vesta accumulator, reconstructs deferred values,
@@ -396,9 +406,9 @@ Current settlement verification status:
 
 Known limitations:
 
-- The copied o1 fixture uses the compatibility receipt and does not contain a
-  real Zeko outer commit. The V1 derivation is covered by native binding tests,
-  but still needs its first OCaml-produced end-to-end fixture.
+- The default copied o1 fixture still uses the compatibility receipt. Real Zeko
+  outer commits are generated by the separate OCaml export path and are not yet
+  checked in as stable release fixtures.
 - The SP1 compatibility patches live in local vendored forks. They need to be
   turned into a real upstreamable `zkvm`/SP1 feature profile.
 
@@ -457,7 +467,9 @@ not part of this verification target.
 5. **Outer state done; blobs pending:** `ZekoSettlement` tracks the real Zeko
    outer state needed by bridge consumers. Add attached blob-hash checks for
    the production DA phase.
-6. Regenerate settlement fixtures from the OCaml Zeko commit prover.
+6. **Done locally; release fixture pending:** regenerate a proof-bound
+   three-commit sequence from the OCaml Zeko commit prover and replay its first
+   commit through SP1 execute and Anvil settlement.
 7. **Done for the native PoC:** derive deposit proof inputs from finalized
    Ethereum logs and bind exact outer actions to settlement checkpoints.
 8. **Cut from the native PoC:** cancelled deposits and caller-selected timeouts;

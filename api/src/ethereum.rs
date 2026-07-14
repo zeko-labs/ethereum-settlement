@@ -14,6 +14,7 @@ use std::str::FromStr;
 sol! {
     #[sol(rpc)]
     interface IZekoSettlement {
+        function verifier() external view returns (address);
         function programVKey() external view returns (bytes32);
         function vkHash() external view returns (bytes32);
         function actionState() external view returns (bytes32);
@@ -21,12 +22,15 @@ sol! {
         function outerState() external view returns (bytes32[8]);
         function outerActionStateLength() external view returns (uint32);
         function batchSequence() external view returns (uint64);
+        function currentVirtualSlot() external view returns (uint64);
         function l2ActionStateInfo(bytes32 actionState) external view returns (uint64 index, bool valid);
         function verifyAndUpdateRoot(bytes publicValues, bytes proofBytes) external;
     }
 
     #[sol(rpc)]
     interface IEthereumZekoBridge {
+        function bridgeVerifier() external view returns (address);
+        function withdrawVerifier() external view returns (address);
         function bridgeProgramVKey() external view returns (bytes32);
         function withdrawProgramVKey() external view returns (bytes32);
         function depositNonce() external view returns (uint64);
@@ -35,6 +39,7 @@ sol! {
         function currentWithdrawActionStateIndex() external view returns (uint64);
         function bridgedDepositNonce() external view returns (uint64);
         function withdrawalDelaySlots() external view returns (uint32);
+        function nextWithdrawalIndex(address recipient) external view returns (uint32);
         function processedActionState(bytes32 actionState) external view returns (bool);
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
@@ -47,11 +52,16 @@ sol! {
             bytes32 oldDepositState,
             address token,
             address sender,
-            bytes32 zekoRecipient,
+            uint256 zekoRecipient,
             uint256 amount,
             uint256 zekoAmount,
             uint64 timeout
         );
+    }
+
+    #[sol(rpc)]
+    interface ILocalSP1Verifier {
+        function isLocalSP1Verifier() external view returns (bool);
     }
 }
 
@@ -151,6 +161,47 @@ impl Ethereum {
             .connect_http(self.rpc_url.parse()?)
             .get_chain_id()
             .await?)
+    }
+
+    pub async fn ensure_local_mock_verifiers(&self) -> Result<()> {
+        let chain_id = self.chain_id().await?;
+        anyhow::ensure!(
+            chain_id == 31_337,
+            "API_LOCAL_MOCK_SUBMIT is restricted to chain ID 31337"
+        );
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let settlement_verifier = IZekoSettlement::new(self.settlement_address, &provider)
+            .verifier()
+            .call()
+            .await?;
+        let bridge = IEthereumZekoBridge::new(self.bridge_address, &provider);
+        let bridge_verifier = bridge.bridgeVerifier().call().await?;
+        let withdraw_verifier = bridge.withdrawVerifier().call().await?;
+        anyhow::ensure!(
+            settlement_verifier == bridge_verifier && settlement_verifier == withdraw_verifier,
+            "local settlement, bridge, and withdrawal verifiers must be identical"
+        );
+        let is_local = ILocalSP1Verifier::new(settlement_verifier, provider)
+            .isLocalSP1Verifier()
+            .call()
+            .await
+            .context("configured verifier is not LocalSP1Verifier")?;
+        anyhow::ensure!(is_local, "configured verifier is not LocalSP1Verifier");
+        Ok(())
+    }
+
+    pub async fn configured_program_vkeys(&self) -> Result<[B256; 3]> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let settlement = IZekoSettlement::new(self.settlement_address, &provider)
+            .programVKey()
+            .call()
+            .await?;
+        let bridge = IEthereumZekoBridge::new(self.bridge_address, provider);
+        Ok([
+            settlement,
+            bridge.bridgeProgramVKey().call().await?,
+            bridge.withdrawProgramVKey().call().await?,
+        ])
     }
 
     pub fn settlement_address(&self) -> Address {
@@ -283,7 +334,7 @@ impl Ethereum {
                     old_deposit_state: data.oldDepositState,
                     token: data.token,
                     sender: data.sender,
-                    zeko_recipient: data.zekoRecipient,
+                    zeko_recipient: B256::from(data.zekoRecipient.to_be_bytes()),
                     amount: data.amount,
                     zeko_amount: data.zekoAmount,
                     timeout: data.timeout,
@@ -308,6 +359,22 @@ impl Ethereum {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
             .withdrawalDelaySlots()
+            .call()
+            .await?)
+    }
+
+    pub async fn current_virtual_slot(&self) -> Result<u64> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(IZekoSettlement::new(self.settlement_address, provider)
+            .currentVirtualSlot()
+            .call()
+            .await?)
+    }
+
+    pub async fn next_withdrawal_index(&self, recipient: Address) -> Result<u32> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
+            .nextWithdrawalIndex(recipient)
             .call()
             .await?)
     }
@@ -388,5 +455,20 @@ impl Ethereum {
             _ => unreachable!(),
         };
         Ok(transaction_hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bridge_deposit_signature_uses_the_solidity_value_type_abi() {
+        assert_eq!(
+            IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH,
+            alloy::primitives::keccak256(
+                "BridgeDeposit(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint256,uint256,uint64)"
+            )
+        );
     }
 }

@@ -37,8 +37,9 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 
 ## Build and deploy order
 
-1. Reserve the final bridge proxy address, preferably with deterministic
-   deployment. Configure the OCaml circuit's `ethereum_holder_account_l1` as
+1. Reserve the final bridge proxy address with `tools/prepare-poc.sh`. The
+   CREATE2 factory deploys and initializes each proxy atomically. Configure the
+   OCaml circuit's `ethereum_holder_account_l1` as
    the compressed key `(x = uint160(proxy), is_odd = false)`. This address is
    proof-bound; changing it requires rebuilding the OCaml bridge VK and SP1
    programs.
@@ -84,6 +85,17 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 - Native bridge: final bridge proxy address in the OCaml circuit config,
   `BRIDGE_CONTRACT_ADDRESS`, `BRIDGE_PRIVATE_KEY`, and
   `VIRTUAL_MINA_OUTER_PUBLIC_KEY`.
+
+The generated `build/poc/manifest.json` is the canonical public identity for a
+run: chain ID, deterministic contract addresses, all three SP1 vkeys, the PoC
+Pickles VK hash, and the exact 160-bit holder value compiled by OCaml. Review it
+before deployment and retain a copy with the testnet run artifacts.
+
+`tools/prepare-poc.sh` also builds the gateway with the selected fixture VK.
+Gateway startup recomputes all embedded program vkeys and refuses to run if any
+differ from the live contracts. Preparation derives `FORK_SLOT` from the
+fixture's proof-bound lower slot so the deployment and gateway cannot silently
+start at slot zero for a nonzero commit range.
 
 ## Acceptance tests
 
@@ -148,6 +160,46 @@ This path verifies the real Pickles proof inside SP1 and validates the emitted
 public values against live contract state. It does not generate an SP1 proof
 or send an Ethereum settlement transaction.
 
+To advance the local contracts without proving, deploy with
+`LOCAL_MOCK_VERIFIER=true` and replace `API_EXECUTE_ONLY=true` with
+`API_LOCAL_MOCK_SUBMIT=true`. The gateway still executes and validates the
+guest first, then submits its public values with an empty proof to the marked
+local verifier. This mode is hard-limited to chain ID 31337 and is the local
+path for testing consecutive commits and bridge synchronization.
+`DeployPoc` holds the local mock deployment at `FORK_SLOT` for one day by
+default so a long Pickles preflight cannot age past the proof's slot range;
+set `GENESIS_TIMESTAMP` explicitly to override that test-only clock. The E2E
+runner mines only after Ethereum submission, never while SP1 is executing.
+
+With Anvil, the deterministic contracts, and the `zeko-poc-postgres` container
+running, the canonical native-deposit portion is automated by:
+
+```sh
+tools/run-local-deposit-e2e.sh
+```
+
+It creates an isolated database, locks 1 ETH, waits for the indexed finalized
+log, executes the bridge guest, submits only to `LocalSP1Verifier`, waits for
+the transaction to confirm, and checks the proof-bound outer action. It never
+requests or generates an SP1 proof.
+
+Generate genuine consecutive OCaml commits with the real sequencer prover and
+three-node multisig DA stack by running:
+
+```sh
+tools/export-sequential-ocaml-fixtures.sh
+```
+
+The sequencer writes each fully signed gateway submission before sending it to
+the testing L1. The wrapper requires at least three exports, checks that every
+next `stateBefore` equals the prior proof-bound update, and materializes each
+sequence as a fixture directory under `build/poc/sequential-fixtures`. It also
+requires one common VK and the deterministic bridge address, and stops the OCaml
+test executable after its bounded three-commit scenario. These can be replayed
+in order through `tools/run-local-settlement-e2e.sh` after the first fixture is
+used to prepare and initialize a fresh deployment. The runner configures the
+outer account and a distinct fee-payer account when the fixture uses both.
+
 The 2026-07-13 local checkpoint completed with status `executed` using SP1
 program vkey
 `0x00160d9427406e3a01391a3887aa481b067a5398f3f003ef52ea10b7d040a602`.
@@ -155,6 +207,19 @@ It emitted 768 bytes of public values in 52,200,737,822 cycles, while the
 gateway process peaked at roughly 242 MiB RSS. The local settlement contract's
 batch sequence remained zero, confirming that execute-only mode made no
 Ethereum state change.
+
+The 2026-07-14 generated-sequence checkpoint used multisig DA quorum 2 of 3 and
+verification-key SHA-256
+`0x2a5c1cb5b3e2d16b213a638d63e77c03c7d82bca8f61acc9a0335c3a7f16ddb8`.
+Its settlement program vkey was
+`0x00c060a53019c46e433aa8da7add97853e0830e30d0e1eba4eefcbba535e418d`.
+Sequence 0 executed in 52,188,766,765 cycles and emitted an 828-byte V2 receipt.
+The gateway submitted that receipt with an empty proof only to the marked Anvil
+verifier; transaction
+`0x698ab5d004a7a04643f044eeb4950adf4732ae75d56a6df3336706613f3bc88a`
+succeeded with 295,773 gas. Batch sequence advanced from 0 to 1, action-state
+length advanced to 1, and all eight stored outer-state fields matched the
+proof-bound account update. No SP1 proof was generated.
 
 ## Local native-bridge checkpoint
 
@@ -178,3 +243,41 @@ comes from the Rust guest tests and `ethereum_bridge_vectors.exe`, which asserts
 the same native-deposit Poseidon aux values in OCaml. A fully live testnet still
 needs freshly generated OCaml deposit/withdraw/commit fixtures built for the
 chosen bridge address and real deployed SP1 vkeys.
+
+## Native bridge user flow
+
+The no-cancellation native PoC has three network proof boundaries but neither
+user-side proving nor an automatic relayer:
+
+1. A user calls `depositNative` and waits for Ethereum finality. The public
+   `GET /v1/bridge/deposits/:nonce` endpoint reports `requestBridgeProof`.
+2. An operator manually calls `POST /v1/bridge/deposits/prove`. The bridge SP1
+   proof appends exact outer Witness actions. The following real OCaml commit
+   synchronizes them; the deposit endpoint then reports
+   `finalizeDepositOnZeko`.
+3. The user asks the Zeko bridge prover API for `finalizeDeposit`, signs the
+   helper-account update whose commitment includes the final action state, and
+   submits it to the sequencer. The gateway does not forge this signature.
+4. The user similarly requests, signs, and submits the L2 withdrawal
+   transaction. A later genuine OCaml settlement binds its inner Witness action
+   into the V2 Keccak root.
+5. `GET /v1/bridge/withdrawals?recipient=0x...` returns the fixed-depth Merkle
+   path plus live delay/cursor status. Once it reports `claimable`, the user
+   calls `claimNativeWithdrawal`; no Mina proof or SP1 wrap is required.
+
+Run every genuine fixture through `API_EXECUTE_ONLY=true` first. Only after all
+three jobs execute and their public values match the live Anvil state should a
+Succinct Network quote be requested. Network proof creation remains a separate
+paid approval step.
+
+Current auction parameters can be read without creating a proof request:
+
+```sh
+cargo run --release --bin network_quote -- --proof-system groth16
+# Once a preflight or network simulation has supplied PGUs:
+cargo run --release --bin network_quote -- --proof-system groth16 --pgu <pgu>
+```
+
+The quote reports the base fee, maximum price per PGU, and optional maximum
+charge in PROVE. It is read-only; the paid boundary remains the gateway's
+network proof request.
