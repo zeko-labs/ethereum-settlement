@@ -27,7 +27,7 @@ API_BIN=${API_BIN:-$ROOT/target/release/zeko-proof-api}
 ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 
-for command in bc curl docker jq date; do
+for command in bc curl docker jq date pgrep; do
   command -v "$command" >/dev/null || {
     echo "Missing command: $command" >&2
     exit 1
@@ -60,21 +60,17 @@ done
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
-  if [[ -n ${API_PID:-} ]]; then
-    kill "$API_PID" 2>/dev/null || true
-    wait "$API_PID" 2>/dev/null || true
-  fi
-  if [[ -n ${ANVIL_PID:-} ]]; then
-    kill "$ANVIL_PID" 2>/dev/null || true
-    wait "$ANVIL_PID" 2>/dev/null || true
-  fi
   if [[ -n ${ACTIONS_INDEXER_PID:-} ]]; then
-    kill "$ACTIONS_INDEXER_PID" 2>/dev/null || true
-    wait "$ACTIONS_INDEXER_PID" 2>/dev/null || true
+    terminate_tree "$ACTIONS_INDEXER_PID"
   fi
   if [[ -n ${ACTIONS_API_PID:-} ]]; then
-    kill "$ACTIONS_API_PID" 2>/dev/null || true
-    wait "$ACTIONS_API_PID" 2>/dev/null || true
+    terminate_tree "$ACTIONS_API_PID"
+  fi
+  if [[ -n ${API_PID:-} ]]; then
+    terminate_tree "$API_PID"
+  fi
+  if [[ -n ${ANVIL_PID:-} ]]; then
+    terminate_tree "$ANVIL_PID"
   fi
   docker rm -f "$POSTGRES_CONTAINER" >/dev/null 2>&1 || true
   rm -f "${ACCOUNT_FILE:-}"
@@ -88,6 +84,20 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT INT TERM
+
+terminate_tree() {
+  local pid=$1 child
+  while read -r child; do
+    [[ -n $child ]] && terminate_tree "$child"
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 if curl -fsS "$RPC_URL" >/dev/null 2>&1; then
   echo "RPC port $RPC_PORT is already in use" >&2
