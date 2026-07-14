@@ -1,144 +1,120 @@
-# Deposit Bridge
+# Native deposits
 
-The deposit bridge proves that an ordered range of Ethereum deposits produces
-the expected Zeko deposit actions.
+The PoC bridge accepts native ETH, converts finalized deposit logs into exact
+Zeko outer Witness actions, and waits for a later real Zeko commit to
+synchronize those actions. A bridge proof by itself does **not** finalize an L2
+deposit.
 
-## Deposits on Ethereum
+## Fixed bridge identity
 
-Users call `deposit` for ERC20 tokens or `depositETH` for native ETH on
-`EthereumZekoBridge.sol`.
+The Ethereum bridge proxy is represented inside the OCaml circuit as the
+synthetic compressed key:
 
-For each deposit, the contract:
+```text
+x = uint160(EthereumZekoBridge proxy)
+is_odd = false
+```
 
-1. Checks that the token is allowed and the amount is non-zero.
-2. Locks the funds and rejects fee-on-transfer ERC20 tokens.
-3. Normalizes the Ethereum amount to the configured Zeko decimals.
-4. Increments `depositNonce`.
-5. Computes a deposit leaf.
-6. Appends the leaf to `currentDepositState`.
-7. Stores the checkpoint in `depositStateByNonce`.
+That address is proof identity. Reserve the final CREATE2 proxy address before
+building the OCaml bridge verification key and settlement guest. Changing the
+proxy later requires rebuilding the OCaml circuit artifacts and SP1 programs.
 
-Packed Zeko addresses contain a Pasta Fp x-coordinate in the lower 255 bits and
-the public-key parity flag in the highest bit.
+## User deposit
 
-## Proof input
+The user calls the canonical `depositETH(zekoRecipient)` overload. The bridge:
 
-`BridgeTransitionInput` contains:
+- requires a nonzero value with 1 gwei granularity
+- normalizes 18-decimal wei to Zeko's 9-decimal native unit
+- fixes timeout and upper slot to `UInt32.max`
+- appends a chain- and bridge-bound Keccak leaf to the deposit accumulator
+- increments `depositNonce` and native escrow liability
+- emits `BridgeDeposit`
 
-| Field | Meaning |
-| --- | --- |
-| `ethereum.chain_id` | Chain ID included in every deposit leaf. |
-| `ethereum.bridge_address` | Bridge address included in leaves and used as `holderAccountL1`. |
-| `ethereum.deposit_nonce` | Nonce immediately before the batch. |
-| `ethereum.deposit_state` | Deposit accumulator immediately before the batch. |
-| `zeko.action_state` | Zeko action state immediately before the batch. |
-| `deposits[]` | Ordered deposits to replay. |
+The overloads with a caller-selected timeout and the ERC20 path are disabled
+unless an administrator explicitly enables the legacy compatibility switch.
+They are not part of this PoC.
 
-Each deposit entry contains:
+## Canonical proof input
 
-| Field | Meaning |
-| --- | --- |
-| `token` | Ethereum token address (zero = native ETH). |
-| `amount` | Original Ethereum amount (informational, not hashed by the guest). |
-| `zeko_amount` | Amount expressed in Zeko decimals. This is what gets hashed. |
-| `zeko_recipient` | Packed Pasta Fp x-coordinate + parity bit in the high bit. |
-| `timeout` | Deposit timeout slot included in the aux hash. |
-| `children_digest` | Keccak/Poseidon hash of the zkapp call forest attached to this action on Mina. Constant for standard same-bridge transactions. |
-| `slot_range_lower` | Mina slot range lower bound included in the outer witness action fields. |
-| `slot_range_upper` | Mina slot range upper bound included in the outer witness action fields. |
+After the configured Ethereum finality depth, an operator calls
+`POST /v1/bridge/deposits/prove`. The gateway constructs the batch itself from
+the next contiguous canonical `BridgeDeposit` rows. A caller cannot substitute
+deposit contents.
 
-## Deposit accumulator
-
-For each deposit, the guest increments the nonce and computes values equivalent
-to Solidity `keccak256(abi.encode(...))`:
+For each deposit the guest recomputes:
 
 ```text
 deposit_leaf = keccak256(
-  keccak256("ZEKO_BRIDGE_DEPOSIT_LEAF_V1"),
-  chain_id,
-  bridge_address,
-  token,
-  zeko_recipient,
-  zeko_amount,
-  timeout,
-  nonce
+  domain, chain_id, bridge_address, native_token,
+  zeko_recipient, zeko_amount, UInt32.max, nonce
 )
 
 deposit_state_after = keccak256(
-  keccak256("ZEKO_BRIDGE_DEPOSIT_STATE_V1"),
-  deposit_state_before,
-  deposit_leaf
+  state_domain, deposit_state_before, deposit_leaf
 )
 ```
 
-## Zeko deposit action
-
-The guest unpacks `zeko_recipient` into `(x, isOdd)` and computes an auxiliary
-hash:
+It also computes the OCaml-compatible auxiliary value:
 
 ```text
-aux = Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
-  Field(0),
-  holderAccountL1,
-  zekoAmount,
-  recipient.x,
-  recipient.isOdd,
-  timeout
+Poseidon("Ethereum deposit V1", [
+  empty_call_forest,
+  bridge_address_as_field,
+  false,
+  zeko_amount,
+  recipient_x,
+  recipient_is_odd,
+  UInt32.max
 ])
 ```
 
-This aux is then placed into a 5-field outer witness action, which is the format
-the Mina L1 bridge contract dispatches:
+and emits the exact five-field action:
 
 ```text
-action_fields = [1, aux, children_digest, slot_range_lower, slot_range_upper]
+[Witness = 1, aux, children_digest = 0, slot_lower = 0, slot_upper = UInt32.max]
 ```
 
-- `field[0] = 1` — discriminant identifying this as an outer witness (vs. 0 for commits)
-- `field[1]` — aux hash above
-- `field[2]` — `children_digest` from the input
-- `field[3]` — `slot_range_lower`
-- `field[4]` — `slot_range_upper`
+Each action includes its resulting Poseidon action-state checkpoint in the V2
+bridge receipt.
 
-Each deposit is wrapped in its own Mina action list and appended to the running
-action state using the same domain-separated Poseidon operations as o1js:
+## Ethereum acceptance
+
+`EthereumZekoBridge.submitBridgeTransition` verifies the SP1 proof and binds
+the receipt to:
+
+- the bridge's proven deposit nonce and historical accumulator checkpoint
+- the current on-chain deposit nonce and accumulator
+- the settlement contract's current outer action state and length
+- a nonempty, contiguous action range whose length equals the deposit count
+
+The bridge then calls `appendOuterWitnessBatch` for every proof-emitted action.
+This advances the settlement contract's outer action state and makes the exact
+action bytes visible through the gateway's Mina `actions` query.
+
+## Deposit synchronization
+
+The sequencer reads those outer actions from the gateway. The next appropriate
+OCaml commit must bind the final deposit action checkpoint as its synchronized
+outer action state and length. Only after that settlement is confirmed does the
+gateway mark the deposit synchronized.
+
+The user then obtains and signs the normal Zeko helper-account
+`finalizeDeposit` update and submits it to the sequencer. The gateway never
+forges that signature and the helper account remains responsible for its
+processed-deposit cursor.
+
+## User-facing status
+
+`GET /v1/bridge/deposits/:nonce` reports Ethereum finality, bridge proof job,
+exact outer action, synchronized settlement, and the next action:
 
 ```text
-event_hash    = Poseidon.hashWithPrefix("MinaZkappEvent******", action_fields)
-action_list   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [empty, event_hash])
-state_after   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [state_before, action_list])
+waitForEthereumFinality
+requestBridgeProof
+waitForSettlementSynchronization
+finalizeDepositOnZeko
 ```
 
-where `empty = Poseidon.emptyHashWithPrefix("MinaZkappActionsEmpty")`.
-
-## Public values
-
-| Field | Meaning |
-| --- | --- |
-| `ethereum_state_before` | Deposit accumulator before the batch. |
-| `ethereum_state_after` | Deposit accumulator after the batch. |
-| `ethereum_nonce_before` | Deposit nonce before the batch. |
-| `ethereum_nonce_after` | Deposit nonce after the batch. |
-| `zeko_action_state_before` | Supplied Zeko action state before the batch. |
-| `zeko_action_state_after` | Computed Zeko action state after the batch. |
-| `deposit_count` | Number of replayed deposits. |
-
-## Contract checks
-
-`submitBridgeTransition` verifies:
-
-```text
-depositStateByNonce[ethereum_nonce_before] == ethereum_state_before
-ethereum_nonce_after                       == depositNonce
-ethereum_state_after                       == currentDepositState
-ethereum_nonce_after                       == ethereum_nonce_before + deposit_count
-zeko_action_state_after                    has not already been processed
-```
-
-This binds the proven batch to the current Ethereum deposit history.
-
-::: warning Settlement binding
-The deposit transition currently does not require its before or after Zeko
-action state to be a checkpoint recorded by `ZekoSettlement`. The accepted
-event alone does not prove that Zeko consumed the deposit actions.
-:::
+Cancellation is intentionally absent. Do not deposit funds into a PoC
+deployment unless the operator is online and the lack of a refund path is
+acceptable.

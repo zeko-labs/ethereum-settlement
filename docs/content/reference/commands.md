@@ -1,71 +1,92 @@
-# Commands
+# Command reference
 
-## Execute programs
+All commands in the default sections avoid proof generation.
 
-Execute the programs without generating proofs:
+## Build and test
 
 ```sh
-cargo run --release --bin zkapp -- --execute   # settlement program
+cargo check --offline \
+  -p settlement-program -p zkapp-script -p zeko_sp1_lib -p zeko-proof-api
+cargo test --offline -p pickles-verifier
+cargo test --offline -p settlement-program -p bridge-program \
+  -p withdraw-program -p zeko_sp1_lib -p zeko-proof-api
+
+(cd contracts && forge build --sizes && forge test -vv)
+(cd docs && pnpm install --frozen-lockfile && pnpm build)
+
+cargo fmt --all -- --check
+git diff --check
+```
+
+## Execute guests without proving
+
+```sh
+cargo run --release --bin zkapp -- --execute
 cargo run --release --bin bridge -- --execute
 cargo run --release --bin withdraw -- --execute
 ```
 
-Use larger fixtures:
+Use a genuine settlement fixture:
 
 ```sh
-cargo run --release --bin bridge -- --execute --input proofs/bridge-input-200.json
-cargo run --release --bin withdraw -- --execute --input proofs/withdraw-input-200.json
+SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
+  cargo run --release --bin vkey
 ```
 
-## Generate proofs
-
-Generate a local proof without submitting to the network:
+## Local native bridge
 
 ```sh
-cargo run --release --bin bridge -- --prove
-cargo run --release --bin withdraw -- --prove
+tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+tools/run-local-bridge-roundtrip.sh
 ```
 
-Generate EVM-compatible proofs (Groth16 or PLONK) for on-chain submission:
+Quick contract-only checkpoint:
 
 ```sh
-cargo run --release --bin evm -- --system groth16
-cargo run --release --bin evm -- --system plonk
+cd contracts
+forge test --match-path test/NativeBridgePocE2E.t.sol -vv
 ```
 
-Retrieve the settlement program verification key:
+## Prepare deployment identity
 
 ```sh
-cargo run --release --bin vkey
+FORGE=$HOME/.foundry/bin/forge \
+  tools/prepare-poc.sh \
+    "$RPC_URL" "$ADMIN_ADDRESS" \
+    build/poc/bridge-fixtures/deposit-sync build/poc-sepolia
 ```
 
-To use the Succinct Prover Network instead of local proving:
+This builds/derives program vkeys and writes the manifest. It does not prove.
+
+## Read prover-network pricing
 
 ```sh
-SP1_PROVER=network NETWORK_PRIVATE_KEY=<key> cargo run --release --bin evm
+cargo run --release --bin network_quote -- --proof-system groth16
+cargo run --release --bin network_quote -- \
+  --proof-system groth16 --pgu "$MAX_PGU"
 ```
 
-## Run tests
+The command reads auction parameters and never creates a request.
+
+## Testnet profile
 
 ```sh
-cargo test -p bridge-program fixture_deposit_matches_zeko_action_state
-cargo test -p withdraw-program
-cd contracts && forge test --offline
+tools/testnet-preflight.sh deploy/testnet
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml up -d
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml logs -f gateway sequencer prover
 ```
 
-## Run the o1js fixture
+## Inspect and approve a job
 
 ```sh
-cd tools/zeko-action-state
-npm install
-npm start
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID"
+
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID/quote?maxPgu=$MAX_PGU&maxPricePerPgu=$MAX_PRICE"
 ```
 
-## Bridge fixture checkpoint
-
-`proofs/bridge-input.json` contains three deposits:
-
-```text
-before: 0x3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9
-after : 0x3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf
-```
+Approval is a paid-operation boundary. Use the reviewed command in [proof jobs
+and approval](/gateway/proving), not an ad hoc request.

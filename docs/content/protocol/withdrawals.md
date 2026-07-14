@@ -1,143 +1,84 @@
-# Withdrawals
+# Native withdrawals
 
-The withdrawal program proves that an ordered batch of Zeko withdrawal actions
-produces a fixed-depth withdrawal Merkle root and the corresponding Ethereum
-withdrawal state transition.
+The current withdrawal path is settlement-bound and does not ask the user to
+produce a Mina proof or an SP1 proof. The sequencer proves the L2 transition
+once; users claim individual leaves with ordinary Keccak Merkle paths.
 
-## Proof input
+## L2 action and preimage
 
-`WithdrawTransitionInput` contains the chain ID, bridge address, current
-withdrawal state, starting Zeko action state, and an ordered withdrawal list.
-
-| Field | Meaning |
-| --- | --- |
-| `token` | Zeko field encoding an Ethereum token address in its low 160 bits. Zero means native ETH. |
-| `recipient` | Zeko field encoding the Ethereum recipient in its low 160 bits. |
-| `amount` | Amount expressed using the token's configured Zeko decimals. |
-| `children_digest` | Poseidon hash of the zkapp call forest attached to this withdrawal action on Zeko. Constant for standard same-bridge transactions. |
-
-Zeko currently supports only the native token in withdrawal actions. The SP1
-program rejects every withdrawal whose `token` field is not zero.
-
-## Withdraw accumulator
-
-For every withdrawal, the guest computes a withdrawal leaf:
+The user obtains, signs, and submits the normal Zeko native withdrawal
+transaction. The OCaml inner bridge emits a three-field inner Witness action:
 
 ```text
-withdraw_leaf = keccak256(
-  keccak256("ZEKO_BRIDGE_WITHDRAW_LEAF_V1"),
+[Witness = 0, withdrawal_aux, children_digest]
+```
+
+The archived clear preimage contains the Ethereum recipient and amount in
+Zeko's 9-decimal native unit. The SP1 settlement guest recomputes the OCaml
+`Withdrawal_params` Poseidon hash and requires it to equal the action aux.
+Unknown or non-withdrawal inner actions remain in the ordered tree as raw,
+non-claimable leaves, so the committed indices cannot be rearranged.
+
+## Settlement-bound Keccak tree
+
+For each action, SP1 first hashes the exact three fields. A native withdrawal
+leaf binds:
+
+```text
+keccak256(
+  "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2",
   chain_id,
   bridge_address,
-  token,
+  global_action_index,
   recipient,
-  amount
+  zeko_amount,
+  action_fields_hash
 )
 ```
 
-It also computes and appends the matching Zeko action. First, an auxiliary hash
-is derived from the withdrawal fields:
+Leaves are placed in their original order in a depth-16 tree using the
+`ZEKO_INNER_ACTION_NODE_V2` domain. The receipt contains the root, global start
+index, and count. SP1 replays every Mina action and refuses to emit the root
+unless the sequence reaches the Pickles-bound inner action state and length.
 
-```text
-aux = Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
-  Field(0),
-  amount,
-  recipient
-])
-```
+`ZekoSettlement` records this root only while accepting the matching V2
+settlement. The bridge reads it directly from the settlement contract; no
+administrator can submit a separate withdrawal root.
 
-This aux is then placed into a 3-field inner action, which is the format the
-Zeko L2 bridge account dispatches:
+## Gateway discovery
 
-```text
-action_fields = [0, aux, children_digest]
-```
+After Ethereum confirmation, the gateway validates and indexes the exact leaf
+set from the submitted settlement input. Public callers can use:
 
-- `field[0] = 0` — discriminant identifying this as a withdrawal commit (vs. 1 for outer witness)
-- `field[1]` — aux hash above
-- `field[2]` — `children_digest` from the input
+- `GET /v1/bridge/withdrawals?recipient=0x...&after=<global-index>`
+- `GET /v1/bridge/withdrawals/:sequence/:offset`
 
-Each withdrawal is wrapped in its own Mina action list and appended to the
-running action state using the same domain-separated Poseidon operations as
-o1js:
+The response contains recipient, amount, action-fields hash, settlement
+sequence, global index, 16 siblings, current virtual slot, claimable slot, and
+live claim status.
 
-```text
-empty         = Poseidon.emptyHashWithPrefix("MinaZkappActionsEmpty")
-event_hash    = Poseidon.hashWithPrefix("MinaZkappEvent******", action_fields)
-action_list   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [empty, event_hash])
-state_after   = Poseidon.hashWithPrefix("MinaZkappSeqEvents**", [state_before, action_list])
-```
+## Claim
 
-The same ordered withdrawal leaves are committed into a depth-16 Keccak Merkle
-tree. The tree supports at most 65,536 withdrawals and pads unused leaves with
-`bytes32(0)`.
+The caller sends those values to `claimNativeWithdrawal`. The contract:
 
-```text
-node = keccak256(
-  keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1"),
-  left,
-  right
-)
-```
+1. loads the root and slot upper bound from the accepted settlement
+2. checks the offset and recomputes the global action index
+3. requires `currentVirtualSlot >= commitSlotUpper + withdrawalDelaySlots`
+4. verifies the fixed-depth Merkle path
+5. enforces the recipient's monotonic `nextWithdrawalIndex`
+6. converts the Zeko amount to wei by multiplying by 1 gwei
+7. reduces native escrow liability and transfers ETH to the proof-bound
+   recipient
 
-After building the root, the guest computes the next withdrawal state once for
-the complete batch:
+Claims are permissionless: the transaction sender need not equal the recipient,
+but funds always go to the address committed in the leaf.
 
-```text
-withdraw_state_after = keccak256(
-  keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1"),
-  withdraw_state_before,
-  withdrawal_root,
-  withdraw_count
-)
-```
+The cursor permits a recipient to skip to a later global index. Doing so makes
+any earlier withdrawal for that recipient unclaimable, matching the helper
+account's monotonic processing model.
 
-The withdrawal count is included because unused tree leaves are padded with
-`bytes32(0)`.
+## Legacy path
 
-## Public values
-
-| Field | Meaning |
-| --- | --- |
-| `zeko_action_state_before` | Zeko action state before the batch. |
-| `zeko_action_state_after` | Zeko action state after the batch. |
-| `ethereum_withdraw_state_before` | Ethereum withdrawal accumulator before the batch. |
-| `ethereum_withdraw_state_after` | Ethereum withdrawal accumulator after the batch. |
-| `withdrawal_root` | Depth-16 Merkle root over the same ordered withdrawal leaves. |
-| `withdraw_count` | Number of withdrawals in the batch. |
-
-## Accepting a transition
-
-`submitWithdrawTransition` verifies the SP1 proof and requires:
-
-- the starting withdrawal state equals `currentWithdrawState`
-- the final withdrawal state equals the V1 hash of the starting state, root,
-  and withdrawal count
-- the final action state has not already been processed
-- both action states are checkpoints recorded by `ZekoSettlement`
-- the old checkpoint matches `currentWithdrawActionStateIndex`
-- the new checkpoint index is exactly the old index plus one
-
-For a non-empty batch, the final withdrawal accumulator becomes a valid claim
-transition and the Merkle root becomes a valid claim root. The bridge stores
-one withdrawal batch record under the old Zeko action state bound by the SP1
-proof. That record contains the Merkle root, withdrawal states, checkpoint
-index, and withdrawal count. The same Merkle root may safely appear in
-different action-state transitions.
-
-## Claiming a withdrawal
-
-To claim, a caller supplies:
-
-- the old Zeko action state bound to the withdrawal batch
-- the clear withdrawal being claimed
-- its index in the batch
-- a fixed 16-sibling Merkle proof
-
-The contract recomputes the leaf and verifies its Merkle proof against the
-root stored for that old action state. Claims no longer require the root or the
-full ordered withdrawal batch in calldata.
-
-It then computes a nullifier from the old action-state index, withdrawal index,
-and leaf. A spent nullifier cannot be claimed again. Finally, the contract
-validates token and recipient field encodings, converts the Zeko amount back to
-Ethereum decimals, and transfers the locked ETH or ERC20 tokens.
+`program/withdraw`, `submitWithdrawTransition`, and `claimWithdraw` remain for
+older fixtures. New deployments leave `legacyWithdrawEnabled` false. The
+separate withdrawal accumulator is not used by the native PoC described here.

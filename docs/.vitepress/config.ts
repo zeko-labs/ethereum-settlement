@@ -1,16 +1,17 @@
 import { defineConfig } from "vitepress"
 
 export default defineConfig({
-  title: "Zeko Ethereum L2",
-  description: "Proof-powered settlement and bridging between Zeko and Ethereum",
+  title: "Zeko on Ethereum",
+  description: "Architecture and operations for the multisig-DA Ethereum settlement PoC",
   srcDir: "content",
   cleanUrls: true,
+  lastUpdated: true,
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
     ["link", { rel: "shortcut icon", href: "/favicon.ico" }],
     ["link", { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" }],
-    ["meta", { property: "og:title", content: "Zeko Ethereum L2" }],
-    ["meta", { property: "og:description", content: "Proof-powered settlement and bridging between Zeko and Ethereum" }],
+    ["meta", { property: "og:title", content: "Zeko on Ethereum" }],
+    ["meta", { property: "og:description", content: "Multisig-DA Ethereum settlement PoC" }],
     ["meta", { property: "og:image", content: "/og-image.png" }]
   ],
   themeConfig: {
@@ -20,8 +21,8 @@ export default defineConfig({
     },
     nav: [
       { text: "Docs", link: "/overview" },
-      { text: "Zeko Docs", link: "https://docs.zeko.io", target: "_blank" },
-      { text: "Website", link: "https://zeko.io", target: "_blank" }
+      { text: "Testnet runbook", link: "/operations/testnet" },
+      { text: "Zeko Docs", link: "https://docs.zeko.io", target: "_blank" }
     ],
     logo: { light: "/logo.svg", dark: "/logo-dark.svg" },
     sidebar: [
@@ -29,34 +30,58 @@ export default defineConfig({
         text: "Introduction",
         items: [
           { text: "Overview", link: "/overview" },
+          { text: "Current status", link: "/status" },
           { text: "Architecture", link: "/architecture" }
         ]
       },
       {
-        text: "Protocol Flows",
+        text: "Protocol flows",
         items: [
           { text: "Settlement", link: "/protocol/settlement" },
-          { text: "Deposit Bridge", link: "/protocol/deposit-bridge" },
-          { text: "Withdrawals", link: "/protocol/withdrawals" }
+          { text: "Native deposits", link: "/protocol/deposit-bridge" },
+          { text: "Native withdrawals", link: "/protocol/withdrawals" }
+        ]
+      },
+      {
+        text: "Gateway",
+        items: [
+          { text: "API and GraphQL", link: "/gateway/api" },
+          { text: "Proof jobs and approval", link: "/gateway/proving" }
+        ]
+      },
+      {
+        text: "Operations",
+        items: [
+          { text: "Local E2E", link: "/operations/local-e2e" },
+          { text: "Sepolia testnet", link: "/operations/testnet" },
+          { text: "DevOps and NixOS", link: "/operations/devops" }
+        ]
+      },
+      {
+        text: "Development",
+        items: [
+          { text: "Toolchains", link: "/development/toolchains" },
+          { text: "Verification", link: "/development/verification" }
         ]
       },
       {
         text: "Reference",
         items: [
-          { text: "Security Model", link: "/reference/security-model" },
-          { text: "Commands", link: "/reference/commands" }
+          { text: "Configuration", link: "/reference/configuration" },
+          { text: "Security model", link: "/reference/security-model" },
+          { text: "Command reference", link: "/reference/commands" }
         ]
       }
     ],
     socialLinks: [
-      { icon: "github", link: "https://github.com/zeko-labs/sp1-verifier" }
+      { icon: "github", link: "https://github.com/zeko-labs/ethereum-settlement" }
     ],
     editLink: {
-      pattern: "https://github.com/zeko-labs/sp1-verifier/edit/bridge/docs/content/:path",
+      pattern: "https://github.com/zeko-labs/ethereum-settlement/edit/main/docs/content/:path",
       text: "Edit this page on GitHub"
     },
     footer: {
-      message: "Proof-powered settlement and bridging between Zeko and Ethereum.",
+      message: "Experimental Zeko settlement and native bridge glue for Ethereum.",
       copyright: "Copyright © 2026 Zeko Labs"
     }
   }
