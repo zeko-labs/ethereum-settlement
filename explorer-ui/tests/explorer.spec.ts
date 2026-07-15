@@ -4,13 +4,21 @@ const fixtures = {
   summary: {
     schemaVersion: 1,
     asOf: "2026-07-15T15:00:00Z",
-    sources: { archive: true, gateway: true, ethereum: true },
+    sources: { archive: true, gateway: true, ethereum: true, sequencer: true },
     l2: {
       blockHeight: "18492",
       transactionCount: "18491",
       accountCount: "2310",
     },
-    settlement: { latestSequence: "284" },
+    settlement: {
+      latestSequence: "284",
+      commitSchedule: {
+        periodSeconds: 900,
+        phase: "WAITING",
+        lastAttemptStartedAt: "2026-07-15T14:52:30Z",
+        nextAttemptAt: "2026-07-15T15:07:30Z",
+      },
+    },
     bridge: {
       depositCount: "147",
       withdrawalCount: "39",
@@ -214,6 +222,8 @@ test("overview joins execution, settlement, and both bridge directions", async (
     }),
   ).toBeVisible();
   await expect(page.getByText("18,492")).toBeVisible();
+  await expect(page.getByText("Next commit")).toBeVisible();
+  await expect(page.getByText("Every 15m")).toBeVisible();
   await expect(page.getByText("Deposit #147")).toBeVisible();
   await expect(page.getByText("Withdrawal 284:3")).toBeVisible();
   await expect(page.getByText("Settlement #284")).toBeVisible();

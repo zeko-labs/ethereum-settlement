@@ -47,6 +47,8 @@ struct AppState {
     min_remaining_slots: u64,
     ethereum_finality_mode: indexer::FinalityMode,
     ethereum_confirmations: u64,
+    sequencer_graphql_url: Option<Arc<str>>,
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -81,7 +83,7 @@ struct ProofQuoteResponse {
     kind: String,
     status: String,
     input_digest: String,
-    cycle_count: u64,
+    cycle_count: Option<u64>,
     remaining_slots: Option<u64>,
     quote: prover::AuctionQuote,
     note: &'static str,
@@ -320,6 +322,10 @@ async fn main() -> Result<()> {
     .await
     .context("recover interrupted jobs")?;
     let ethereum_confirmations = u64_env("ETHEREUM_CONFIRMATIONS", 12)?;
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .context("build internal HTTP client")?;
     let state = AppState {
         pool,
         archive_pool,
@@ -334,6 +340,8 @@ async fn main() -> Result<()> {
         min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
         ethereum_finality_mode,
         ethereum_confirmations,
+        sequencer_graphql_url: nonempty_env("SEQUENCER_GRAPHQL_URL").map(Into::into),
+        http_client,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
@@ -1417,10 +1425,10 @@ async fn load_proof_quote(
         ),
         "proof job has not completed preflight"
     );
-    let cycle_count = u64::try_from(
-        row.try_get::<Option<i64>, _>("cycle_count")?
-            .context("proof job has no cycle count")?,
-    )?;
+    let cycle_count = row
+        .try_get::<Option<i64>, _>("cycle_count")?
+        .map(u64::try_from)
+        .transpose()?;
     let max_pgu = parse_optional_u64(query.max_pgu, "maxPgu")?
         .or(row
             .try_get::<Option<i64>, _>("approval_max_pgu")?
@@ -1429,7 +1437,8 @@ async fn load_proof_quote(
         .or(state.prover_config.gas_limit)
         // SP1 executor cycles are not exact PGU. This fallback only makes the
         // read-only quote useful before an operator supplies a simulation cap.
-        .unwrap_or(cycle_count);
+        .or(cycle_count)
+        .context("maxPgu is required when native preflight has no cycle measurement")?;
     let max_price_per_pgu = parse_optional_u64(query.max_price_per_pgu, "maxPricePerPgu")?
         .or(row
             .try_get::<Option<i64>, _>("approval_max_price_per_pgu")?
@@ -1515,10 +1524,10 @@ async fn approve_proof_inner(
         .try_get::<Option<String>, _>("public_values")?
         .context("proof job has no public values")?;
     let public_values = decode_hex_bytes(&public_values_hex, "public values")?;
-    let cycles = u64::try_from(
-        row.try_get::<Option<i64>, _>("cycle_count")?
-            .context("proof job has no cycle count")?,
-    )?;
+    let cycles = row
+        .try_get::<Option<i64>, _>("cycle_count")?
+        .map(u64::try_from)
+        .transpose()?;
     let preflight = prover::Preflight::decode(&kind, public_values, cycles)?;
     validate_preflight(state, &kind, &row.try_get::<Value, _>("input")?, &preflight).await?;
     require_proof_lifetime(state, &kind, &public_values_hex).await?;
@@ -1796,10 +1805,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 .context("approved proof job has no public values")?;
             require_proof_lifetime(state, &job.kind, public_values_hex).await?;
             let public_values = decode_hex_bytes(public_values_hex, "public values")?;
-            let cycles = u64::try_from(
-                job.cycle_count
-                    .context("approved proof job has no cycle count")?,
-            )?;
+            let cycles = job.cycle_count.map(u64::try_from).transpose()?;
             let preflight = prover::Preflight::decode(&job.kind, public_values, cycles)?;
             validate_preflight(state, &job.kind, &job.input, &preflight).await?;
             let mut config = state.prover_config.clone();
@@ -1838,9 +1844,12 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 digest_result.rows_affected() == 1,
                 "proof job was cancelled"
             );
-            let preflight = prover::preflight(&job.kind, &job.input).await?;
+            let preflight = prover::preflight(&job.kind, &job.input, state.execute_only).await?;
             validate_preflight(state, &job.kind, &job.input, &preflight).await?;
-            let cycle_count = i64::try_from(preflight.cycles())
+            let cycle_count = preflight
+                .cycles()
+                .map(i64::try_from)
+                .transpose()
                 .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
             let public_values_hex = format!("0x{}", hex::encode(preflight.public_values()));
             let result = sqlx::query(
@@ -1953,7 +1962,12 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         .bind(format!("0x{}", hex::encode(proof.public_values)))
         .bind(&request_id)
         .bind(transaction_hash.to_string())
-        .bind(metrics.cycles.and_then(|value| i64::try_from(value).ok()))
+        .bind(
+            metrics
+                .cycles
+                .or(preflight.cycles())
+                .and_then(|value| i64::try_from(value).ok()),
+        )
         .bind(
             metrics
                 .prover_gas
@@ -2021,7 +2035,10 @@ async fn submit_local_mock(
         .ethereum
         .submit(kind, preflight.public_values().to_vec(), Vec::new())
         .await?;
-    let cycle_count = i64::try_from(preflight.cycles())
+    let cycle_count = preflight
+        .cycles()
+        .map(i64::try_from)
+        .transpose()
         .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
     let result = sqlx::query(
         "UPDATE proof_jobs SET status = 'submitted', public_values = $2,

@@ -22,6 +22,7 @@ serde             = { workspace = true }
 serde_json        = { workspace = true }
 zeko_sp1_lib      = { path = "../lib" }
 pickles-verifier = { path = "../crates/pickles-verifier" }
+settlement-program = { path = "../program/settlement" }
 
 [dev-dependencies]
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
@@ -29,3 +30,7 @@ criterion = "0.5"
 
 [build-dependencies]
 sp1-build = "6.1.0"
+mina-curves = { workspace = true }
+pickles-verifier = { path = "../crates/pickles-verifier" }
+poly-commitment = { workspace = true }
+sha2 = "0.10"

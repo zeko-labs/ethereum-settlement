@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ExplorerApi } from "../lib/api";
 import { formatInteger, formatWei } from "../lib/format";
 import type { Route } from "../lib/router";
@@ -47,6 +47,11 @@ export function Overview({
     [api],
   );
   const state = usePolling(load, config.pollIntervalMs);
+  const now = useClock();
+  const serverNow =
+    state.data && state.updatedAt
+      ? Date.parse(state.data.summary.asOf) + (now - state.updatedAt)
+      : now;
 
   return (
     <>
@@ -116,6 +121,10 @@ export function Overview({
             withdrawals
           </small>
         </article>
+        <CommitScheduleMetric
+          schedule={state.data?.summary.settlement.commitSchedule}
+          now={serverNow}
+        />
       </section>
       <section className="overview-grid">
         <article className="surface wide-surface">
@@ -223,6 +232,94 @@ export function Overview({
       </footer>
     </>
   );
+}
+
+function useClock() {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return now;
+}
+
+function CommitScheduleMetric({
+  schedule,
+  now,
+}: {
+  schedule:
+    | {
+        periodSeconds: number;
+        phase: "WAITING" | "COMMITTING" | "DISABLED";
+        lastAttemptStartedAt: string | null;
+        nextAttemptAt: string | null;
+      }
+    | null
+    | undefined;
+  now: number;
+}) {
+  if (!schedule) {
+    return (
+      <article>
+        <span>Next commit</span>
+        <strong>—</strong>
+        <small>Sequencer telemetry unavailable</small>
+      </article>
+    );
+  }
+  const period = `Every ${formatPeriod(schedule.periodSeconds)}`;
+  if (schedule.phase === "DISABLED") {
+    return (
+      <article>
+        <span>Next commit</span>
+        <strong>Paused</strong>
+        <small>Periodic commits are disabled</small>
+      </article>
+    );
+  }
+  if (schedule.phase === "COMMITTING") {
+    const startedAt = schedule.lastAttemptStartedAt
+      ? Date.parse(schedule.lastAttemptStartedAt)
+      : now;
+    const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+    return (
+      <article>
+        <span>Commit in progress</span>
+        <strong>{formatDuration(elapsed)}</strong>
+        <small>{period} · elapsed time</small>
+      </article>
+    );
+  }
+  const nextAttemptAt = schedule.nextAttemptAt
+    ? Date.parse(schedule.nextAttemptAt)
+    : Number.NaN;
+  const remaining = Number.isFinite(nextAttemptAt)
+    ? Math.max(0, Math.ceil((nextAttemptAt - now) / 1000))
+    : null;
+  return (
+    <article>
+      <span>Next commit</span>
+      <strong>{remaining === null ? "—" : formatDuration(remaining)}</strong>
+      <small>{remaining === 0 ? "Due now" : period}</small>
+    </article>
+  );
+}
+
+function formatDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${remainder}s`;
+  return `${remainder}s`;
+}
+
+function formatPeriod(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds > 0 && seconds % 3600 === 0) return `${seconds / 3600}h`;
+  if (seconds > 0 && seconds % 60 === 0) return `${seconds / 60}m`;
+  return formatDuration(seconds);
 }
 
 function LatestSettlement({

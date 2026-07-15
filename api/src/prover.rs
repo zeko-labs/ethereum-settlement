@@ -12,8 +12,8 @@ use zeko_sp1_lib::{
     WithdrawTransitionInput, WithdrawTransitionPublicValues,
 };
 use zkapp_script::{
-    execute_minimal, settlement_stdin_from_bundle, SettlementProofBundle, BRIDGE_ELF,
-    SETTLEMENT_ELF, WITHDRAW_ELF,
+    execute_minimal, native_settlement_preflight, settlement_stdin_from_bundle,
+    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF, WITHDRAW_ELF,
 };
 
 pub struct ProofOutput {
@@ -55,17 +55,17 @@ pub enum Preflight {
     Settlement {
         values: SettlementPublicValues,
         public_values: Vec<u8>,
-        cycles: u64,
+        cycles: Option<u64>,
     },
     Bridge {
         values: BridgeTransitionPublicValuesV2,
         public_values: Vec<u8>,
-        cycles: u64,
+        cycles: Option<u64>,
     },
     Withdraw {
         values: WithdrawTransitionPublicValues,
         public_values: Vec<u8>,
-        cycles: u64,
+        cycles: Option<u64>,
     },
 }
 
@@ -78,7 +78,7 @@ impl Preflight {
         }
     }
 
-    pub fn cycles(&self) -> u64 {
+    pub fn cycles(&self) -> Option<u64> {
         match self {
             Preflight::Settlement { cycles, .. }
             | Preflight::Bridge { cycles, .. }
@@ -86,7 +86,7 @@ impl Preflight {
         }
     }
 
-    pub fn decode(kind: &str, public_values: Vec<u8>, cycles: u64) -> Result<Self> {
+    pub fn decode(kind: &str, public_values: Vec<u8>, cycles: Option<u64>) -> Result<Self> {
         match kind {
             "settlement" => Ok(Self::Settlement {
                 values: SettlementPublicValues::decode(&public_values)
@@ -110,14 +110,24 @@ impl Preflight {
     }
 }
 
-pub async fn preflight(kind: &str, input: &Value) -> Result<Preflight> {
+pub async fn preflight(kind: &str, input: &Value, execute_settlement: bool) -> Result<Preflight> {
     let kind = kind.to_owned();
     let input = input.clone();
     tokio::task::spawn_blocking(move || {
+        if kind == "settlement" && !execute_settlement {
+            let bundle: SettlementProofBundle = serde_json::from_value(
+                input
+                    .get("proof")
+                    .cloned()
+                    .context("settlement proof bundle is required")?,
+            )?;
+            let public_values = native_settlement_preflight(&bundle)?;
+            return Preflight::decode(&kind, public_values, None);
+        }
         let (elf, stdin) = stdin_for(&kind, &input)?;
         let (public_values, cycles) =
             execute_minimal(elf, stdin).context("execute SP1 preflight")?;
-        Preflight::decode(&kind, public_values, cycles)
+        Preflight::decode(&kind, public_values, Some(cycles))
     })
     .await?
 }
@@ -363,7 +373,7 @@ mod tests {
         let input: Value =
             serde_json::from_str(include_str!("../../proofs/bridge-input.json")).unwrap();
         assert!(matches!(
-            preflight("bridge", &input).await.unwrap(),
+            preflight("bridge", &input, false).await.unwrap(),
             Preflight::Bridge { .. }
         ));
     }
@@ -374,7 +384,7 @@ mod tests {
         let input: Value =
             serde_json::from_str(include_str!("../../proofs/withdraw-input.json")).unwrap();
         assert!(matches!(
-            preflight("withdraw", &input).await.unwrap(),
+            preflight("withdraw", &input, false).await.unwrap(),
             Preflight::Withdraw { .. }
         ));
     }

@@ -6,13 +6,26 @@ export interface Page<T> {
 export interface Summary {
   schemaVersion: 1;
   asOf: string;
-  sources: { archive: boolean; gateway: boolean; ethereum: boolean };
+  sources: {
+    archive: boolean;
+    gateway: boolean;
+    ethereum: boolean;
+    sequencer?: boolean;
+  };
   l2: null | {
     blockHeight: string | null;
     transactionCount: string;
     accountCount: string;
   };
-  settlement: { latestSequence: string | null };
+  settlement: {
+    latestSequence: string | null;
+    commitSchedule?: null | {
+      periodSeconds: number;
+      phase: "WAITING" | "COMMITTING" | "DISABLED";
+      lastAttemptStartedAt: string | null;
+      nextAttemptAt: string | null;
+    };
+  };
   bridge: {
     depositCount: string;
     withdrawalCount: string;

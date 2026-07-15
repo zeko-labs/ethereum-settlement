@@ -12,9 +12,17 @@ export const runtimeConfig: RuntimeConfig = {
 export const summary = {
   schemaVersion: 1,
   asOf: "2026-07-15T15:00:00Z",
-  sources: { archive: true, gateway: true, ethereum: true },
+  sources: { archive: true, gateway: true, ethereum: true, sequencer: true },
   l2: { blockHeight: "18492", transactionCount: "18491", accountCount: "9007199254740993" },
-  settlement: { latestSequence: "284" },
+  settlement: {
+    latestSequence: "284",
+    commitSchedule: {
+      periodSeconds: 900,
+      phase: "WAITING" as const,
+      lastAttemptStartedAt: "2026-07-15T14:52:30Z",
+      nextAttemptAt: "2026-07-15T15:07:30Z",
+    },
+  },
   bridge: { depositCount: "147", withdrawalCount: "39", depositedAmount: "24820000000000000000" }
 }
 

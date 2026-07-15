@@ -23,6 +23,8 @@ describe("Zeko explorer", () => {
     );
     render(<ExplorerApplication config={runtimeConfig} />);
     expect(await screen.findByText("18,492")).toBeInTheDocument();
+    expect(screen.getByText("Next commit")).toBeInTheDocument();
+    expect(screen.getByText("Every 15m")).toBeInTheDocument();
     expect(screen.getByText("Settlement #284")).toBeInTheDocument();
     expect(screen.getByText("Deposit #147")).toBeInTheDocument();
     expect(screen.getByText("Withdrawal 284:3")).toBeInTheDocument();

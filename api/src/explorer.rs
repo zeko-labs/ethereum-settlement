@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
@@ -16,6 +16,31 @@ use crate::AppState;
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
+
+const COMMIT_SCHEDULE_QUERY: &str =
+    "query ExplorerCommitSchedule { commitSchedule { periodSeconds phase lastAttemptStartedAt nextAttemptAt } }";
+
+#[derive(Debug, Deserialize)]
+struct CommitScheduleGraphqlResponse {
+    data: Option<CommitScheduleGraphqlData>,
+    #[serde(default)]
+    errors: Vec<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitScheduleGraphqlData {
+    commit_schedule: CommitSchedule,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitSchedule {
+    period_seconds: f64,
+    phase: String,
+    last_attempt_started_at: Option<DateTime<Utc>>,
+    next_attempt_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,40 +103,49 @@ pub async fn validate_archive_schema(pool: &PgPool) -> Result<()> {
 }
 
 async fn summary(State(state): State<AppState>) -> Response {
-    let gateway = sqlx::query(
+    let gateway_query = sqlx::query(
         "SELECT
              (SELECT COUNT(*)::text FROM gateway_bridge_deposits WHERE NOT removed) AS deposit_count,
              (SELECT COUNT(*)::text FROM gateway_inner_action_leaves WHERE recipient IS NOT NULL AND NOT removed) AS withdrawal_count,
              (SELECT COALESCE(SUM(ethereum_amount), 0)::text FROM gateway_bridge_deposits WHERE NOT removed) AS deposited_amount,
              (SELECT batch_sequence::text FROM gateway_explorer_settlements WHERE NOT removed ORDER BY batch_sequence DESC LIMIT 1) AS latest_settlement",
     )
-    .fetch_one(&state.pool)
-    .await;
-    let archive = match state.archive_pool.as_ref() {
-        Some(pool) => sqlx::query(
-            "SELECT
+    .fetch_one(&state.pool);
+    let archive_query = async {
+        match state.archive_pool.as_ref() {
+            Some(pool) => sqlx::query(
+                "SELECT
                  (SELECT MAX(height)::text FROM blocks WHERE chain_status = 'canonical') AS height,
                  ((SELECT COUNT(*) FROM blocks_user_commands buc JOIN blocks b ON b.id = buc.block_id WHERE b.chain_status = 'canonical') +
                   (SELECT COUNT(*) FROM blocks_zkapp_commands bzc JOIN blocks b ON b.id = bzc.block_id WHERE b.chain_status = 'canonical'))::text AS transaction_count,
                  (SELECT COUNT(DISTINCT account_identifier_id)::text FROM accounts_accessed aa JOIN blocks b ON b.id = aa.block_id WHERE b.chain_status = 'canonical') AS account_count",
-        )
-        .fetch_one(pool)
-        .await
-        .ok(),
-        None => None,
+            )
+            .fetch_one(pool)
+            .await
+            .ok(),
+            None => None,
+        }
     };
+    let (gateway, archive, commit_schedule) =
+        tokio::join!(gateway_query, archive_query, fetch_commit_schedule(&state));
     match gateway {
         Ok(gateway) => Json(json!({
             "schemaVersion": 1,
             "asOf": Utc::now(),
-            "sources": { "archive": archive.is_some(), "gateway": true, "ethereum": true },
+            "sources": {
+                "archive": archive.is_some(),
+                "gateway": true,
+                "ethereum": true,
+                "sequencer": commit_schedule.is_some()
+            },
             "l2": archive.as_ref().map(|row| json!({
                 "blockHeight": row.try_get::<Option<String>, _>("height").ok().flatten(),
                 "transactionCount": row.try_get::<String, _>("transaction_count").unwrap_or_else(|_| "0".into()),
                 "accountCount": row.try_get::<String, _>("account_count").unwrap_or_else(|_| "0".into())
             })),
             "settlement": {
-                "latestSequence": gateway.try_get::<Option<String>, _>("latest_settlement").ok().flatten()
+                "latestSequence": gateway.try_get::<Option<String>, _>("latest_settlement").ok().flatten(),
+                "commitSchedule": commit_schedule
             },
             "bridge": {
                 "depositCount": gateway.try_get::<String, _>("deposit_count").unwrap_or_else(|_| "0".into()),
@@ -122,6 +156,53 @@ async fn summary(State(state): State<AppState>) -> Response {
         .into_response(),
         Err(error) => explorer_error(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
+}
+
+async fn fetch_commit_schedule(state: &AppState) -> Option<CommitSchedule> {
+    let url = state.sequencer_graphql_url.as_deref()?;
+    let result = async {
+        let response = state
+            .http_client
+            .post(url)
+            .json(&json!({ "query": COMMIT_SCHEDULE_QUERY }))
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: CommitScheduleGraphqlResponse = response.json().await?;
+        anyhow::ensure!(
+            response.errors.is_empty(),
+            "sequencer returned GraphQL errors"
+        );
+        let schedule = response
+            .data
+            .context("sequencer response has no data")?
+            .commit_schedule;
+        validate_commit_schedule(&schedule)?;
+        Result::<CommitSchedule>::Ok(schedule)
+    }
+    .await;
+    match result {
+        Ok(schedule) => Some(schedule),
+        Err(error) => {
+            tracing::debug!(%error, %url, "commit schedule is unavailable");
+            None
+        }
+    }
+}
+
+fn validate_commit_schedule(schedule: &CommitSchedule) -> Result<()> {
+    anyhow::ensure!(
+        schedule.period_seconds.is_finite() && schedule.period_seconds >= 0.0,
+        "sequencer returned an invalid commit period"
+    );
+    anyhow::ensure!(
+        matches!(
+            schedule.phase.as_str(),
+            "WAITING" | "COMMITTING" | "DISABLED"
+        ),
+        "sequencer returned an invalid commit phase"
+    );
+    Ok(())
 }
 
 async fn list_blocks(State(state): State<AppState>, Query(query): Query<ListQuery>) -> Response {
@@ -1181,5 +1262,28 @@ mod tests {
         assert!(!fields.contains(&"input"));
         assert!(!fields.contains(&"proofRequestId"));
         assert!(!fields.contains(&"approvalInputDigest"));
+    }
+
+    #[test]
+    fn commit_schedule_schema_accepts_expected_phases_and_rejects_bad_data() {
+        let response: CommitScheduleGraphqlResponse = serde_json::from_value(json!({
+            "data": {
+                "commitSchedule": {
+                    "periodSeconds": 900,
+                    "phase": "WAITING",
+                    "lastAttemptStartedAt": "2026-07-15T15:00:00Z",
+                    "nextAttemptAt": "2026-07-15T15:15:00Z"
+                }
+            }
+        }))
+        .unwrap();
+        let schedule = response.data.unwrap().commit_schedule;
+        validate_commit_schedule(&schedule).unwrap();
+
+        let invalid = CommitSchedule {
+            phase: "UNKNOWN".to_owned(),
+            ..schedule
+        };
+        assert!(validate_commit_schedule(&invalid).is_err());
     }
 }

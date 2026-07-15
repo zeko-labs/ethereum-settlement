@@ -124,6 +124,7 @@ services:
       API_EXECUTE_ONLY: "false"
       API_LOCAL_MOCK_SUBMIT: "false"
       API_REQUIRE_PROOF_APPROVAL: "true"
+      SEQUENCER_GRAPHQL_URL: "http://sequencer:1923/graphql"
     volumes:
       - ./config:/config:ro
       - ./secrets/postgres-gateway-password:/run/zeko-secrets/postgres-gateway-password:ro
@@ -392,7 +393,9 @@ services:
         exec zeko-run -p 1923 \
           --l1-uri http://gateway:8080/graphql \
           --archive-uri http://gateway:8080/graphql \
-          --max-pool-size 20 --commitment-period 900 --inner-sync-period 30 \
+          --max-pool-size 20 \
+          --commitment-period ${ZEKO_COMMITMENT_PERIOD_SECONDS:-900} \
+          --inner-sync-period 30 \
           --signer sequencer-signer:9000 \
           --da-node da1:8555 --da-node da2:8556 --da-node da3:8557 \
           --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \

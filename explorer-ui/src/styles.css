@@ -54,7 +54,10 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 kbd { padding: 3px 6px; border: 1px solid var(--gray-200); border-radius: 5px; background: var(--gray-50); font-family: inherit; font-size: 9px; }
 .network-pill, .bridge-cta { display: flex; min-height: 40px; align-items: center; gap: 8px; padding: 0 12px; border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .network-pill { border: 1px solid var(--gray-200); background: white; }
-.bridge-cta { border: 1px solid color-mix(in oklch, var(--gold-200) 70%, black); background: linear-gradient(180deg, var(--gold-50), var(--gold-100)); }
+.bridge-cta { border: 1px solid color-mix(in oklch, var(--gold-100) 42%, var(--gray-200)); background: color-mix(in oklch, var(--gold-50) 38%, var(--gold-soft)); color: var(--gray-900); transition: border-color 160ms ease, background 160ms ease, color 160ms ease; }
+.bridge-cta:hover { border-color: color-mix(in oklch, var(--gold-100) 68%, var(--gray-200)); background: color-mix(in oklch, var(--gold-50) 58%, var(--gold-soft)); color: var(--ink); }
+.bridge-cta:active { background: var(--gold-soft); }
+.bridge-cta .glyph { color: var(--gold-200); }
 .live-dot, .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px color-mix(in oklch, var(--green) 13%, transparent); }
 .glyph { display: inline-grid; place-items: center; line-height: 1; }
 .glyph-search { font-size: 21px; transform: rotate(-18deg); }
@@ -75,7 +78,7 @@ kbd { padding: 3px 6px; border: 1px solid var(--gray-200); border-radius: 5px; b
 .spinning .glyph { animation: spin .65s ease; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); margin-bottom: 18px; border: 1px solid var(--border); border-radius: 17px; background: oklch(100% 0 0 / .76); box-shadow: var(--shadow); backdrop-filter: blur(22px); overflow: hidden; }
+.metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); margin-bottom: 18px; border: 1px solid var(--border); border-radius: 17px; background: oklch(100% 0 0 / .76); box-shadow: var(--shadow); backdrop-filter: blur(22px); overflow: hidden; }
 .metrics-grid article { display: grid; gap: 7px; min-height: 128px; align-content: center; padding: 20px 24px; }
 .metrics-grid article + article { border-left: 1px solid var(--gray-200); }
 .metrics-grid span { color: var(--gray-500); font-size: 9px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
@@ -277,9 +280,9 @@ footer code { padding: 2px 4px; border-radius: 4px; background: var(--gray-100);
   .brand img { width: 75px; }
   .search-trigger { width: 42px; justify-content: center; padding: 0; }
   .search-trigger span:not(.glyph), .search-trigger kbd, .network-pill { display: none; }
-  .metrics-grid { grid-template-columns: 1fr 1fr; }
-  .metrics-grid article:nth-child(3) { border-left: 0; border-top: 1px solid var(--gray-200); }
-  .metrics-grid article:nth-child(4) { border-top: 1px solid var(--gray-200); }
+  .metrics-grid { grid-template-columns: repeat(3, 1fr); }
+  .metrics-grid article:nth-child(4) { border-left: 0; border-top: 1px solid var(--gray-200); }
+  .metrics-grid article:nth-child(5) { border-top: 1px solid var(--gray-200); }
   .table-head, .table-row { grid-template-columns: minmax(260px, 1fr) 70px 76px 110px 20px; }
   .table-head > :nth-child(5), .table-row > :nth-child(5) { display: none; }
   .block-table .table-head, .block-table .table-row { grid-template-columns: minmax(240px, 1.2fr) minmax(180px, 1fr) 110px 20px; }
@@ -303,6 +306,9 @@ footer code { padding: 2px 4px; border-radius: 4px; background: var(--gray-100);
   .metrics-grid { grid-template-columns: 1fr 1fr; }
   .metrics-grid article { min-height: 106px; padding: 16px; }
   .metrics-grid strong { font-size: 22px; }
+  .metrics-grid article:nth-child(3) { border-left: 0; border-top: 1px solid var(--gray-200); }
+  .metrics-grid article:nth-child(4) { border-left: 1px solid var(--gray-200); border-top: 1px solid var(--gray-200); }
+  .metrics-grid article:nth-child(5) { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--gray-200); }
   .overview-grid { grid-template-columns: 1fr; }
   .wide-surface { min-width: 0; }
   .section-heading { padding: 19px 17px 14px; }
