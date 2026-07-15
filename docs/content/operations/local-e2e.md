@@ -101,8 +101,10 @@ operations through `@zeko-labs/eth-bridge-sdk`. It then:
     cursor
 
 Mock proof acceptance is hard-limited to the repository verifier on chain ID
-31337. The runner controls Anvil timestamps so the narrow real OCaml slot
-windows do not expire while the CPU-heavy execution is running.
+31337. Anvil's `finalized` tag does not advance, so the runner explicitly uses
+`ETHEREUM_FINALITY_MODE=confirmations` with depth one. Testnet preflight rejects
+that fallback. The runner controls Anvil timestamps so the narrow real OCaml
+slot windows do not expire while the CPU-heavy execution is running.
 
 To replay the retained machine identity instead of the disposable local
 identity, point the runner at `build/poc/testnet-bridge-fixtures` and provide

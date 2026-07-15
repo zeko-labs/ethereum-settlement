@@ -166,7 +166,8 @@ Every bridge or settlement job first executes SP1 locally and stops in
    artifacts.
 4. Approve the exact preflight digest with explicit `maxPgu` and
    `maxPricePerPgu` strings.
-5. Wait for 12 Sepolia confirmations before advancing the next state writer.
+5. Wait until the transaction block is reported by Sepolia's JSON-RPC
+   `finalized` tag before advancing the next state writer.
 
 The expected round trip is one bridge proof, one deposit-synchronizing OCaml
 settlement, and one withdrawal-bearing OCaml settlement. Deposit finalization

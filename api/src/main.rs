@@ -43,6 +43,7 @@ struct AppState {
     local_mock_submit: bool,
     require_proof_approval: bool,
     min_remaining_slots: u64,
+    ethereum_finality_mode: indexer::FinalityMode,
     ethereum_confirmations: u64,
 }
 
@@ -222,6 +223,10 @@ async fn main() -> Result<()> {
         nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
         nonempty_env("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
     )?;
+    let ethereum_finality_mode = indexer::FinalityMode::parse(
+        &env::var("ETHEREUM_FINALITY_MODE").unwrap_or_else(|_| "finalized".to_owned()),
+    )?;
+    validate_finality_mode(ethereum_finality_mode, ethereum.chain_id().await?)?;
     let proof_system: Arc<str> = env::var("PROOF_SYSTEM")
         .unwrap_or_else(|_| "groth16".to_owned())
         .into();
@@ -296,12 +301,14 @@ async fn main() -> Result<()> {
         local_mock_submit,
         require_proof_approval,
         min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
+        ethereum_finality_mode,
         ethereum_confirmations,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { worker_loop(worker_state).await });
     let indexer_config = indexer::Config {
         start_block: optional_u64_env("ETHEREUM_INDEXER_START_BLOCK")?,
+        finality_mode: ethereum_finality_mode,
         confirmations: ethereum_confirmations,
         poll_interval: Duration::from_secs(u64_env("ETHEREUM_POLL_INTERVAL_SECS", 3)?),
     };
@@ -400,6 +407,7 @@ async fn get_bridge_config(State(state): State<AppState>) -> Response {
                 "settlementAddress": state.ethereum.settlement_address().to_string(),
                 "ethereumDecimals": 18,
                 "zekoNativeDecimals": 9,
+                "ethereumFinalityMode": state.ethereum_finality_mode.as_str(),
                 "ethereumConfirmations": state.ethereum_confirmations,
                 "withdrawalDelaySlots": withdrawal_delay_slots,
                 "currentVirtualSlot": current_virtual_slot
@@ -2264,6 +2272,14 @@ fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
 }
 
+fn validate_finality_mode(mode: indexer::FinalityMode, chain_id: u64) -> Result<()> {
+    anyhow::ensure!(
+        mode != indexer::FinalityMode::Confirmations || chain_id == 31_337,
+        "ETHEREUM_FINALITY_MODE=confirmations is restricted to local chain ID 31337"
+    );
+    Ok(())
+}
+
 fn nonempty_env(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -2385,6 +2401,13 @@ mod tests {
     fn database_errors_escape_nul_bytes() {
         let error = anyhow::anyhow!("revert\0payload").context("submit");
         assert_eq!(database_safe_error(&error), "submit: revert\\0payload");
+    }
+
+    #[test]
+    fn confirmation_finality_mode_is_local_only() {
+        assert!(validate_finality_mode(indexer::FinalityMode::Confirmations, 31_337).is_ok());
+        assert!(validate_finality_mode(indexer::FinalityMode::Confirmations, 11_155_111).is_err());
+        assert!(validate_finality_mode(indexer::FinalityMode::Finalized, 11_155_111).is_ok());
     }
 
     #[test]

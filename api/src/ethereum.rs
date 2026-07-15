@@ -228,6 +228,19 @@ impl Ethereum {
         })
     }
 
+    pub async fn finalized_block(&self) -> Result<BlockRef> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .await?
+            .context("Ethereum RPC did not return a consensus-finalized block")?;
+        Ok(BlockRef {
+            number: block.header.number,
+            hash: block.header.hash,
+            parent_hash: block.header.parent_hash,
+        })
+    }
+
     pub async fn transaction_receipt(
         &self,
         transaction_hash: &str,

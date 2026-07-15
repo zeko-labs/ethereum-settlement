@@ -186,7 +186,8 @@ The persistent profile forces approval mode. For each of the three demo jobs:
 3. obtain a read-only quote with a simulation-derived PGU cap
 4. archive the digest, quote, balances, and approval decision
 5. approve the exact digest with explicit PGU and price caps
-6. wait for 12 confirmations before advancing the next state writer
+6. wait until the transaction block is at or below the Sepolia JSON-RPC
+   `finalized` head before advancing the next state writer
 
 The order is bridge proof, deposit-synchronizing settlement, then
 withdrawal-bearing settlement.

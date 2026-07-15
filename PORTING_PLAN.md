@@ -30,7 +30,7 @@ companion `~/zeko` tree:
   sequence, accepted inner action states and the virtual Mina slot clock;
 - the gateway exposes the Mina GraphQL subset used by the sequencer, owns local
   SP1 preflight and network proving, submits Ethereum transactions, records
-  proving/Ethereum cost metrics, and waits for confirmation depth;
+  proving/Ethereum cost metrics, and waits for Ethereum consensus finality;
 - paid network requests stop after local execution until an operator approves
   the exact input digest, PGU cap, and price cap against a fresh live quote;
 - the Ethereum indexer maintains the virtual Mina account/pool/action views and

@@ -27,7 +27,8 @@ environment file.
 | `PROVER_MIN_REMAINING_SLOTS` | Minimum settlement lifetime required at approval. |
 | `PROVER_GAS_LIMIT` | Deployment-wide maximum PGU. Required in approval mode. |
 | `PROVER_MAX_PRICE_PER_PGU` | Deployment-wide maximum price. Required in approval mode. |
-| `ETHEREUM_CONFIRMATIONS` | Canonical confirmation depth; reference profile requires 12. |
+| `ETHEREUM_FINALITY_MODE` | `finalized` reads Ethereum's consensus-finalized JSON-RPC tag and is required on testnet. `confirmations` is restricted to chain ID 31337. |
+| `ETHEREUM_CONFIRMATIONS` | Depth used only when `ETHEREUM_FINALITY_MODE=confirmations`; local E2E uses 1. |
 | `ETHEREUM_POLL_INTERVAL_SECS` | Receipt/indexer poll interval. |
 | `ETHEREUM_INDEXER_START_BLOCK` | Contract deployment block. |
 | `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized native-deposit batch automatically. Enable for the browser PoC. |
@@ -65,6 +66,11 @@ ZEKO_SIGNATURE_KIND=testnet
 and command-line values for gateway L1/archive URIs, three DA nodes/keys,
 quorum two, `--inner-sync-period 30`, and the proof-bound commit validity
 period.
+
+The Ethereum profile runs the sequencer with `--deposit-delay-blocks 0` because
+the gateway only exposes consensus-finalized outer actions. Mina deployments
+keep the sequencer's existing block-delay behavior; no OCaml finality logic is
+changed by the Ethereum adapter.
 
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
 materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing

@@ -63,7 +63,10 @@ images_manifest="$DEPLOY_DIR/artifacts/images.json"
 }
 [[ ${API_REQUIRE_PROOF_APPROVAL,,} == true ]]
 [[ ${API_EXECUTE_ONLY,,} == false && ${API_LOCAL_MOCK_SUBMIT,,} == false ]]
-[[ $ETHEREUM_CONFIRMATIONS == 12 ]]
+[[ ${ETHEREUM_FINALITY_MODE:-} == finalized ]] || {
+  echo "ETHEREUM_FINALITY_MODE must be finalized on testnet" >&2
+  exit 1
+}
 [[ -n ${PROVER_GAS_LIMIT:-} && -n ${PROVER_MAX_PRICE_PER_PGU:-} ]] || {
   echo "Set deployment-wide PROVER_GAS_LIMIT and PROVER_MAX_PRICE_PER_PGU hard caps" >&2
   exit 1

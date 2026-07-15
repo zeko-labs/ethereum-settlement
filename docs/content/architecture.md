@@ -64,7 +64,8 @@ or action state.
 
 The gateway records Ethereum blocks, proof submissions, virtual Mina account
 snapshots, outer actions, bridge deposits, and inner-action leaves in
-PostgreSQL. A job becomes confirmed only at the configured depth.
+PostgreSQL. A job becomes confirmed only when its receipt block reaches the
+Ethereum JSON-RPC `finalized` head.
 
 If a canonical block is replaced, the indexer restores the prior account and
 action view, returns the affected command to the pending pool, and requeues the

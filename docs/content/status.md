@@ -22,7 +22,7 @@ promoted to a persistent live Sepolia deployment.
   enforces withdrawal delay, and releases native ETH with an ordinary Merkle
   proof.
 - The gateway implements the sequencer's Mina GraphQL subset, persists proof
-  jobs, gates paid requests on approval, waits for confirmations, and rolls its
+  jobs, gates paid requests on approval, waits for consensus finality, and rolls its
   virtual Mina view back on Ethereum reorgs.
 - Public browser APIs expose deployment config, resumable deposit state, and
   precision-safe withdrawal proofs. Finalized deposits can be queued
@@ -36,7 +36,7 @@ promoted to a persistent live Sepolia deployment.
   signing domain fixed to Mina `testnet`.
 - The machine-local delivery workflow generates separated retained identities,
   builds digest-pinned gateway/Zeko/DA images, deploys only behind an explicit
-  Sepolia confirmation, materializes runtime files, and preflights the complete
+  Sepolia deployment confirmation, materializes runtime files, and preflights the complete
   contract role/vkey/source identity.
 
 ## Verified local checkpoint

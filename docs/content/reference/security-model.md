@@ -71,12 +71,15 @@ canonical OCaml/Mina VK hash.
 
 ## Reorg and finality assumptions
 
-Ethereum events affect the virtual Mina view only after the configured depth.
-The gateway stores canonical block hashes and reversible account/action
-snapshots. A reorg requeues the same paid proof rather than requesting another.
+Ethereum events affect the virtual Mina view only when their block is at or
+below the JSON-RPC `finalized` head. The gateway verifies that finalized block's
+hash against its indexed canonical chain before advancing proof jobs or exposing
+actions. Pre-finality reorgs leave the job submitted or requeue the same paid
+proof rather than requesting another.
 
-This protects cost and local consistency; it does not eliminate Ethereum
-finality risk. Operators must halt on deep reorg or conflicting contract state.
+This trusts the configured Ethereum RPC's consensus view. A conflicting or
+regressing finalized checkpoint is an operator incident; halt state writers and
+investigate the RPC or chain before recovery.
 
 ## Known security limitations
 

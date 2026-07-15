@@ -90,10 +90,15 @@ On restart, in-progress jobs return to `queued` or `approved` according to
 whether approval was already recorded. A persisted network request ID is
 resumed rather than recreated.
 
-After submission, the indexer waits for `ETHEREUM_CONFIRMATIONS`. If the
-transaction is reorged, the gateway restores virtual Mina snapshots and
-requeues the existing proof. Operators should stop new state writers until the
-canonical chain and job status are understood.
+After submission, the indexer waits until the receipt block is at or below the
+JSON-RPC `finalized` head. Only then does it apply proof-emitted actions to the
+virtual Mina view. If the transaction is reorged before finality, the job stays
+submitted. A conflict with an already-finalized block is an RPC/consensus
+invariant violation and the indexer fails closed.
+
+`ETHEREUM_FINALITY_MODE=confirmations` retains the old depth check solely for
+local chain ID 31337, including Anvil whose `finalized` tag does not advance.
+The gateway rejects it on other chain IDs, and testnet preflight rejects it.
 
 ## Safe test modes
 

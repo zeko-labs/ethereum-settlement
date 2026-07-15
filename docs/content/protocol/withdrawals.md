@@ -47,7 +47,7 @@ administrator can submit a separate withdrawal root.
 
 ## Gateway discovery
 
-After Ethereum confirmation, the gateway validates and indexes the exact leaf
+After Ethereum consensus finality, the gateway validates and indexes the exact leaf
 set from the submitted settlement input. Public callers can use:
 
 - `GET /v1/bridge/withdrawals?recipient=0x...&after=<global-index>`

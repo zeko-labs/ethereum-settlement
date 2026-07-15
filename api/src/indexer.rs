@@ -11,9 +11,35 @@ use zeko_sp1_lib::{
     SettlementPublicValues, SettlementPublicValuesV1, SettlementPublicValuesV2,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalityMode {
+    Finalized,
+    Confirmations,
+}
+
+impl FinalityMode {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "finalized" => Ok(Self::Finalized),
+            "confirmations" => Ok(Self::Confirmations),
+            _ => anyhow::bail!(
+                "ETHEREUM_FINALITY_MODE must be `finalized` or `confirmations`, got {value}"
+            ),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Finalized => "finalized",
+            Self::Confirmations => "confirmations",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub start_block: Option<u64>,
+    pub finality_mode: FinalityMode,
     pub confirmations: u64,
     pub poll_interval: Duration,
 }
@@ -32,8 +58,17 @@ async fn tick(pool: &PgPool, ethereum: &Ethereum, config: &Config) -> Result<()>
         .block_number()
         .await
         .context("read Ethereum head")?;
-    index_blocks(pool, ethereum, config, head).await?;
-    reconcile_jobs(pool, ethereum, config.confirmations, head).await?;
+    let finalized_block = match config.finality_mode {
+        FinalityMode::Finalized => Some(
+            ethereum
+                .finalized_block()
+                .await
+                .context("read Ethereum consensus-finalized head")?,
+        ),
+        FinalityMode::Confirmations => None,
+    };
+    index_blocks(pool, ethereum, config, head, finalized_block.as_ref()).await?;
+    reconcile_jobs(pool, ethereum, config, head, finalized_block.as_ref()).await?;
     Ok(())
 }
 
@@ -42,6 +77,7 @@ async fn index_blocks(
     ethereum: &Ethereum,
     config: &Config,
     head: u64,
+    finalized_block: Option<&BlockRef>,
 ) -> Result<()> {
     let latest = sqlx::query(
         "SELECT block_number, block_hash FROM gateway_blocks
@@ -60,13 +96,52 @@ async fn index_blocks(
 
     while next <= head {
         let block = ethereum.block(next).await?;
-        ensure_parent(pool, ethereum, &block).await?;
+        ensure_parent(pool, ethereum, config.finality_mode, &block).await?;
         insert_block(pool, &block).await?;
         index_bridge_deposits(pool, ethereum, block.number).await?;
         next = block.number + 1;
     }
 
-    let finalized_through = head.saturating_sub(config.confirmations);
+    let finalized_through = match finalized_block {
+        Some(block) => {
+            anyhow::ensure!(
+                block.number <= head,
+                "Ethereum finalized head {} is above latest head {head}",
+                block.number
+            );
+            let indexed_hash = sqlx::query_scalar::<_, String>(
+                "SELECT block_hash FROM gateway_blocks
+                 WHERE block_number = $1 AND canonical",
+            )
+            .bind(i64::try_from(block.number)?)
+            .fetch_optional(pool)
+            .await?;
+            if let Some(indexed_hash) = indexed_hash {
+                anyhow::ensure!(
+                    indexed_hash == block.hash.to_string(),
+                    "Ethereum finalized head {} does not match the indexed canonical hash",
+                    block.number
+                );
+            }
+            let previous_finalized = sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT MAX(block_number) FROM gateway_blocks
+                 WHERE canonical AND finalized",
+            )
+            .fetch_one(pool)
+            .await?
+            .map(u64::try_from)
+            .transpose()
+            .context("negative finalized Ethereum block")?;
+            anyhow::ensure!(
+                previous_finalized.is_none_or(|height| block.number >= height),
+                "Ethereum finalized head regressed from {} to {}",
+                previous_finalized.unwrap_or_default(),
+                block.number
+            );
+            block.number
+        }
+        None => head.saturating_sub(config.confirmations),
+    };
     sqlx::query(
         "UPDATE gateway_blocks
          SET finalized = canonical AND block_number <= $1",
@@ -88,7 +163,12 @@ async fn index_blocks(
     Ok(())
 }
 
-async fn ensure_parent(pool: &PgPool, ethereum: &Ethereum, block: &BlockRef) -> Result<()> {
+async fn ensure_parent(
+    pool: &PgPool,
+    ethereum: &Ethereum,
+    finality_mode: FinalityMode,
+    block: &BlockRef,
+) -> Result<()> {
     if block.number == 0 {
         return Ok(());
     }
@@ -124,6 +204,21 @@ async fn ensure_parent(pool: &PgPool, ethereum: &Ethereum, block: &BlockRef) -> 
         }
         candidate -= 1;
     };
+    if finality_mode == FinalityMode::Finalized {
+        let would_reorg_finalized = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1 FROM gateway_blocks
+                WHERE canonical AND finalized AND block_number > $1
+             )",
+        )
+        .bind(i64::try_from(ancestor)?)
+        .fetch_one(pool)
+        .await?;
+        anyhow::ensure!(
+            !would_reorg_finalized,
+            "Ethereum canonical chain conflicts with a consensus-finalized checkpoint above block {ancestor}"
+        );
+    }
     rollback_after(pool, ancestor).await?;
     anyhow::ensure!(
         ancestor + 1 == block.number,
@@ -375,8 +470,9 @@ async fn index_bridge_deposits(
 async fn reconcile_jobs(
     pool: &PgPool,
     ethereum: &Ethereum,
-    required_confirmations: u64,
+    config: &Config,
     head: u64,
+    finalized_block: Option<&BlockRef>,
 ) -> Result<()> {
     let rows = sqlx::query(
         "SELECT id, kind::text AS kind, input, public_values, status::text AS status,
@@ -426,7 +522,13 @@ async fn reconcile_jobs(
         if canonical_hash.as_deref() != Some(receipt.block_hash.to_string().as_str()) {
             continue;
         }
-        let confirmed = confirmations >= required_confirmations.max(1);
+        let confirmed = transaction_is_finalized(
+            config.finality_mode,
+            receipt.block_number,
+            confirmations,
+            config.confirmations,
+            finalized_block.map(|block| block.number),
+        );
         if confirmed && previous_status != "confirmed" && kind == "settlement" {
             apply_confirmed_settlement(
                 pool,
@@ -1148,11 +1250,82 @@ fn fields_to_decimal(value: Value) -> Result<Value> {
     ))
 }
 
+fn transaction_is_finalized(
+    mode: FinalityMode,
+    block_number: u64,
+    confirmations: u64,
+    required_confirmations: u64,
+    finalized_height: Option<u64>,
+) -> bool {
+    match mode {
+        FinalityMode::Finalized => finalized_height.is_some_and(|height| block_number <= height),
+        FinalityMode::Confirmations => confirmations >= required_confirmations.max(1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn confirmation_count_includes_submission_block() {
         assert_eq!(12_u64.saturating_sub(12) + 1, 1);
         assert_eq!(15_u64.saturating_sub(12) + 1, 4);
+    }
+
+    #[test]
+    fn consensus_finality_ignores_confirmation_depth() {
+        assert!(!transaction_is_finalized(
+            FinalityMode::Finalized,
+            100,
+            100,
+            12,
+            Some(99)
+        ));
+        assert!(transaction_is_finalized(
+            FinalityMode::Finalized,
+            100,
+            1,
+            12,
+            Some(100)
+        ));
+        assert!(!transaction_is_finalized(
+            FinalityMode::Finalized,
+            100,
+            100,
+            12,
+            None
+        ));
+    }
+
+    #[test]
+    fn confirmation_mode_preserves_local_boundary() {
+        assert!(!transaction_is_finalized(
+            FinalityMode::Confirmations,
+            100,
+            11,
+            12,
+            None
+        ));
+        assert!(transaction_is_finalized(
+            FinalityMode::Confirmations,
+            100,
+            12,
+            12,
+            None
+        ));
+    }
+
+    #[test]
+    fn finality_mode_is_explicit() {
+        assert_eq!(
+            FinalityMode::parse("finalized").unwrap(),
+            FinalityMode::Finalized
+        );
+        assert_eq!(
+            FinalityMode::parse("confirmations").unwrap(),
+            FinalityMode::Confirmations
+        );
+        assert!(FinalityMode::parse("safe").is_err());
     }
 }

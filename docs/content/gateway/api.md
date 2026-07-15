@@ -33,8 +33,7 @@ carries `gatewayToken` as a GraphQL variable. The sequencer reads it from
 
 The mutation is idempotent by the exported Mina transaction hash. Reusing a
 hash for different proof input is rejected. The command remains visible in the
-pending pool until the Ethereum transaction reaches the configured confirmation
-depth.
+pending pool until the Ethereum transaction reaches consensus finality.
 
 ## REST API
 
@@ -58,7 +57,7 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /v1/bridge/config` | Chain, contract, decimal, confirmation, and withdrawal-delay discovery for browser clients. |
+| `GET /v1/bridge/config` | Chain, contract, decimal, finality-mode, and withdrawal-delay discovery for browser clients. |
 | `GET /v1/bridge/deposits?zekoRecipient=0x...&after=N&limit=N` | Recover a wallet's deposits after a page reload. |
 | `GET /v1/bridge/deposits/:nonce` | Deposit finality, proof, synchronization, and next user action. |
 | `GET /v1/bridge/withdrawals?recipient=0x...&after=N` | Discover indexed native claims. |

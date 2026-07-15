@@ -95,8 +95,8 @@ settlement.
 Every testnet job executes the guest locally first. In approval mode it pauses
 at `awaiting_approval`; only an operator-approved digest and per-job cost caps
 may proceed to the Succinct Network. The resulting Groth16 proof is simulated,
-submitted, and held in `submitted` until the configured Ethereum confirmation
-depth is reached.
+submitted, and held in `submitted` until its receipt block reaches Ethereum
+consensus finality.
 
 Confirmed state updates the gateway's virtual Mina account, action, pending
 pool, and best-chain views. A reorg restores their prior snapshots and reuses

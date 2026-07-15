@@ -38,7 +38,7 @@ machines flake a baseline, not an Ethereum-PoC deployment.
 | Retained PoC identity | Final bridge address, circuit config, genesis ledger, three DA keys, sequencer/recipient keys, verifier index, SP1 vkeys, and manifest stored as one release unit. |
 | Three managed DA nodes | For this PoC, deploy exactly three retained DA identities and configure quorum two. Existing external/quorum-one testnet settings are not the target identity. |
 | Reverse proxy policy | Private/authenticated access for `/graphql` and proof operator routes; optionally public, rate-limited bridge discovery routes. |
-| Monitoring and backup | Gateway/systemd health, job-state age, balances, slot lifetime, confirmation lag, DA quorum, database backup, and immutable artifact retention. |
+| Monitoring and backup | Gateway/systemd health, job-state age, balances, slot lifetime, finalized-head lag, DA quorum, database backup, and immutable artifact retention. |
 
 No blob sidecar, beacon blob fetcher, blob archive, or blob transaction service
 is needed for this milestone.
@@ -153,7 +153,7 @@ the gateway and its PostgreSQL instance. At minimum alert on:
 - remaining settlement slots approaching `PROVER_MIN_REMAINING_SLOTS`
 - Succinct requester or Ethereum submitter balance below reserve
 - proof quote/cost above policy, network proof failure, or contract revert
-- confirmation lag/reorg and indexer head lag
+- finalized-head lag/reorg and indexer head lag
 - bridge deposit nonce divergence or native liability exceeding contract balance
 - fewer than two healthy retained DA nodes
 - PostgreSQL disk growth, backup failure, and RabbitMQ consumer loss

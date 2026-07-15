@@ -102,6 +102,7 @@ genesis_rfc3339=$(date -u -d "@$genesis_timestamp" +%Y-%m-%dT%H:%M:%SZ)
   echo "PROVER_GAS_LIMIT=${PROVER_GAS_LIMIT:-}"
   echo "PROVER_MAX_PRICE_PER_PGU=${PROVER_MAX_PRICE_PER_PGU:-}"
   echo "PROVER_EXPLORER_BASE_URL=https://explorer.succinct.xyz/request"
+  echo "ETHEREUM_FINALITY_MODE=finalized"
   echo "ETHEREUM_CONFIRMATIONS=12"
   echo "ETHEREUM_POLL_INTERVAL_SECS=3"
   echo "ETHEREUM_INDEXER_START_BLOCK=$ETHEREUM_INDEXER_START_BLOCK"

@@ -36,10 +36,10 @@ They are not part of this PoC.
 
 ## Canonical proof input
 
-After the configured Ethereum finality depth, an operator calls
-`POST /v1/bridge/deposits/prove`. The gateway constructs the batch itself from
-the next contiguous canonical `BridgeDeposit` rows. A caller cannot substitute
-deposit contents.
+After the deposit block is at or below Ethereum's consensus-finalized JSON-RPC
+head, an operator calls `POST /v1/bridge/deposits/prove`. The gateway constructs
+the batch itself from the next contiguous canonical finalized `BridgeDeposit`
+rows. A caller cannot substitute deposit contents.
 
 For each deposit the guest recomputes:
 
@@ -97,6 +97,12 @@ The sequencer reads those outer actions from the gateway. The next appropriate
 OCaml commit must bind the final deposit action checkpoint as its synchronized
 outer action state and length. Only after that settlement is confirmed does the
 gateway mark the deposit synchronized.
+
+The Ethereum gateway's Mina-compatible `actions` query returns finalized rows
+only. The Ethereum sequencer profile therefore uses
+`--deposit-delay-blocks 0`. Mina still uses the unchanged OCaml block-delay
+filter in `update_inner_account_unlocked`; the adapter does not alter Mina's
+behavior.
 
 The user then obtains and signs the normal Zeko helper-account
 `finalizeDeposit` update and submits it to the sequencer. The gateway never

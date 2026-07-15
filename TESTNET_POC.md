@@ -84,7 +84,7 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 ## Required configuration
 
 - Ethereum: `RPC_URL`, contract addresses, per-role private keys,
-  `ETHEREUM_CONFIRMATIONS`, `ETHEREUM_INDEXER_START_BLOCK`.
+  `ETHEREUM_FINALITY_MODE=finalized`, `ETHEREUM_INDEXER_START_BLOCK`.
 - SP1: build-time `SETTLEMENT_VK_JSON`, runtime `NETWORK_PRIVATE_KEY`,
   `PROOF_SYSTEM=groth16`,
   timeout, minimum auction period, optional gas/price caps.

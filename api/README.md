@@ -59,6 +59,13 @@ after finality. The indexer records canonical blocks and account snapshots so
 an Ethereum reorg restores the prior virtual Mina view and requeues the same
 proof rather than purchasing a second proof.
 
+`ETHEREUM_FINALITY_MODE` defaults to `finalized`. In that mode the gateway
+reads the JSON-RPC `finalized` block, verifies its hash against the locally
+indexed canonical chain, and exposes only finalized actions. An unsupported or
+inconsistent finalized checkpoint fails closed. The `confirmations` mode and
+`ETHEREUM_CONFIRMATIONS` depth are runtime-restricted to local chain ID 31337;
+testnet preflight also rejects them.
+
 ## Settlement input
 
 The OCaml exporter supplies the four Pickles files plus a `binding` object:

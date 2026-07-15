@@ -238,7 +238,8 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
          JOIN gateway_blocks blocks
            ON blocks.block_number = actions.ethereum_block_number
           AND blocks.block_hash = actions.ethereum_block_hash
-         WHERE actions.address = $1 AND NOT actions.removed AND blocks.canonical
+         WHERE actions.address = $1 AND NOT actions.removed
+           AND blocks.canonical AND blocks.finalized
            AND ($2::text IS NULL OR sequence >= COALESCE((
                 SELECT MIN(sequence) FROM gateway_actions
                 WHERE address = $1 AND NOT removed AND state_after = $2
