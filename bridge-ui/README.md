@@ -59,8 +59,9 @@ bridge SDK artifact lacks runtime exports required by the Ethereum wrapper.
 
 Auro currently assigns the Mina network ID `testnet` to custom networks. This
 PoC therefore adds the configured sequencer endpoint as `Zeko Ethereum PoC` and
-constructs all SDK transactions with `l2Network: "testnet"`. This is a temporary
-signing-domain compatibility choice, not the intended production network ID.
+constructs the bridge SDK runtime with both circuit networks set to `testnet`.
+This is a temporary signing-domain compatibility choice, not the intended
+production network ID.
 
 ## Validation
 

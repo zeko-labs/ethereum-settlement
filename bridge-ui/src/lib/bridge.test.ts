@@ -56,7 +56,11 @@ describe("SDK integration", () => {
     ).resolves.toBe(client)
     expect(mocks.init).toHaveBeenCalledWith(
       expect.objectContaining({
-        zeko: expect.objectContaining({ l2Network: "testnet", v2DepositsStartIndex: 0 })
+        zeko: expect.objectContaining({
+          l1Network: "testnet",
+          l2Network: "testnet",
+          v2DepositsStartIndex: 0
+        })
       })
     )
   })

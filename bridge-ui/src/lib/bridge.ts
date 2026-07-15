@@ -49,7 +49,7 @@ export const buildZekoSdkConfig = (config: RuntimeConfig) => ({
   zekoUrl: config.sequencerGraphqlUrl,
   zekoArchiveUrl: config.zekoArchiveGraphqlUrl,
   actionsApi: config.actionsApiUrl,
-  l1Network: "mainnet" as const,
+  l1Network: config.minaSigningNetworkId,
   l2Network: config.minaSigningNetworkId,
   pollTimeout: 30 * 60 * 1_000,
   verbose: false,
