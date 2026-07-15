@@ -27,6 +27,13 @@ contract DeployPoc is PocDeploymentConfig {
         bool localMockVerifier = vm.envOr("LOCAL_MOCK_VERIFIER", false);
         address verifier = localMockVerifier ? predicted.localVerifier : vm.envAddress("SP1_VERIFIER_ADDRESS");
         address gatewayProver = vm.envOr("GATEWAY_PROVER_ADDRESS", admin);
+        address upgrader = vm.envOr("UPGRADER_ADDRESS", admin);
+        require(gatewayProver != address(0) && upgrader != address(0), "role address is zero");
+        if (!localMockVerifier) {
+            require(gatewayProver != admin, "gateway prover must be separate from admin");
+            require(upgrader != admin, "upgrader must be separate from admin");
+            require(upgrader != gatewayProver, "upgrader must be separate from prover");
+        }
         uint256 defaultGenesisTimestamp = localMockVerifier ? block.timestamp + 1 days : block.timestamp;
         uint64 genesisTimestamp = uint64(vm.envOr("GENESIS_TIMESTAMP", defaultGenesisTimestamp));
         uint32 slotDuration = uint32(vm.envOr("SLOT_DURATION", uint256(12)));
@@ -111,6 +118,14 @@ contract DeployPoc is PocDeploymentConfig {
         if (gatewayProver != admin) {
             settlement.grantRole(settlement.PROVER_ROLE(), gatewayProver);
             bridge.grantRole(bridge.PROVER_ROLE(), gatewayProver);
+            settlement.revokeRole(settlement.PROVER_ROLE(), admin);
+            bridge.revokeRole(bridge.PROVER_ROLE(), admin);
+        }
+        if (upgrader != admin) {
+            settlement.grantRole(settlement.UPGRADER_ROLE(), upgrader);
+            bridge.grantRole(bridge.UPGRADER_ROLE(), upgrader);
+            settlement.revokeRole(settlement.UPGRADER_ROLE(), admin);
+            bridge.revokeRole(bridge.UPGRADER_ROLE(), admin);
         }
         vm.stopBroadcast();
 
@@ -119,6 +134,8 @@ contract DeployPoc is PocDeploymentConfig {
         console2.log("BRIDGE_IMPLEMENTATION_ADDRESS", predicted.bridgeImplementation);
         console2.log("SETTLEMENT_CONTRACT_ADDRESS", address(settlement));
         console2.log("BRIDGE_CONTRACT_ADDRESS", address(bridge));
+        console2.log("GATEWAY_PROVER_ADDRESS", gatewayProver);
+        console2.log("UPGRADER_ADDRESS", upgrader);
         console2.log("WITHDRAWAL_DELAY_SLOTS", withdrawalDelay);
     }
 }

@@ -13,6 +13,9 @@ ADMIN_ADDRESS=$2
 FIXTURE_DIR=${3:-fixtures/zeko-local-e2e}
 OUTPUT_DIR=${4:-build/poc}
 FORGE=${FORGE:-$HOME/.foundry/bin/forge}
+CAST=${CAST:-$HOME/.foundry/bin/cast}
+ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
+ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 [[ $FIXTURE_DIR == /* ]] || FIXTURE_DIR="$ROOT/$FIXTURE_DIR"
@@ -21,8 +24,8 @@ FIXTURE_DIR=$(realpath "$FIXTURE_DIR")
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
 
-[[ -x "$FORGE" ]] || {
-  echo "Missing forge binary: $FORGE" >&2
+[[ -x "$FORGE" && -x "$CAST" ]] || {
+  echo "Missing forge or cast" >&2
   exit 1
 }
 
@@ -83,8 +86,37 @@ LOCAL_SP1_VERIFIER_ADDRESS=$(read_prediction LOCAL_SP1_VERIFIER_ADDRESS)
 SETTLEMENT_CONTRACT_ADDRESS=$(read_prediction SETTLEMENT_CONTRACT_ADDRESS)
 BRIDGE_CONTRACT_ADDRESS=$(read_prediction BRIDGE_CONTRACT_ADDRESS)
 
+CHAIN_ID=$("$CAST" chain-id --rpc-url "$RPC_URL")
+MINA_SIGNING_NETWORK_ID=${MINA_SIGNING_NETWORK_ID:-testnet}
+UPGRADER_ADDRESS=${UPGRADER_ADDRESS:-$ADMIN_ADDRESS}
+GATEWAY_PROVER_ADDRESS=${GATEWAY_PROVER_ADDRESS:-$ADMIN_ADDRESS}
+if [[ $CHAIN_ID == 11155111 ]]; then
+  official_verifier=$(jq -er '.V6_1_0_SP1_VERIFIER_GROTH16' \
+    "$ROOT/contracts/lib/sp1-contracts/contracts/deployments/11155111.json")
+  SP1_VERIFIER_ADDRESS=${SP1_VERIFIER_ADDRESS:-$official_verifier}
+  [[ ${SP1_VERIFIER_ADDRESS,,} == "${official_verifier,,}" ]] || {
+    echo "Sepolia PoC must use the bundled SP1 v6.1 Groth16 verifier" >&2
+    exit 1
+  }
+  verifier_code=$("$CAST" code "$SP1_VERIFIER_ADDRESS" --rpc-url "$RPC_URL")
+  [[ $verifier_code != 0x && ${#verifier_code} -gt 4 ]] || {
+    echo "No SP1 verifier code at $SP1_VERIFIER_ADDRESS" >&2
+    exit 1
+  }
+  [[ ${UPGRADER_ADDRESS,,} != "${ADMIN_ADDRESS,,}" && \
+     ${GATEWAY_PROVER_ADDRESS,,} != "${ADMIN_ADDRESS,,}" && \
+     ${GATEWAY_PROVER_ADDRESS,,} != "${UPGRADER_ADDRESS,,}" ]] || {
+    echo "Sepolia admin, upgrader, and gateway prover must be distinct" >&2
+    exit 1
+  }
+else
+  SP1_VERIFIER_ADDRESS=${SP1_VERIFIER_ADDRESS:-$LOCAL_SP1_VERIFIER_ADDRESS}
+fi
+
 POC_MANIFEST_PATH="$OUTPUT_DIR/manifest.json"
 export RPC_URL ADMIN_ADDRESS POC_FACTORY_ADDRESS
+export UPGRADER_ADDRESS GATEWAY_PROVER_ADDRESS SP1_VERIFIER_ADDRESS
+export MINA_SIGNING_NETWORK_ID
 export SETTLEMENT_IMPLEMENTATION_ADDRESS BRIDGE_IMPLEMENTATION_ADDRESS
 export SETTLEMENT_CONTRACT_ADDRESS BRIDGE_CONTRACT_ADDRESS
 export SETTLEMENT_PROGRAM_VKEY BRIDGE_PROGRAM_VKEY WITHDRAW_PROGRAM_VKEY
@@ -96,13 +128,32 @@ export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
     --rpc-url "$RPC_URL" >/dev/null
 )
 
+for repo in "$ROOT" "$ZEKO_ROOT" "$ZEKO_UI_ROOT"; do
+  [[ -d $repo/.git && -z $(git -C "$repo" status --porcelain) ]] || {
+    echo "Source checkout must exist and be clean before manifest generation: $repo" >&2
+    exit 1
+  }
+done
+settlement_commit=$(git -C "$ROOT" rev-parse HEAD)
+zeko_commit=$(git -C "$ZEKO_ROOT" rev-parse HEAD)
+zeko_ui_commit=$(git -C "$ZEKO_UI_ROOT" rev-parse HEAD)
+manifest_tmp="$OUTPUT_DIR/manifest.tmp.json"
+jq --arg settlement "$settlement_commit" --arg zeko "$zeko_commit" \
+  --arg zekoUi "$zeko_ui_commit" \
+  '. + {sourceRevisions:{ethereumSettlement:$settlement,zeko:$zeko,
+    zekoUi:$zekoUi}}' "$POC_MANIFEST_PATH" >"$manifest_tmp"
+mv "$manifest_tmp" "$POC_MANIFEST_PATH"
+
 {
   echo "RPC_URL=$RPC_URL"
   echo "ADMIN_ADDRESS=$ADMIN_ADDRESS"
+  echo "UPGRADER_ADDRESS=$UPGRADER_ADDRESS"
+  echo "GATEWAY_PROVER_ADDRESS=$GATEWAY_PROVER_ADDRESS"
   echo "POC_FACTORY_ADDRESS=$POC_FACTORY_ADDRESS"
   echo "SETTLEMENT_IMPLEMENTATION_ADDRESS=$SETTLEMENT_IMPLEMENTATION_ADDRESS"
   echo "BRIDGE_IMPLEMENTATION_ADDRESS=$BRIDGE_IMPLEMENTATION_ADDRESS"
   echo "LOCAL_SP1_VERIFIER_ADDRESS=$LOCAL_SP1_VERIFIER_ADDRESS"
+  echo "SP1_VERIFIER_ADDRESS=$SP1_VERIFIER_ADDRESS"
   echo "SETTLEMENT_CONTRACT_ADDRESS=$SETTLEMENT_CONTRACT_ADDRESS"
   echo "BRIDGE_CONTRACT_ADDRESS=$BRIDGE_CONTRACT_ADDRESS"
   echo "SETTLEMENT_PROGRAM_VKEY=$SETTLEMENT_PROGRAM_VKEY"
@@ -113,6 +164,7 @@ export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
   echo "FIXTURE_SLOT_LOWER=$FORK_SLOT"
   echo "FIXTURE_SLOT_UPPER=$FIXTURE_SLOT_UPPER"
   echo "ZEKO_CIRCUITS_CONFIG=test"
+  echo "MINA_SIGNING_NETWORK_ID=$MINA_SIGNING_NETWORK_ID"
   echo "ZEKO_ETHEREUM_BRIDGE_ADDRESS=$BRIDGE_CONTRACT_ADDRESS"
   echo "POC_MANIFEST_PATH=$POC_MANIFEST_PATH"
   for index in $(seq 0 7); do

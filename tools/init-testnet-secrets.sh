@@ -93,6 +93,7 @@ network_requester_address=$(
   "$CAST" wallet address --private-key "$network_private_key"
 )
 write_secret proof-api-key "$(openssl rand -hex 32)"
+write_secret actions-indexer-token "$(openssl rand -hex 32)"
 write_secret network-private-key "$network_private_key"
 write_secret settlement-private-key "$gateway_private_key"
 write_secret bridge-private-key "$gateway_private_key"
@@ -139,6 +140,7 @@ chmod 0600 "$TESTNET_DIR/.env"
   printf 'ZEKO_ETHEREUM_BRIDGE_ADDRESS=%q\n' "$BRIDGE_ADDRESS"
   printf 'ZEKO_ETHEREUM_COMMIT_VALIDITY_PERIOD=2400\n'
   printf 'ZEKO_TEST_L1_NETWORK_ID=testnet\n'
+  printf 'MINA_SIGNING_NETWORK_ID=testnet\n'
   printf 'ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY=%q\n' \
     "$bridge_recipient_private"
   printf 'ZEKO_ETHEREUM_WITHDRAWAL_RECIPIENT=%q\n' \
@@ -155,7 +157,9 @@ jq -n --arg directory "$TESTNET_DIR" --arg sequencer "$sequencer_public" \
   --arg bridge "$BRIDGE_ADDRESS" --arg gatewayProver "$gateway_prover_address" \
   --arg networkRequester "$network_requester_address" \
   --arg bridgeRecipient "$bridge_recipient_public" \
+  --arg minaSigningNetworkId testnet \
   '{directory:$directory,bridge:$bridge,sequencerPublicKey:$sequencer,
     daPublicKeys:[$da1,$da2,$da3],gatewayProverAddress:$gatewayProver,
     networkRequesterAddress:$networkRequester,bridgeRecipientPublicKey:$bridgeRecipient,
+    minaSigningNetworkId:$minaSigningNetworkId,
     next:"fill immutable image digests, fund role/requester keys, source secrets/fixture-keys.env, then export the bridge fixtures"}'

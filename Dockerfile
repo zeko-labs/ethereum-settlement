@@ -2,8 +2,11 @@ FROM ghcr.io/succinctlabs/sp1:v6.1.0 AS guest-builder
 
 WORKDIR /src
 COPY . .
+ARG SETTLEMENT_VK_JSON=fixtures/zeko-local-e2e/vk.serde.json
+COPY ${SETTLEMENT_VK_JSON} /src/settlement-vk.serde.json
 
 ENV CARGO_TARGET_DIR=/src/target/elf-compilation \
+    SETTLEMENT_VK_JSON=/src/settlement-vk.serde.json \
     RUSTUP_TOOLCHAIN=succinct \
     RUSTC_BOOTSTRAP=1 \
     CFLAGS_riscv64im_succinct_zkvm_elf=-D__ILP32__ \
@@ -27,9 +30,11 @@ RUN apt-get update \
 WORKDIR /src
 COPY . .
 COPY --from=guest-builder /src/target/elf-compilation /src/target/elf-compilation
+COPY --from=guest-builder /src/settlement-vk.serde.json /src/settlement-vk.serde.json
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 ENV PATH="/usr/local/go/bin:${PATH}" \
+    SETTLEMENT_VK_JSON=/src/settlement-vk.serde.json \
     SP1_SKIP_PROGRAM_BUILD=true
 RUN cargo build --locked --release -p zeko-proof-api
 
@@ -41,8 +46,6 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=api-builder /src/target/release/zeko-proof-api /usr/local/bin/zeko-proof-api
-COPY proofs/mainnet-blockchain-snark /app/proofs/mainnet-blockchain-snark
-COPY fixtures /app/fixtures
 
 EXPOSE 8080
 CMD ["zeko-proof-api"]

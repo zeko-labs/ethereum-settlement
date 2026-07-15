@@ -12,14 +12,18 @@ contract WritePocManifest is PocDeploymentConfig {
         Addresses memory addresses = _predict(admin);
         string memory object = "poc";
 
-        vm.serializeUint(object, "schemaVersion", 1);
+        vm.serializeUint(object, "schemaVersion", 2);
         vm.serializeUint(object, "chainId", block.chainid);
         vm.serializeString(object, "dataAvailability", "multisig");
+        vm.serializeString(object, "minaSigningNetworkId", vm.envOr("MINA_SIGNING_NETWORK_ID", string("testnet")));
         vm.serializeAddress(object, "admin", admin);
+        vm.serializeAddress(object, "upgrader", vm.envOr("UPGRADER_ADDRESS", admin));
+        vm.serializeAddress(object, "gatewayProver", vm.envOr("GATEWAY_PROVER_ADDRESS", admin));
         vm.serializeAddress(object, "factory", addresses.factory);
         vm.serializeAddress(object, "settlementImplementation", addresses.settlementImplementation);
         vm.serializeAddress(object, "bridgeImplementation", addresses.bridgeImplementation);
         vm.serializeAddress(object, "localSp1Verifier", addresses.localVerifier);
+        vm.serializeAddress(object, "sp1Verifier", vm.envOr("SP1_VERIFIER_ADDRESS", addresses.localVerifier));
         vm.serializeAddress(object, "settlement", addresses.settlementProxy);
         vm.serializeAddress(object, "bridge", addresses.bridgeProxy);
         vm.serializeBytes32(object, "ocamlEthereumHolderX", bytes32(uint256(uint160(addresses.bridgeProxy))));

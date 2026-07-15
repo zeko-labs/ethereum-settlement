@@ -2,7 +2,7 @@ name: zeko-sepolia-poc
 
 x-zeko-environment: &zeko-environment
   ZEKO_PROGRESS_STYLE: percent
-  ZEKO_SIGNATURE_KIND: zeko-testnet
+  ZEKO_SIGNATURE_KIND: ${MINA_SIGNING_NETWORK_ID:?set MINA_SIGNING_NETWORK_ID to testnet for Auro compatibility}
   ZEKO_CIRCUITS_CONFIG: /config/circuits.json
   RABBITMQ_USER: zeko
   DA_PUBLIC_KEYS: ${DA_PUBLIC_KEYS:?set the three comma-separated DA public keys}
@@ -21,7 +21,7 @@ x-da-service: &da-service
   restart: unless-stopped
   networks: [backend]
   environment:
-    ZEKO_SIGNATURE_KIND: zeko-testnet
+    ZEKO_SIGNATURE_KIND: ${MINA_SIGNING_NETWORK_ID:?set MINA_SIGNING_NETWORK_ID to testnet for Auro compatibility}
 
 services:
   gateway-db:
@@ -35,6 +35,8 @@ services:
     volumes:
       - gateway-db:/var/lib/postgresql/data
       - ./secrets/postgres-gateway-password:/run/secrets/postgres-gateway-password:ro
+    ports:
+      - "${ACTIONS_DB_BIND_ADDRESS:-127.0.0.1}:${ACTIONS_DB_PORT:-5434}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U zeko_gateway -d zeko_gateway"]
       interval: 5s

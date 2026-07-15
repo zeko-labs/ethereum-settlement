@@ -115,8 +115,21 @@ da_public_keys=$(jq -r '.daPublicKeys | join(",")' \
   "$FIXTURE_ROOT/bridge-scenario.json")
 sequencer_public_key=$(jq -r '.sequencerPublicKey' \
   "$FIXTURE_ROOT/bridge-scenario.json")
+[[ -f "$TESTNET_DIR/.env" ]] || {
+  echo "Initialize the retained machine identity before materializing config" >&2
+  exit 1
+}
+awk -v da="$da_public_keys" -v sequencer="$sequencer_public_key" '
+  /^DA_PUBLIC_KEYS=/ { print "DA_PUBLIC_KEYS=" da; next }
+  /^SEQUENCER_PUBLIC_KEY=/ { print "SEQUENCER_PUBLIC_KEY=" sequencer; next }
+  { print }
+' "$TESTNET_DIR/.env" >"$TESTNET_DIR/.env.tmp"
+mv "$TESTNET_DIR/.env.tmp" "$TESTNET_DIR/.env"
+chmod 0600 "$TESTNET_DIR/.env"
+
 jq -n --arg directory "$TESTNET_DIR" --arg daPublicKeys "$da_public_keys" \
   --arg sequencerPublicKey "$sequencer_public_key" \
   '{directory:$directory,daPublicKeys:$daPublicKeys,
     sequencerPublicKey:$sequencerPublicKey,
-    next:"copy these public values into deploy/testnet/.env and set hard caps"}'
+    minaSigningNetworkId:"testnet",
+    next:"set proof cost hard caps, pin images, then run the testnet preflight"}'
