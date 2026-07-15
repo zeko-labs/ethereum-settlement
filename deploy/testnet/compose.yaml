@@ -60,6 +60,36 @@ services:
       timeout: 5s
       retries: 20
 
+  archive-db-reader:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to an immutable repo@sha256 digest}
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      sequencer-db:
+        condition: service_healthy
+    volumes:
+      - ./secrets/postgres-sequencer-password:/run/secrets/postgres-sequencer-password:ro
+      - ./secrets/postgres-explorer-password:/run/secrets/postgres-explorer-password:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres-sequencer-password)"
+        reader_password="$$(cat /run/secrets/postgres-explorer-password)"
+        psql --host sequencer-db --username zeko_sequencer --dbname zeko_sequencer \
+          --set=ON_ERROR_STOP=1 --set=reader_password="$$reader_password" <<'SQL'
+        SELECT 'CREATE ROLE zeko_explorer LOGIN' WHERE NOT EXISTS (
+          SELECT FROM pg_catalog.pg_roles WHERE rolname = 'zeko_explorer'
+        ) \gexec
+        ALTER ROLE zeko_explorer PASSWORD :'reader_password';
+        ALTER ROLE zeko_explorer SET default_transaction_read_only = on;
+        ALTER ROLE zeko_explorer SET statement_timeout = '5s';
+        GRANT CONNECT ON DATABASE zeko_sequencer TO zeko_explorer;
+        GRANT USAGE ON SCHEMA public TO zeko_explorer;
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO zeko_explorer;
+        ALTER DEFAULT PRIVILEGES FOR ROLE zeko_sequencer IN SCHEMA public
+          GRANT SELECT ON TABLES TO zeko_explorer;
+        SQL
+
   rabbitmq:
     image: ${RABBITMQ_IMAGE:?set RABBITMQ_IMAGE to an immutable repo@sha256 digest}
     restart: unless-stopped
@@ -87,6 +117,8 @@ services:
     depends_on:
       gateway-db:
         condition: service_healthy
+      archive-db-reader:
+        condition: service_completed_successfully
     env_file: [./gateway.env]
     environment:
       API_EXECUTE_ONLY: "false"
@@ -95,6 +127,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./secrets/postgres-gateway-password:/run/zeko-secrets/postgres-gateway-password:ro
+      - ./secrets/postgres-explorer-password:/run/zeko-secrets/postgres-explorer-password:ro
       - ./secrets/proof-api-key:/run/zeko-secrets/proof-api-key:ro
       - ./secrets/network-private-key:/run/zeko-secrets/network-private-key:ro
       - ./secrets/settlement-private-key:/run/zeko-secrets/settlement-private-key:ro
@@ -104,6 +137,7 @@ services:
     command:
       - |
         export DATABASE_URL="postgres://zeko_gateway:$$(cat /run/zeko-secrets/postgres-gateway-password)@gateway-db:5432/zeko_gateway"
+        export ARCHIVE_DATABASE_URL="postgres://zeko_explorer:$$(cat /run/zeko-secrets/postgres-explorer-password)@sequencer-db:5432/zeko_sequencer"
         export PROOF_API_KEY="$$(cat /run/zeko-secrets/proof-api-key)"
         export NETWORK_PRIVATE_KEY="$$(cat /run/zeko-secrets/network-private-key)"
         export SETTLEMENT_PRIVATE_KEY="$$(cat /run/zeko-secrets/settlement-private-key)"

@@ -78,6 +78,7 @@ bridge-private-key
 withdraw-private-key
 postgres-gateway-password
 postgres-sequencer-password
+postgres-explorer-password
 rabbitmq-password
 sequencer-private-key
 sequencer-signer-token
@@ -124,6 +125,15 @@ contracts, genesis timestamp/fork slot, outer public key, and indexer start
 block. The Compose profile overrides all bypass modes and forces
 `API_REQUIRE_PROOF_APPROVAL=true`.
 
+`archive-db-reader` creates a dedicated `zeko_explorer` PostgreSQL role with
+read-only defaults, a five-second statement timeout, and `SELECT` privileges
+on current and future archive tables. Use a URL-safe random value for
+`postgres-explorer-password`; the gateway never receives the sequencer's
+owner password. On first bootstrap the gateway may start before the sequencer
+has created the archive tables. It reports the archive source as unavailable
+until schema creation completes, then polling explorer clients recover without
+a restart.
+
 ## Bootstrap and start
 
 After deploying the contracts and preparing the configuration, run:
@@ -154,6 +164,11 @@ The Actions services run from the exact clean `ZEKO_UI_ROOT` and
 `ZEKO_UI_COMMIT` recorded in `.env`. Serve the separate React application from
 `bridge-ui/dist` and provide its public `runtime-config.json`; never put a proof
 API token or runtime private key in that static file.
+
+Serve the L2 explorer independently from `explorer-ui/dist`, with its public
+`runtime-config.json` pointing at the public gateway and bridge UI. Only the
+gateway's `/v1/explorer/*` routes should be exposed to it; the browser never
+connects to PostgreSQL and never calls proof-operator routes.
 
 ## Proof runbook
 

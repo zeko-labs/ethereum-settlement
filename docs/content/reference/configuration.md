@@ -9,6 +9,7 @@ environment file.
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Gateway PostgreSQL connection. |
+| `ARCHIVE_DATABASE_URL` | Optional read-only Zeko archive PostgreSQL connection used only by public explorer reads. |
 | `PROOF_API_KEY` | GraphQL mutation token and operator REST API key. |
 | `API_BIND` | Listen address; use loopback/private networking. |
 | `API_EXECUTE_ONLY` | Execute SP1 and stop without proving or submission. |
@@ -85,6 +86,12 @@ URLs, Sepolia chain ID, display names, fee, polling interval, and deposit cap.
 It must contain `minaSigningNetworkId: "testnet"` and must never contain the
 gateway proof API key, Ethereum submitter key, or Succinct requester key. See
 [bridge web application](/bridge-ui) for the schema and deployment boundary.
+
+The standalone `explorer-ui/` build also reads `/runtime-config.json`. It
+contains only the public gateway base, bridge UI link, Sepolia explorer base,
+network display name, and polling interval. See the
+[L2 and settlement explorer](/explorer). The gateway's archive credentials stay
+server-side and must belong to a transaction-read-only role.
 
 ## Immutable public files
 

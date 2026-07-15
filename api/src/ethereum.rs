@@ -25,6 +25,25 @@ sol! {
         function currentVirtualSlot() external view returns (uint64);
         function l2ActionStateInfo(bytes32 actionState) external view returns (uint64 index, bool valid);
         function verifyAndUpdateRoot(bytes publicValues, bytes proofBytes) external;
+        event SettlementAccepted(
+            uint64 indexed batchSequence,
+            bytes32 indexed minaTransactionHash,
+            bytes32 indexed ledgerHash,
+            bytes32 outerActionState,
+            uint32 outerActionStateLength,
+            bytes32 innerActionState,
+            uint32 innerActionStateLength,
+            uint32 slotLower,
+            uint32 slotUpper
+        );
+        event InnerActionBatchAccepted(
+            uint64 indexed batchSequence,
+            bytes32 indexed stateAfter,
+            bytes32 indexed root,
+            uint32 startIndex,
+            uint32 count,
+            uint32 claimableSlot
+        );
     }
 
     #[sol(rpc)]
@@ -56,6 +75,14 @@ sol! {
             uint256 amount,
             uint256 zekoAmount,
             uint64 timeout
+        );
+        event NativeWithdrawalClaimed(
+            uint64 indexed settlementSequence,
+            uint32 indexed globalActionIndex,
+            address indexed recipient,
+            uint64 zekoAmount,
+            uint256 ethereumAmount,
+            bytes32 actionFieldsHash
         );
     }
 
@@ -108,6 +135,48 @@ pub struct BridgeDepositLog {
     pub amount: U256,
     pub zeko_amount: U256,
     pub timeout: u64,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub transaction_hash: TxHash,
+    pub log_index: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SettlementAcceptedLog {
+    pub batch_sequence: u64,
+    pub mina_transaction_hash: B256,
+    pub ledger_hash: B256,
+    pub outer_action_state: B256,
+    pub outer_action_state_length: u32,
+    pub inner_action_state: B256,
+    pub inner_action_state_length: u32,
+    pub slot_lower: u32,
+    pub slot_upper: u32,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub transaction_hash: TxHash,
+    pub log_index: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct InnerActionBatchAcceptedLog {
+    pub batch_sequence: u64,
+    pub state_after: B256,
+    pub root: B256,
+    pub start_index: u32,
+    pub count: u32,
+    pub claimable_slot: u32,
+    pub transaction_hash: TxHash,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeWithdrawalClaimedLog {
+    pub settlement_sequence: u64,
+    pub global_action_index: u32,
+    pub recipient: Address,
+    pub zeko_amount: u64,
+    pub ethereum_amount: U256,
+    pub action_fields_hash: B256,
     pub block_number: u64,
     pub block_hash: B256,
     pub transaction_hash: TxHash,
@@ -363,6 +432,132 @@ impl Ethereum {
                     log_index: decoded
                         .log_index
                         .context("BridgeDeposit log missing log index")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn settlement_accepted_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<SettlementAcceptedLog>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let filter = Filter::new()
+            .address(self.settlement_address)
+            .event_signature(IZekoSettlement::SettlementAccepted::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+        provider
+            .get_logs(&filter)
+            .await?
+            .into_iter()
+            .map(|log| {
+                let decoded = log
+                    .log_decode_validate::<IZekoSettlement::SettlementAccepted>()
+                    .context("decode SettlementAccepted log")?;
+                let data = decoded.data();
+                Ok(SettlementAcceptedLog {
+                    batch_sequence: data.batchSequence,
+                    mina_transaction_hash: data.minaTransactionHash,
+                    ledger_hash: data.ledgerHash,
+                    outer_action_state: data.outerActionState,
+                    outer_action_state_length: data.outerActionStateLength,
+                    inner_action_state: data.innerActionState,
+                    inner_action_state_length: data.innerActionStateLength,
+                    slot_lower: data.slotLower,
+                    slot_upper: data.slotUpper,
+                    block_number: decoded
+                        .block_number
+                        .context("SettlementAccepted log missing block number")?,
+                    block_hash: decoded
+                        .block_hash
+                        .context("SettlementAccepted log missing block hash")?,
+                    transaction_hash: decoded
+                        .transaction_hash
+                        .context("SettlementAccepted log missing transaction hash")?,
+                    log_index: decoded
+                        .log_index
+                        .context("SettlementAccepted log missing log index")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn inner_action_batch_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<InnerActionBatchAcceptedLog>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let filter = Filter::new()
+            .address(self.settlement_address)
+            .event_signature(IZekoSettlement::InnerActionBatchAccepted::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+        provider
+            .get_logs(&filter)
+            .await?
+            .into_iter()
+            .map(|log| {
+                let decoded = log
+                    .log_decode_validate::<IZekoSettlement::InnerActionBatchAccepted>()
+                    .context("decode InnerActionBatchAccepted log")?;
+                let data = decoded.data();
+                Ok(InnerActionBatchAcceptedLog {
+                    batch_sequence: data.batchSequence,
+                    state_after: data.stateAfter,
+                    root: data.root,
+                    start_index: data.startIndex,
+                    count: data.count,
+                    claimable_slot: data.claimableSlot,
+                    transaction_hash: decoded
+                        .transaction_hash
+                        .context("InnerActionBatchAccepted log missing transaction hash")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn native_withdrawal_claimed_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<NativeWithdrawalClaimedLog>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let filter = Filter::new()
+            .address(self.bridge_address)
+            .event_signature(IEthereumZekoBridge::NativeWithdrawalClaimed::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+        provider
+            .get_logs(&filter)
+            .await?
+            .into_iter()
+            .map(|log| {
+                let decoded = log
+                    .log_decode_validate::<IEthereumZekoBridge::NativeWithdrawalClaimed>()
+                    .context("decode NativeWithdrawalClaimed log")?;
+                let data = decoded.data();
+                Ok(NativeWithdrawalClaimedLog {
+                    settlement_sequence: data.settlementSequence,
+                    global_action_index: data.globalActionIndex,
+                    recipient: data.recipient,
+                    zeko_amount: data.zekoAmount,
+                    ethereum_amount: data.ethereumAmount,
+                    action_fields_hash: data.actionFieldsHash,
+                    block_number: decoded
+                        .block_number
+                        .context("NativeWithdrawalClaimed log missing block number")?,
+                    block_hash: decoded
+                        .block_hash
+                        .context("NativeWithdrawalClaimed log missing block hash")?,
+                    transaction_hash: decoded
+                        .transaction_hash
+                        .context("NativeWithdrawalClaimed log missing transaction hash")?,
+                    log_index: decoded
+                        .log_index
+                        .context("NativeWithdrawalClaimed log missing log index")?,
                 })
             })
             .collect()

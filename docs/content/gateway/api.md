@@ -64,6 +64,28 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | `GET /v1/bridge/withdrawals/:sequence/:offset` | Return one fixed-depth Merkle proof and live delay/cursor status. |
 | `GET /health` | Database and Ethereum connectivity. |
 
+### Public explorer routes
+
+The read-only explorer surface is served under `/v1/explorer`. It joins the
+Zeko archive through a separate read-only PostgreSQL pool with gateway and
+canonical Ethereum indexer state.
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /v1/explorer/summary` | L2, settlement, bridge, and source-health summary. |
+| `GET /v1/explorer/search?q=…` | Exact search across indexed record types. |
+| `GET /v1/explorer/blocks[/:height-or-hash]` | Archive blocks and their single user/zkApp transaction. |
+| `GET /v1/explorer/transactions[/:hash]` | Commands, status, and zkApp account updates. |
+| `GET /v1/explorer/accounts/:publicKey` | Latest canonical observed account state and history. |
+| `GET /v1/explorer/settlements[/:id-or-sequence]` | Public proof progress merged with accepted Ethereum events. |
+| `GET /v1/explorer/deposits[/:nonce]` | Native deposit and synchronization status. |
+| `GET /v1/explorer/withdrawals[/:sequence/:offset]` | Withdrawal inclusion, delay, cursor, and claim status. |
+
+List cursors are opaque and limits are bounded to 100. Large numeric values are
+decimal strings. Public settlement objects do not expose proof inputs,
+approval data, request IDs, operator errors, or costs. See the
+[L2 and settlement explorer](/explorer) for UI and deployment details.
+
 ## Exposure policy
 
 Bind the gateway and sequencer to a private address. Put a TLS reverse proxy in
@@ -75,6 +97,8 @@ front of them and apply route-specific policy:
   restriction and API-key authentication.
 - bridge config, deposit/withdrawal discovery, and read-only GraphQL operations
   may be public and rate limited.
+- `/v1/explorer/*` may be public and rate limited; it does not make proof
+  operator routes public.
 - PostgreSQL, RabbitMQ, DA RPC, and signer RPC must not be publicly reachable.
 
 Do not expose the gateway directly to the Internet merely because it has an API

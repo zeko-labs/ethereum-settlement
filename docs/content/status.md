@@ -34,6 +34,10 @@ promoted to a persistent live Sepolia deployment.
   operations: ETH deposit, Zeko deposit finalization, Zeko withdrawal request,
   and Ethereum claim. It uses injected Ethereum wallets and Auro, with the PoC
   signing domain fixed to Mina `testnet`.
+- `explorer-ui/` is a standalone React explorer for L2 blocks, transactions,
+  accounts, SP1/Ethereum settlements, deposits, withdrawals, and canonical
+  claims. The gateway joins a read-only OCaml archive view with its existing
+  Ethereum and bridge indexes.
 - The machine-local delivery workflow generates separated retained identities,
   builds digest-pinned gateway/Zeko/DA images, deploys only behind an explicit
   Sepolia deployment confirmation, materializes runtime files, and preflights the complete

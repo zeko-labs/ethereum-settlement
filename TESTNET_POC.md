@@ -120,6 +120,12 @@ sequencer/archive, and Actions endpoints for deposit, deposit finalization,
 withdrawal request, and claim flows. It must never receive the proof operator
 API key.
 
+The read-only network explorer lives in `explorer-ui/`. Its public gateway
+routes combine the OCaml archive schema with canonical settlement and bridge
+events. The gateway connects to the sequencer archive through a dedicated
+read-only role; the browser never receives archive credentials or proof
+operator data.
+
 ## Acceptance tests
 
 - A genuine OCaml commit executes in SP1 and a mutated app statement, deferred

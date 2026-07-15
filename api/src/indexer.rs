@@ -68,6 +68,7 @@ async fn tick(pool: &PgPool, ethereum: &Ethereum, config: &Config) -> Result<()>
         FinalityMode::Confirmations => None,
     };
     index_blocks(pool, ethereum, config, head, finalized_block.as_ref()).await?;
+    index_explorer_events_through(pool, ethereum, config, head).await?;
     reconcile_jobs(pool, ethereum, config, head, finalized_block.as_ref()).await?;
     Ok(())
 }
@@ -307,6 +308,27 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     .execute(&mut *tx)
     .await?;
     sqlx::query(
+        "UPDATE gateway_explorer_settlements SET removed = TRUE
+         WHERE NOT removed AND ethereum_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE gateway_native_withdrawal_claims SET removed = TRUE
+         WHERE NOT removed AND ethereum_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE gateway_explorer_index_state
+         SET last_block = LEAST(last_block, $1)",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
         "UPDATE gateway_bridge_deposits deposits
          SET synchronized_settlement_job_id = NULL,
              synchronized_settlement_sequence = NULL
@@ -461,6 +483,171 @@ async fn index_bridge_deposits(
         .bind(deposit.block_hash.to_string())
         .bind(deposit.transaction_hash.to_string())
         .bind(i64::try_from(deposit.log_index)?)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn index_explorer_events_through(
+    pool: &PgPool,
+    ethereum: &Ethereum,
+    config: &Config,
+    head: u64,
+) -> Result<()> {
+    let last = sqlx::query_scalar::<_, i64>(
+        "SELECT last_block FROM gateway_explorer_index_state WHERE id = TRUE",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let first_indexed = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MIN(block_number) FROM gateway_blocks WHERE canonical",
+    )
+    .fetch_one(pool)
+    .await?;
+    let mut next = match last {
+        Some(last) => u64::try_from(last).context("negative explorer index block")? + 1,
+        None => config
+            .start_block
+            .or_else(|| first_indexed.and_then(|block| u64::try_from(block).ok()))
+            .unwrap_or(head)
+            .min(head),
+    };
+    while next <= head {
+        let through = next.saturating_add(999).min(head);
+        index_explorer_events(pool, ethereum, next, through).await?;
+        sqlx::query(
+            "INSERT INTO gateway_explorer_index_state (id, last_block)
+             VALUES (TRUE, $1)
+             ON CONFLICT (id) DO UPDATE SET last_block = EXCLUDED.last_block",
+        )
+        .bind(i64::try_from(through)?)
+        .execute(pool)
+        .await?;
+        if through == head {
+            break;
+        }
+        next = through + 1;
+    }
+    Ok(())
+}
+
+async fn index_explorer_events(
+    pool: &PgPool,
+    ethereum: &Ethereum,
+    from_block: u64,
+    to_block: u64,
+) -> Result<()> {
+    for settlement in ethereum
+        .settlement_accepted_logs(from_block, to_block)
+        .await?
+    {
+        sqlx::query(
+            "INSERT INTO gateway_explorer_settlements
+                (batch_sequence, mina_transaction_hash, ledger_hash,
+                 outer_action_state, outer_action_state_length,
+                 inner_action_state, inner_action_state_length,
+                 slot_lower, slot_upper, ethereum_block_number,
+                 ethereum_block_hash, ethereum_tx_hash, ethereum_log_index,
+                 removed)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13, FALSE)
+             ON CONFLICT (ethereum_tx_hash, ethereum_log_index) DO UPDATE SET
+                 batch_sequence = EXCLUDED.batch_sequence,
+                 mina_transaction_hash = EXCLUDED.mina_transaction_hash,
+                 ledger_hash = EXCLUDED.ledger_hash,
+                 outer_action_state = EXCLUDED.outer_action_state,
+                 outer_action_state_length = EXCLUDED.outer_action_state_length,
+                 inner_action_state = EXCLUDED.inner_action_state,
+                 inner_action_state_length = EXCLUDED.inner_action_state_length,
+                 slot_lower = EXCLUDED.slot_lower,
+                 slot_upper = EXCLUDED.slot_upper,
+                 ethereum_block_number = EXCLUDED.ethereum_block_number,
+                 ethereum_block_hash = EXCLUDED.ethereum_block_hash,
+                 inner_action_root = NULL,
+                 inner_action_start_index = NULL,
+                 inner_action_count = NULL,
+                 claimable_slot = NULL,
+                 removed = FALSE,
+                 indexed_at = NOW()",
+        )
+        .bind(i64::try_from(settlement.batch_sequence)?)
+        .bind(settlement.mina_transaction_hash.to_string())
+        .bind(settlement.ledger_hash.to_string())
+        .bind(settlement.outer_action_state.to_string())
+        .bind(i64::from(settlement.outer_action_state_length))
+        .bind(settlement.inner_action_state.to_string())
+        .bind(i64::from(settlement.inner_action_state_length))
+        .bind(i64::from(settlement.slot_lower))
+        .bind(i64::from(settlement.slot_upper))
+        .bind(i64::try_from(settlement.block_number)?)
+        .bind(settlement.block_hash.to_string())
+        .bind(settlement.transaction_hash.to_string())
+        .bind(i64::try_from(settlement.log_index)?)
+        .execute(pool)
+        .await?;
+    }
+
+    for batch in ethereum
+        .inner_action_batch_logs(from_block, to_block)
+        .await?
+    {
+        let updated = sqlx::query(
+            "UPDATE gateway_explorer_settlements
+             SET inner_action_root = $1, inner_action_start_index = $2,
+                 inner_action_count = $3, claimable_slot = $4
+             WHERE batch_sequence = $5 AND ethereum_tx_hash = $6
+               AND inner_action_state = $7 AND NOT removed",
+        )
+        .bind(batch.root.to_string())
+        .bind(i64::from(batch.start_index))
+        .bind(i64::from(batch.count))
+        .bind(i64::from(batch.claimable_slot))
+        .bind(i64::try_from(batch.batch_sequence)?)
+        .bind(batch.transaction_hash.to_string())
+        .bind(batch.state_after.to_string())
+        .execute(pool)
+        .await?;
+        anyhow::ensure!(
+            updated.rows_affected() == 1,
+            "inner-action batch event did not match its settlement event"
+        );
+    }
+
+    for claim in ethereum
+        .native_withdrawal_claimed_logs(from_block, to_block)
+        .await?
+    {
+        sqlx::query(
+            "INSERT INTO gateway_native_withdrawal_claims
+                (settlement_sequence, global_action_index, recipient,
+                 zeko_amount, ethereum_amount, action_fields_hash,
+                 ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
+                 ethereum_log_index, removed)
+             VALUES ($1, $2, $3, $4::numeric, $5::numeric, $6, $7, $8, $9,
+                     $10, FALSE)
+             ON CONFLICT (settlement_sequence, global_action_index) DO UPDATE SET
+                 recipient = EXCLUDED.recipient,
+                 zeko_amount = EXCLUDED.zeko_amount,
+                 ethereum_amount = EXCLUDED.ethereum_amount,
+                 action_fields_hash = EXCLUDED.action_fields_hash,
+                 ethereum_block_number = EXCLUDED.ethereum_block_number,
+                 ethereum_block_hash = EXCLUDED.ethereum_block_hash,
+                 ethereum_tx_hash = EXCLUDED.ethereum_tx_hash,
+                 ethereum_log_index = EXCLUDED.ethereum_log_index,
+                 removed = FALSE,
+                 indexed_at = NOW()",
+        )
+        .bind(i64::try_from(claim.settlement_sequence)?)
+        .bind(i64::from(claim.global_action_index))
+        .bind(claim.recipient.to_string())
+        .bind(claim.zeko_amount.to_string())
+        .bind(claim.ethereum_amount.to_string())
+        .bind(claim.action_fields_hash.to_string())
+        .bind(i64::try_from(claim.block_number)?)
+        .bind(claim.block_hash.to_string())
+        .bind(claim.transaction_hash.to_string())
+        .bind(i64::try_from(claim.log_index)?)
         .execute(pool)
         .await?;
     }

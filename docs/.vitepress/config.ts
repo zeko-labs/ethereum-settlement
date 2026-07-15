@@ -47,7 +47,8 @@ export default defineConfig({
         items: [
           { text: "API and GraphQL", link: "/gateway/api" },
           { text: "Proof jobs and approval", link: "/gateway/proving" },
-          { text: "Bridge web application", link: "/bridge-ui" }
+          { text: "Bridge web application", link: "/bridge-ui" },
+          { text: "L2 and settlement explorer", link: "/explorer" }
         ]
       },
       {

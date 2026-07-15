@@ -56,6 +56,8 @@ other branches create preview deployments.
 | `crates/pickles-verifier` | o1 reference Pickles verifier adapted for this workspace. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side bridge contract that records deposits and accepts withdraw states. |
+| `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
+| `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
 | `proofs/bridge-input.json` | Example bridge input fixture. |
 | `proofs/bridge-input-200.json` | Bridge input fixture with 200 deposits. |

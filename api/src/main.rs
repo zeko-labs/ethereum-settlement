@@ -27,6 +27,7 @@ use zeko_sp1_lib::{
 use zkapp_script::SettlementProofBundle;
 
 mod ethereum;
+mod explorer;
 mod graphql;
 mod indexer;
 mod prover;
@@ -34,6 +35,7 @@ mod prover;
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
+    archive_pool: Option<PgPool>,
     api_key: Arc<str>,
     ethereum: ethereum::Ethereum,
     proof_system: Arc<str>,
@@ -277,6 +279,34 @@ async fn main() -> Result<()> {
         .await
         .context("run migrations")?;
     initialize_gateway_config(&pool).await?;
+    let archive_pool = match nonempty_env("ARCHIVE_DATABASE_URL") {
+        Some(database_url) => {
+            let pool = PgPoolOptions::new()
+                .max_connections(5)
+                .after_connect(|connection, _| {
+                    Box::pin(async move {
+                        sqlx::query("SET default_transaction_read_only = on")
+                            .execute(&mut *connection)
+                            .await?;
+                        sqlx::query("SET statement_timeout = '5s'")
+                            .execute(&mut *connection)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .connect(&database_url)
+                .await
+                .context("connect to Zeko archive PostgreSQL")?;
+            if let Err(error) = explorer::validate_archive_schema(&pool).await {
+                tracing::warn!(
+                    %error,
+                    "Zeko archive schema is not ready; explorer endpoints will recover after sequencer initialization"
+                );
+            }
+            Some(pool)
+        }
+        None => None,
+    };
     sqlx::query(
         "UPDATE proof_jobs
          SET status = CASE
@@ -292,6 +322,7 @@ async fn main() -> Result<()> {
     let ethereum_confirmations = u64_env("ETHEREUM_CONFIRMATIONS", 12)?;
     let state = AppState {
         pool,
+        archive_pool,
         api_key,
         ethereum,
         proof_system,
@@ -347,6 +378,7 @@ async fn main() -> Result<()> {
         .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
         .route("/v1/bridge/deposits", get(list_native_deposits))
         .route("/v1/bridge/deposits/:nonce", get(get_native_deposit))
+        .merge(explorer::router())
         .merge(protected)
         .layer(cors_layer()?)
         .layer(TraceLayer::new_for_http())
