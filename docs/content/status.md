@@ -40,6 +40,13 @@ deposit and claim through `@zeko-labs/eth-bridge-sdk`, automatically queued the
 finalized deposit, and observed its outer Witness through the production
 Actions indexer/API pair.
 
+The live-sequencer checkpoint additionally runs that browser SDK against the
+real OCaml bridge GraphQL mutations. Deposit finalization is prepared from the
+Actions API, signed by the browser client, accepted and proved by the OCaml
+sequencer, and followed by an Ethereum-routed native withdrawal request. The
+resulting deposit-synchronizing and withdrawal-bearing commits are exported for
+settlement validation; this checkpoint generates no SP1 proof.
+
 | Execution | SP1 cycles | Ethereum gas in local mock submission |
 | --- | ---: | ---: |
 | Native deposit bridge | 3,433,016 | 218,288 |

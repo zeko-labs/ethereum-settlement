@@ -37,8 +37,13 @@ SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
 
 ```sh
 tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+tools/run-live-sequencer-bridge-e2e.sh
 tools/run-local-bridge-roundtrip.sh
 ```
+
+The live-sequencer command uses real OCaml proving plus the Actions services and
+browser SDK, but performs no SP1 proving. The round-trip command adds local
+Ethereum custody, SP1 execution, settlement submission, and withdrawal claim.
 
 Quick contract-only checkpoint:
 

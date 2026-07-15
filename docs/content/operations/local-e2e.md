@@ -1,6 +1,6 @@
 # Local E2E
 
-There are three useful local checkpoints. None requires an SP1 proof.
+There are four useful local checkpoints. None requires an SP1 proof.
 
 ::: warning Resource use
 The real settlement guest performs full Pickles verification and takes tens of
@@ -41,7 +41,37 @@ The gateway equivalent is `API_EXECUTE_ONLY=true`: it persists the job,
 executes SP1, validates the public values against live contract state, and
 stops at `executed` without changing Ethereum.
 
-## 3. Full native bridge round trip
+## 3. Live sequencer and browser bridge checkpoint
+
+Run the browser-facing SDK against a live OCaml sequencer and the production
+Actions services:
+
+```sh
+tools/run-live-sequencer-bridge-e2e.sh
+```
+
+This starts the Zeko testing ledger, a three-node multisig DA quorum, their
+signers, one real OCaml prover, and an in-process sequencer GraphQL server. It
+also starts the Actions indexer/API pair and a narrow archive compatibility
+proxy. The high-level `@zeko-labs/eth-bridge-sdk` then:
+
+1. obtains the deposit witness and commit through the Actions API
+2. prepares and signs deposit finalization in the browser-compatible SDK
+3. submits the finalization to the real sequencer bridge mutation
+4. constructs, signs, and submits an Ethereum-routed native withdrawal request
+5. lets the OCaml sequencer commit the resulting inner action
+6. validates the two proof-bound settlement exports
+
+This checkpoint exercises the previously mocked browser-to-sequencer boundary.
+It does not deploy Ethereum contracts, submit an L1 deposit, finalize an L1
+withdrawal, execute SP1, or request an SP1 proof. Those Ethereum-owned steps are
+covered by the full round trip below.
+
+The command is CPU- and memory-heavy because it creates real OCaml proofs. For
+a run that must survive an SSH disconnect, launch it in `tmux` and retain its
+output with `tee`.
+
+## 4. Full native bridge round trip
 
 With a prepared bridge identity and the generated two-commit fixture under
 `build/poc/bridge-fixtures`, run:
@@ -110,6 +140,8 @@ release storage before treating it as testnet identity.
 - the V2 inner root matches the gateway-reconstructed tree
 - the claim is rejected before delay and succeeds afterward
 - the SDK can recover deposit status and claim data using only public APIs
+- the browser SDK can finalize a deposit and route a native withdrawal through
+  the live sequencer GraphQL API
 - the production Actions indexer/API pair accepts the gateway archive shape
 - bridge native liability falls by the claimed value
 - no Succinct request ID exists in the job records
