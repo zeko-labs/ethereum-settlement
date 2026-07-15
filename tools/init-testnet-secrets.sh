@@ -138,6 +138,7 @@ chmod 0600 "$TESTNET_DIR/.env"
   printf 'ZEKO_DEPLOY_CONFIG=%q\n' \
     "$TESTNET_DIR/secrets/zeko-deploy-config.json"
   printf 'ZEKO_ETHEREUM_BRIDGE_ADDRESS=%q\n' "$BRIDGE_ADDRESS"
+  printf 'BRIDGE_CONTRACT_ADDRESS=%q\n' "$BRIDGE_ADDRESS"
   printf 'ZEKO_ETHEREUM_COMMIT_VALIDITY_PERIOD=2400\n'
   printf 'ZEKO_TEST_L1_NETWORK_ID=testnet\n'
   printf 'MINA_SIGNING_NETWORK_ID=testnet\n'
