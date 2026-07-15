@@ -7,6 +7,11 @@ use uuid::Uuid;
 
 use crate::AppState;
 
+// Mina's OCaml GraphQL client serializes the default token as its base58
+// TokenId, while the gateway stores the same token using the conventional
+// decimal spelling used by the browser APIs.
+const MINA_DEFAULT_TOKEN_ID: &str = "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf";
+
 #[derive(Debug, Deserialize)]
 pub struct GraphqlRequest {
     query: String,
@@ -189,6 +194,7 @@ async fn account(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
         .get("tokenId")
         .and_then(Value::as_str)
         .unwrap_or("1");
+    let token_id = canonical_token_id(token_id);
     let account = sqlx::query_scalar::<_, Value>(
         "SELECT account_json FROM gateway_accounts
          WHERE public_key = $1 AND token_id = $2",
@@ -380,4 +386,24 @@ fn variable_optional_string<'a>(request: &'a GraphqlRequest, name: &str) -> Opti
 
 fn variable_optional_i64(request: &GraphqlRequest, name: &str) -> Option<i64> {
     request.variables.get(name).and_then(Value::as_i64)
+}
+
+fn canonical_token_id(token_id: &str) -> &str {
+    if token_id == MINA_DEFAULT_TOKEN_ID {
+        "1"
+    } else {
+        token_id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_mina_default_token_id_for_gateway_storage() {
+        assert_eq!(canonical_token_id(MINA_DEFAULT_TOKEN_ID), "1");
+        assert_eq!(canonical_token_id("1"), "1");
+        assert_eq!(canonical_token_id("custom-token"), "custom-token");
+    }
 }

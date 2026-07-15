@@ -72,15 +72,28 @@ outer_public_key=$(jq -r '.outerAccountPublicKey' "$fixture")
 fee_payer_public_key=$(jq -r '.feePayerPublicKey' "$fixture")
 fee_payer_nonce=$(jq -r '.nonce' "$fixture")
 action_state_decimal=$("$CAST" to-dec "$initial_action_state")
+zkapp_state=$(
+  while read -r field; do
+    "$CAST" to-dec "$field"
+  done < <(jq -r '.proof.binding.stateBefore.fields[]' "$fixture") |
+    jq -Rsc 'split("\n")[:-1]'
+)
+[[ $(jq 'length' <<<"$zkapp_state") == 8 ]] || {
+  echo "Deposit-sync fixture must contain the eight-field outer state" >&2
+  exit 1
+}
 jq -n --arg outerPublicKey "$outer_public_key" \
   --arg feePayerPublicKey "$fee_payer_public_key" \
   --arg nonce "$fee_payer_nonce" --arg actionState "$action_state_decimal" \
+  --argjson zkappState "$zkapp_state" \
   'if $outerPublicKey == $feePayerPublicKey then
     [{publicKey:$outerPublicKey,tokenId:"1",nonce:$nonce,
-      actionState:[$actionState,"0","0","0","0"]}]
+      actionState:[$actionState,"0","0","0","0"],
+      zkappState:$zkappState}]
    else
     [{publicKey:$outerPublicKey,tokenId:"1",
-      actionState:[$actionState,"0","0","0","0"]},
+      actionState:[$actionState,"0","0","0","0"],
+      zkappState:$zkappState},
      {publicKey:$feePayerPublicKey,tokenId:"1",nonce:$nonce}]
    end' >"$TESTNET_DIR/config/virtual-mina-accounts.json"
 
