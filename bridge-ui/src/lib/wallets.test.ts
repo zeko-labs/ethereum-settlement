@@ -17,27 +17,37 @@ const config = {
 } as RuntimeConfig
 
 describe("wallet adapters", () => {
-  it("adds the custom Auro endpoint and accepts only the testnet signing domain", async () => {
+  it("accepts an already selected Auro Zeko testnet network", async () => {
     const provider = {
-      addChain: vi.fn(async () => ({ networkID: "testnet" })),
+      addChain: vi.fn(),
       switchChain: vi.fn(async () => ({ networkID: "testnet" })),
-      requestNetwork: vi.fn(async () => ({ networkID: "testnet" }))
+      requestNetwork: vi.fn(async () => ({ networkID: "zeko:testnet" }))
     } as unknown as AuroProvider
     await ensureAuroPoCNetwork(provider, config)
-    expect(provider.addChain).toHaveBeenCalledWith({
-      url: config.sequencerGraphqlUrl,
-      name: config.auroNetworkName
-    })
-    expect(provider.switchChain).toHaveBeenCalledWith({ networkID: "testnet" })
+    expect(provider.addChain).not.toHaveBeenCalled()
+    expect(provider.switchChain).not.toHaveBeenCalled()
   })
 
-  it("rejects a wallet that reports another Auro signing domain", async () => {
+  it("switches Auro using its wallet-facing Zeko testnet identifier", async () => {
     const provider = {
-      addChain: vi.fn(async () => ({ networkID: "testnet" })),
-      switchChain: vi.fn(async () => ({ networkID: "testnet" })),
-      requestNetwork: vi.fn(async () => ({ networkID: "zeko-testnet" }))
+      addChain: vi.fn(),
+      switchChain: vi.fn(async () => ({ networkID: "zeko:testnet" })),
+      requestNetwork: vi.fn()
+        .mockResolvedValueOnce({ networkID: "mina:devnet" })
+        .mockResolvedValueOnce({ networkID: "zeko:testnet" })
     } as unknown as AuroProvider
-    await expect(ensureAuroPoCNetwork(provider, config)).rejects.toThrow(/did not select/)
+    await ensureAuroPoCNetwork(provider, config)
+    expect(provider.switchChain).toHaveBeenCalledWith({ networkID: "zeko:testnet" })
+    expect(provider.addChain).not.toHaveBeenCalled()
+  })
+
+  it("explains how to add a local node when Auro blocks dapp-driven private URLs", async () => {
+    const provider = {
+      addChain: vi.fn(async () => ({ code: 20003, message: "Invalid method parameter(s)." })),
+      switchChain: vi.fn(async () => ({ code: 20004, message: "Not support chain." })),
+      requestNetwork: vi.fn(async () => ({ networkID: "mina:devnet" }))
+    } as unknown as AuroProvider
+    await expect(ensureAuroPoCNetwork(provider, config)).rejects.toThrow(/Auro Settings > Networks/)
   })
 
   it("switches an injected Ethereum wallet to the expected chain", async () => {

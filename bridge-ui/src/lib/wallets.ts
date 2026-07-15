@@ -48,6 +48,13 @@ export const getAuroProvider = (): AuroProvider => {
   return window.mina
 }
 
+// Auro exposes the selected chain using its wallet-facing identifier. The
+// transaction signing salt remains `testnet` and is configured separately.
+export const auroPoCNetworkIds = new Set(["zeko:testnet", "testnet"])
+
+export const isAuroPoCNetwork = (networkId: string): boolean =>
+  auroPoCNetworkIds.has(networkId)
+
 export const ensureEthereumNetwork = async (
   provider: EthereumProvider,
   expectedChainId: number
@@ -91,25 +98,40 @@ export const ensureAuroPoCNetwork = async (
   provider: AuroProvider,
   config: RuntimeConfig
 ): Promise<void> => {
-  // Auro currently gives custom networks the signing domain `testnet`. Re-add
-  // the endpoint so the selected `testnet` entry points at this PoC sequencer.
-  const added = await provider
-    .addChain({ url: config.sequencerGraphqlUrl, name: config.auroNetworkName })
-    .catch((error: unknown) => error)
-  if (added instanceof Error && !/exist|already/i.test(added.message)) throw added
-  if (isProviderError(added) && !/exist|already/i.test(added.message ?? "")) {
-    throw new Error(added.message ?? `Auro error ${added.code}`)
+  const current = await provider.requestNetwork()
+  if (isProviderError(current)) throw new Error(current.message ?? `Auro error ${current.code}`)
+  if (isAuroPoCNetwork(current.networkID)) return
+
+  // Zeko testnet is built into current Auro releases. Selecting it is enough
+  // for onlySign: the UI constructs and submits the transaction against the
+  // configured local sequencer, while Auro applies its testnet signing salt.
+  const switched: { networkID: string } | ProviderError | Error = await provider
+    .switchChain({ networkID: "zeko:testnet" })
+    .catch((error: unknown) => error as Error)
+  if (
+    !switched ||
+    switched instanceof Error ||
+    isProviderError(switched) ||
+    !isAuroPoCNetwork(switched.networkID)
+  ) {
+    const added = await provider
+      .addChain({ url: config.sequencerGraphqlUrl, name: config.auroNetworkName })
+      .catch((error: unknown) => error)
+    if (added instanceof Error) throw added
+    if (isProviderError(added)) {
+      if (added.code === 20003) {
+        throw new Error(
+          `Auro blocks dapps from adding local HTTP nodes. Add ${config.sequencerGraphqlUrl} manually in Auro Settings > Networks, select it, then reconnect.`
+        )
+      }
+      throw new Error(added.message ?? `Auro error ${added.code}`)
+    }
   }
 
-  const switched = await provider.switchChain({ networkID: config.minaSigningNetworkId })
-  if (isProviderError(switched)) throw new Error(switched.message ?? `Auro error ${switched.code}`)
-  if (switched.networkID !== "testnet") {
-    throw new Error("Auro did not switch to the PoC testnet signing domain")
-  }
   const network = await provider.requestNetwork()
   if (isProviderError(network)) throw new Error(network.message ?? `Auro error ${network.code}`)
-  if (network.networkID !== "testnet") {
-    throw new Error("Auro did not select the PoC testnet signing domain")
+  if (!isAuroPoCNetwork(network.networkID)) {
+    throw new Error("Auro did not select Zeko Testnet")
   }
 }
 

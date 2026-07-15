@@ -62,11 +62,16 @@ bridge SDK artifact lacks runtime exports required by the Ethereum wrapper.
 
 ## Auro signing domain
 
-Auro currently assigns the Mina network ID `testnet` to custom networks. This
-PoC therefore adds the configured sequencer endpoint as `Zeko Ethereum PoC` and
-constructs the bridge SDK runtime with both circuit networks set to `testnet`.
-This is a temporary signing-domain compatibility choice, not the intended
-production network ID.
+Auro currently uses the Mina signing salt `testnet` for Zeko testnet and custom
+testnet networks. The PoC therefore constructs the bridge SDK runtime with both
+circuit networks set to `testnet`. This is separate from Auro's wallet-facing
+chain identifier and is not the intended production network ID.
+
+Auro 2.5.x only permits public HTTPS URLs through its dapp-facing `addChain`
+method. For a local node, add `http://127.0.0.1:1923/graphql` through Auro's
+Settings > Networks screen and select it manually. Auro reports the selected
+wallet chain as `zeko:testnet`; that identifier is separate from the `testnet`
+transaction-signing salt used by this PoC.
 
 ## Validation
 

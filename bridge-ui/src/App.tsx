@@ -37,6 +37,7 @@ import {
   formatWalletError,
   getAuroProvider,
   getEthereumProvider,
+  isAuroPoCNetwork,
   shortAddress
 } from "./lib/wallets"
 
@@ -213,8 +214,8 @@ export default function App() {
     }
     const onAuroChain = (network: { networkID: string }) => {
       setZekoClient(undefined)
-      if (network.networkID !== "testnet") {
-        setActionError("Auro must use the temporary testnet signing domain for this Zeko endpoint.")
+      if (!isAuroPoCNetwork(network.networkID)) {
+        setActionError("Auro must use Zeko Testnet for this PoC's temporary testnet signing domain.")
       }
     }
     ethereum?.on?.("accountsChanged", onEthereumAccounts)
