@@ -121,7 +121,11 @@ for port in "$ACTIONS_INDEXER_PORT" "$ACTIONS_API_PORT"; do
   fi
 done
 
-"$ANVIL" --silent --chain-id 31337 --port "$RPC_PORT" >"$ANVIL_LOG" 2>&1 &
+# The browser SDK intentionally delegates signing to its EIP-1193 provider.
+# Let the local node impersonate the retained fixture account so the same path
+# works with generated testnet identities instead of only Anvil's default key.
+"$ANVIL" --silent --auto-impersonate --chain-id 31337 --port "$RPC_PORT" \
+  >"$ANVIL_LOG" 2>&1 &
 ANVIL_PID=$!
 for _ in $(seq 1 30); do
   if [[ $("$CAST" chain-id --rpc-url "$RPC_URL" 2>/dev/null || true) == 31337 ]]; then
