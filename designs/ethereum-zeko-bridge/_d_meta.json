@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "Ethereum ↔ Zeko Bridge": {
+      "versions": [
+        {
+          "path": "Ethereum Zeko Bridge.html",
+          "createdAt": "2026-07-15T12:54:35.163Z",
+          "status": "approved"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-07-15T12:54:35.165Z",
+  "updatedAt": "2026-07-15T13:05:57.329Z"
+}
