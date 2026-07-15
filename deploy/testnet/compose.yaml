@@ -214,7 +214,8 @@ services:
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da1-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
         exec zeko-da run-node --port 8555 --healthcheck-port 8558 \
-          --db-dir /data/db --signer da1-signer:9001 --network-id zeko-testnet
+          --db-dir /data/db --signer da1-signer:9001 \
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da1:/data
       - ./secrets/da1-signer-token:/run/zeko-secrets/da1-signer-token:ro
@@ -235,7 +236,8 @@ services:
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da2-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
         exec zeko-da run-node --port 8556 --healthcheck-port 8559 \
-          --db-dir /data/db --signer da2-signer:9002 --network-id zeko-testnet
+          --db-dir /data/db --signer da2-signer:9002 \
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da2:/data
       - ./secrets/da2-signer-token:/run/zeko-secrets/da2-signer-token:ro
@@ -256,7 +258,8 @@ services:
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da3-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
         exec zeko-da run-node --port 8557 --healthcheck-port 8560 \
-          --db-dir /data/db --signer da3-signer:9003 --network-id zeko-testnet
+          --db-dir /data/db --signer da3-signer:9003 \
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da3:/data
       - ./secrets/da3-signer-token:/run/zeko-secrets/da3-signer-token:ro
