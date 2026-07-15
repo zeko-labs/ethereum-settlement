@@ -69,7 +69,9 @@ export const ensureEthereumNetwork = async (
         chainId,
         chainName: "Local Ethereum",
         nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-        rpcUrls: ["http://127.0.0.1:8545"]
+        // MetaMask ships a non-editable "Localhost 8545" entry with chain ID
+        // 1337. Use a distinct browser-side port for this PoC's Anvil chain.
+        rpcUrls: ["http://127.0.0.1:8546"]
       }]
     })
   }

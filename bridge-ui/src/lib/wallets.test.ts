@@ -61,7 +61,7 @@ describe("wallet adapters", () => {
     await ensureEthereumNetwork({ request } as unknown as EthereumProvider, 31_337)
     expect(request).toHaveBeenNthCalledWith(3, {
       method: "wallet_addEthereumChain",
-      params: [expect.objectContaining({ chainId: "0x7a69", rpcUrls: ["http://127.0.0.1:8545"] })]
+      params: [expect.objectContaining({ chainId: "0x7a69", rpcUrls: ["http://127.0.0.1:8546"] })]
     })
   })
 

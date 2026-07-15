@@ -18,6 +18,11 @@ limits only.
 The checked-in file is ready for the local PoC. Operators can materialize the
 same schema from environment variables before building:
 
+For the local stack, expose Anvil to the browser on port `8546` (for example,
+with `ssh -L 8546:127.0.0.1:8545 ...`). MetaMask reserves its built-in
+`Localhost 8545` endpoint for chain ID 1337, while this PoC uses Anvil's chain
+ID 31337.
+
 ```bash
 BRIDGE_UI_GATEWAY_URL=https://bridge-gateway.example \
 BRIDGE_UI_SEQUENCER_GRAPHQL_URL=https://sequencer.example/graphql \
