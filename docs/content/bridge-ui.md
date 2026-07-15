@@ -42,7 +42,22 @@ field.
 ## Runtime configuration
 
 The static application loads `/runtime-config.json` with caching disabled.
-Materialize it before deployment; it contains no secret values.
+Materialize it before deployment; it contains no secret values:
+
+```sh
+cd bridge-ui
+BRIDGE_UI_GATEWAY_URL=https://gateway.example \
+BRIDGE_UI_SEQUENCER_GRAPHQL_URL=https://sequencer.example/graphql \
+BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL=https://archive.example/graphql \
+BRIDGE_UI_ACTIONS_API_URL=https://actions.example/graphql \
+pnpm config:write
+pnpm build
+```
+
+The generator deliberately does not expose a signing-network variable: it
+always writes `testnet`. It accepts the remaining public limits, fee, explorer,
+polling, and display-name settings through the `BRIDGE_UI_*` variables listed
+in `bridge-ui/README.md`.
 
 | Field | Meaning |
 | --- | --- |
