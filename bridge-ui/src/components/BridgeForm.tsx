@@ -1,4 +1,4 @@
-import { formatUnits, normalizeAmountInput } from "../lib/amount"
+import { normalizeAmountInput } from "../lib/amount"
 import { ethereumNetworkName, type RuntimeConfig } from "../lib/config"
 import { shortAddress } from "../lib/wallets"
 import { NetworkIcon, Notice, type Direction } from "./BridgeUi"
@@ -28,7 +28,6 @@ export const BridgeForm = (props: Props) => {
   const destination = deposit ? "zeko" : "ethereum"
   const sourceAccount = deposit ? props.ethereumAccount : props.zekoAccount
   const sourceBalance = deposit ? props.ethereumBalance : props.zekoBalance
-  const maxDeposit = formatUnits(BigInt(props.config.maxDepositWei), 18, 9)
   const ethereum = ethereumNetworkName(props.config.expectedEthereumChainId)
   return (
     <section className="bridge-form" data-screen-label="Bridge form">
@@ -64,7 +63,7 @@ export const BridgeForm = (props: Props) => {
       {props.validation && <div className="validation-message" role="alert"><span>!</span><span>{props.validation}</span></div>}
       <div className="route-summary"><div className="route-line"><span className="route-label">Route</span><span className="route-value"><span className="route-node">{deposit ? "Ethereum" : "Zeko"}</span><span className="route-arrow">→</span><span className="route-node"><NetworkIcon network="proof" compact /> SP1</span><span className="route-arrow">→</span><span className="route-node">{deposit ? "Zeko" : "Ethereum"}</span></span></div><button className="details-button" type="button" onClick={props.onToggleDetails} aria-expanded={props.showDetails}>{props.showDetails ? "Hide details" : "Route details"}</button></div>
       {props.showDetails && <div className="route-details"><div className="detail-cell"><span className="detail-label">Custody</span><strong className="detail-value">Ethereum bridge escrow</strong></div><div className="detail-cell"><span className="detail-label">Deposit policy</span><strong className="detail-value">No cancellation/refund</strong></div><div className="detail-cell"><span className="detail-label">Signing domain</span><strong className="detail-value">Auro · testnet placeholder</strong></div></div>}
-      <Notice kind="warning"><strong>No cancellation/refund.</strong> {deposit ? `First sign the ETH lock in your Ethereum wallet. Deposits are capped at ${maxDeposit} ETH.` : "First sign the withdrawal request with Auro. Ethereum claim becomes available after settlement and the safety delay."}</Notice>
+      <Notice kind="warning"><strong>No cancellation/refund.</strong> {deposit ? "First sign the ETH lock in your Ethereum wallet." : "First sign the withdrawal request with Auro. Ethereum claim becomes available after settlement and the safety delay."}</Notice>
       <Notice kind="warning">Zeko Testnet currently uses Mina’s <code>testnet</code> signing-domain placeholder in Auro.</Notice>
       <button type="button" className="primary-button" disabled={!props.canReview} onClick={props.onReview}>Review {props.direction}<span>→</span></button>
     </section>

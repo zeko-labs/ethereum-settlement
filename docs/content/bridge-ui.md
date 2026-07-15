@@ -71,7 +71,6 @@ in `bridge-ui/README.md`.
 | `zekoTransactionFeeNanomina` | Fee supplied to sequencer bridge operations, as a decimal string. |
 | `ethereumExplorerUrl` / `zekoExplorerUrl` | Public transaction explorer bases. |
 | `pollIntervalMs` | UI status polling period. |
-| `maxDepositWei` | Client-side native deposit safety cap, as a decimal string. |
 
 The gateway, sequencer, and Actions API must allow the deployed UI origin.
 Terminate TLS and apply public rate limits at the reverse proxy; keep proof

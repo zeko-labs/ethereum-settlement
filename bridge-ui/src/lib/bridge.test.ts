@@ -32,8 +32,7 @@ const config = {
   zekoTransactionFeeNanomina: "100000000",
   ethereumExplorerUrl: "https://sepolia.etherscan.io",
   zekoExplorerUrl: "https://zekoscan.io/testnet",
-  pollIntervalMs: 5000,
-  maxDepositWei: "100000000000000000"
+  pollIntervalMs: 5000
 } satisfies RuntimeConfig
 
 describe("SDK integration", () => {

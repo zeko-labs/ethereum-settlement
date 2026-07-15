@@ -11,7 +11,6 @@ export type RuntimeConfig = {
   ethereumExplorerUrl: string
   zekoExplorerUrl: string
   pollIntervalMs: number
-  maxDepositWei: string
 }
 
 export const ethereumNetworkName = (chainId: number): string =>
@@ -65,8 +64,6 @@ export const parseRuntimeConfig = (value: unknown): RuntimeConfig => {
   }
 
   const fee = requiredUintString(row, "zekoTransactionFeeNanomina")
-  const cap = requiredUintString(row, "maxDepositWei")
-  if (BigInt(cap) === 0n) throw new Error("maxDepositWei must be positive")
   const chainId = requiredInteger(row, "expectedEthereumChainId", { min: 1 })
   if (chainId !== 11_155_111 && chainId !== 31_337) {
     throw new Error("This PoC requires Ethereum Sepolia or local chain 31337")
@@ -84,8 +81,7 @@ export const parseRuntimeConfig = (value: unknown): RuntimeConfig => {
     zekoTransactionFeeNanomina: fee,
     ethereumExplorerUrl: requiredUrl(row, "ethereumExplorerUrl"),
     zekoExplorerUrl: requiredUrl(row, "zekoExplorerUrl"),
-    pollIntervalMs: requiredInteger(row, "pollIntervalMs", { min: 1_000, max: 60_000 }),
-    maxDepositWei: cap
+    pollIntervalMs: requiredInteger(row, "pollIntervalMs", { min: 1_000, max: 60_000 })
   }
 }
 

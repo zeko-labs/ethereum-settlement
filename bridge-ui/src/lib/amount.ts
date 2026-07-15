@@ -16,13 +16,10 @@ export const parseDecimalUnits = (value: string, decimals: number): bigint => {
   return units
 }
 
-export const bridgeAmountFromEth = (value: string, maxDepositWei?: bigint) => {
+export const bridgeAmountFromEth = (value: string) => {
   const zekoAmount = parseDecimalUnits(value, 9)
   if (zekoAmount > UINT64_MAX) throw new AmountError("Amount exceeds the bridge limit")
   const valueWei = zekoAmount * 1_000_000_000n
-  if (maxDepositWei !== undefined && valueWei > maxDepositWei) {
-    throw new AmountError("Amount exceeds the experimental deposit cap")
-  }
   return { valueWei, zekoAmount }
 }
 

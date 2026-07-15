@@ -46,11 +46,9 @@ const config = {
   zekoTransactionFeeNanomina: uintString("BRIDGE_UI_ZEKO_FEE_NANOMINA", "100000000"),
   ethereumExplorerUrl: url("BRIDGE_UI_ETHEREUM_EXPLORER_URL", "https://sepolia.etherscan.io"),
   zekoExplorerUrl: url("BRIDGE_UI_ZEKO_EXPLORER_URL", "https://zekoscan.io/testnet"),
-  pollIntervalMs: integer("BRIDGE_UI_POLL_INTERVAL_MS", "5000", { min: 1000, max: 60000 }),
-  maxDepositWei: uintString("BRIDGE_UI_MAX_DEPOSIT_WEI", "100000000000000000")
+  pollIntervalMs: integer("BRIDGE_UI_POLL_INTERVAL_MS", "5000", { min: 1000, max: 60000 })
 }
 
-if (BigInt(config.maxDepositWei) === 0n) throw new Error("BRIDGE_UI_MAX_DEPOSIT_WEI must be positive")
 if (config.auroNetworkName.length === 0) throw new Error("BRIDGE_UI_AURO_NETWORK_NAME must not be empty")
 
 const [destination] = process.argv.slice(2).filter((argument) => argument !== "--")

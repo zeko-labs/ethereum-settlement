@@ -50,7 +50,6 @@ Supported public variables:
 | `BRIDGE_UI_ETHEREUM_EXPLORER_URL` | Sepolia Etherscan | Ethereum transaction links |
 | `BRIDGE_UI_ZEKO_EXPLORER_URL` | Zeko testnet explorer | Zeko transaction links |
 | `BRIDGE_UI_POLL_INTERVAL_MS` | `5000` | Visible-page gateway polling interval |
-| `BRIDGE_UI_MAX_DEPOSIT_WEI` | `100000000000000000` | Browser-enforced experimental deposit cap |
 
 `minaSigningNetworkId` is intentionally not configurable. The generator and
 browser validator always require `testnet`, matching Auro's current signing salt

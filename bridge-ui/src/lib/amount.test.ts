@@ -15,10 +15,6 @@ describe("bridge amounts", () => {
     expect(() => bridgeAmountFromEth("18446744073.709551616")).toThrow(/bridge limit/)
   })
 
-  it("enforces the experimental deposit cap", () => {
-    expect(() => bridgeAmountFromEth("0.100000001", 100_000_000_000_000_000n)).toThrow(/deposit cap/)
-  })
-
   it("rejects excess decimals and non-positive amounts", () => {
     expect(() => parseDecimalUnits("1.0000000001", 9)).toThrow(/at most 9/)
     expect(() => parseDecimalUnits("0", 9)).toThrow(/greater than zero/)

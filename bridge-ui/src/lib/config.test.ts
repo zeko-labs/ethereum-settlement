@@ -13,8 +13,7 @@ const validConfig = {
   zekoTransactionFeeNanomina: "100000000",
   ethereumExplorerUrl: "https://sepolia.etherscan.io",
   zekoExplorerUrl: "https://zekoscan.io/testnet",
-  pollIntervalMs: 5000,
-  maxDepositWei: "100000000000000000"
+  pollIntervalMs: 5000
 }
 
 describe("runtime configuration", () => {
@@ -39,7 +38,6 @@ describe("runtime configuration", () => {
   it.each([
     ["schemaVersion", 2],
     ["pollIntervalMs", 10],
-    ["maxDepositWei", "1e18"],
     ["gatewayUrl", "file:///tmp/gateway"]
   ])("rejects invalid %s", (key, value) => {
     expect(() => parseRuntimeConfig({ ...validConfig, [key]: value })).toThrow()

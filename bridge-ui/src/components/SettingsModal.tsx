@@ -1,5 +1,4 @@
 import { useEffect } from "react"
-import { formatUnits } from "../lib/amount"
 import { ethereumNetworkName, type RuntimeConfig } from "../lib/config"
 
 export const SettingsModal = ({ config, showDetails, onToggleDetails, onClose }: {
@@ -21,7 +20,7 @@ export const SettingsModal = ({ config, showDetails, onToggleDetails, onClose }:
         <div className="modal-body">
           <div className="setting-group"><span className="setting-label">Ethereum settlement</span><strong className="read-only-setting">{ethereum} · chain {config.expectedEthereumChainId}</strong></div>
           <div className="setting-group"><span className="setting-label">Zeko signing domain</span><strong className="read-only-setting">Auro · {config.minaSigningNetworkId}</strong><p className="setting-help">Auro currently assigns the Mina testnet salt to this custom Zeko endpoint.</p></div>
-          <div className="setting-group"><span className="setting-label">Experimental cap</span><strong className="read-only-setting warning">{formatUnits(BigInt(config.maxDepositWei), 18, 9)} ETH · no cancellation/refund</strong><p className="setting-help">No cancellation or refund path is available in this PoC.</p></div>
+          <div className="setting-group"><span className="setting-label">Deposit policy</span><strong className="read-only-setting warning">No cancellation/refund</strong><p className="setting-help">Deposits are not capped by the browser. Contract and protocol validation still apply.</p></div>
           <div className="toggle-row"><div><span className="setting-label">Route details</span><p className="setting-help">Expose the SP1 settlement route on the bridge form.</p></div><button type="button" className={`switch${showDetails ? " active" : ""}`} onClick={onToggleDetails} aria-pressed={showDetails} aria-label="Show route details"></button></div>
         </div>
       </div>

@@ -251,7 +251,7 @@ export default function App() {
   const amountResult = useMemo(() => {
     if (!amount || !config) return undefined
     try {
-      return bridgeAmountFromEth(amount, direction === "deposit" ? BigInt(config.maxDepositWei) : undefined)
+      return bridgeAmountFromEth(amount)
     } catch {
       return undefined
     }
@@ -267,7 +267,7 @@ export default function App() {
   const validateForm = async (): Promise<boolean> => {
     if (!config) return false
     try {
-      bridgeAmountFromEth(amount, direction === "deposit" ? BigInt(config.maxDepositWei) : undefined)
+      bridgeAmountFromEth(amount)
     } catch (error) {
       setValidation(error instanceof Error ? error.message : String(error))
       return false
