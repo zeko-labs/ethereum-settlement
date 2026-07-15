@@ -104,6 +104,12 @@ Mock proof acceptance is hard-limited to the repository verifier on chain ID
 31337. The runner controls Anvil timestamps so the narrow real OCaml slot
 windows do not expire while the CPU-heavy execution is running.
 
+To replay the retained machine identity instead of the disposable local
+identity, point the runner at `build/poc/testnet-bridge-fixtures` and provide
+the matching retained admin address/private key. The runner funds that account
+inside Anvil and verifies that its deterministic bridge address is the one
+bound into the OCaml circuit. No real funds or external chain are used.
+
 The latest recorded checkpoint consumed 3,433,016 cycles for the bridge and
 roughly 52.19 billion cycles for each settlement. See [current status](/status)
 for the exact values.
@@ -114,7 +120,8 @@ The fixture must use the same deterministic bridge address and circuit config
 as the deployment environment:
 
 ```sh
-tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
+  tools/export-bridge-ocaml-fixtures.sh build/poc/testnet-bridge-fixtures
 ```
 
 This launches the real sequencer/prover test scenario through Nix, uses three
@@ -126,7 +133,8 @@ To reuse and revalidate an existing export:
 
 ```sh
 POC_REUSE_OCAML_EXPORT=true \
-  tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+  POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
+  tools/export-bridge-ocaml-fixtures.sh build/poc/testnet-bridge-fixtures
 ```
 
 Generated `build/` artifacts are local run products. Promote a reviewed copy to

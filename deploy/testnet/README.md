@@ -13,12 +13,13 @@ from the exact commit/config used to generate the fixtures. Push them, resolve
 registry digests, then copy `.env.example` to `.env` and use only
 `repo@sha256:<digest>` image references.
 
-Generate the final bridge proxy address before building OCaml circuits. Then
-initialize the retained Zeko, DA, bridge-recipient, gateway, and proof-network
-identities in one step:
+Generate the final bridge proxy address before building OCaml circuits. The
+machine initializer creates a new admin first, predicts that admin's
+deterministic proxy, and then generates the retained Zeko, DA,
+bridge-recipient, gateway, upgrader, and proof-network identities around it:
 
 ```sh
-tools/init-testnet-secrets.sh 0xFINAL_BRIDGE_PROXY deploy/testnet
+tools/init-machine-testnet-identity.sh deploy/testnet
 ```
 
 This command refuses to overwrite an existing identity, writes secrets with
@@ -35,13 +36,14 @@ Generate the real two-commit fixture set with the retained environment:
 set -a
 source deploy/testnet/secrets/fixture-keys.env
 set +a
-POC_ENV_FILE=build/poc/deployment.env \
-  tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
+  tools/export-bridge-ocaml-fixtures.sh build/poc/testnet-bridge-fixtures
 ```
 
-The fixture environment sets the 2400-slot validity period used with
-12-second Sepolia slots. The export records the public keys and exact genesis
-ledger.
+The fixture environment sets the 2400-slot validity period used with 12-second
+Sepolia slots and pins both circuits and signers to the exact Mina `testnet`
+domain required by Auro in this PoC. The export records the public keys and
+exact genesis ledger.
 
 Populate `config/` as described in [config/README.md](config/README.md). The
 virtual Mina accounts file must include the outer account and settlement fee
@@ -56,7 +58,8 @@ ETHEREUM_INDEXER_START_BLOCK=<deployment-block> \
 PROVER_GAS_LIMIT=<hard-pgu-cap> \
 PROVER_MAX_PRICE_PER_PGU=<hard-price-cap> \
 tools/materialize-testnet-config.sh \
-  build/poc/bridge-fixtures /path/to/circuits.json build/poc-sepolia
+  build/poc/testnet-bridge-fixtures \
+  deploy/testnet/config/circuits.json build/poc-sepolia
 ```
 
 ## Secrets
@@ -65,7 +68,11 @@ Create these newline-terminated files with mode `0600`:
 
 ```text
 proof-api-key
+actions-indexer-token
 network-private-key
+admin-private-key
+upgrader-private-key
+deployment-roles.env
 settlement-private-key
 bridge-private-key
 withdraw-private-key
@@ -85,12 +92,32 @@ signer-tls.crt
 signer-tls.key
 ```
 
-`init-testnet-secrets.sh` also creates the private Zeko deploy config and the
-fixture-only environment file. Neither is mounted into the running gateway or
-published as an artifact. The TLS certificate must have SAN entries for `sequencer-signer`,
+`init-machine-testnet-identity.sh` also creates the private Zeko deploy config
+and fixture-only environment file. Neither is mounted into the running gateway
+or published as an artifact. The TLS certificate must have SAN entries for `sequencer-signer`,
 `da1-signer`, `da2-signer`, and `da3-signer`. Use distinct random signer auth
-tokens. Role keys may share an address for the PoC, but admin/upgrader custody
-should remain outside this directory.
+tokens. Admin, upgrader, gateway prover, and Succinct requester identities must
+be distinct; preflight rejects role sharing. Admin/upgrader custody should
+remain outside the long-running runtime host.
+
+## Build and deployment helpers
+
+After preparing the Sepolia manifest against the retained fixture, build and
+pin the machine images:
+
+```sh
+tools/build-machine-images.sh \
+  build/poc/testnet-bridge-fixtures/deposit-sync/vk.serde.json deploy/testnet
+```
+
+The script runs a loopback registry and writes `artifacts/images.json` plus
+immutable image references in `.env`. Contract deployment requires an explicit
+write acknowledgement:
+
+```sh
+CONFIRM_SEPOLIA_DEPLOY=yes \
+  tools/deploy-machine-poc.sh build/poc-sepolia deploy/testnet
+```
 
 Copy `gateway.env.example` to `gateway.env` and fill the Sepolia RPC, deployed
 contracts, genesis timestamp/fork slot, outer public key, and indexer start
@@ -105,6 +132,8 @@ After deploying the contracts and preparing the configuration, run:
 tools/testnet-preflight.sh deploy/testnet
 docker compose --env-file deploy/testnet/.env \
   -f deploy/testnet/compose.yaml up -d
+
+tools/machine-actions-services.sh start deploy/testnet
 ```
 
 `bootstrap-da` is a bounded, idempotent one-shot. It reconstructs the deploy
@@ -120,6 +149,11 @@ the sequencer is not allowed to initialize against a half-started prover.
 Do not expose the gateway directly to the Internet. Put an authenticated,
 rate-limited TLS reverse proxy in front of `/graphql` and the proof-operator
 routes; the public bridge discovery endpoints may be separately exposed.
+
+The Actions services run from the exact clean `ZEKO_UI_ROOT` and
+`ZEKO_UI_COMMIT` recorded in `.env`. Serve the separate React application from
+`bridge-ui/dist` and provide its public `runtime-config.json`; never put a proof
+API token or runtime private key in that static file.
 
 ## Proof runbook
 

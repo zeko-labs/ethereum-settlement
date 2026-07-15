@@ -45,6 +45,16 @@ The live-sequencer command uses real OCaml proving plus the Actions services and
 browser SDK, but performs no SP1 proving. The round-trip command adds local
 Ethereum custody, SP1 execution, settlement submission, and withdrawal claim.
 
+Run the standalone browser app:
+
+```sh
+cd bridge-ui
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+It listens on `127.0.0.1:5174` and reads `public/runtime-config.json`.
+
 Quick contract-only checkpoint:
 
 ```sh
@@ -54,14 +64,27 @@ forge test --match-path test/NativeBridgePocE2E.t.sol -vv
 
 ## Prepare deployment identity
 
+Create the retained identities once:
+
+```sh
+tools/init-machine-testnet-identity.sh deploy/testnet
+```
+
 ```sh
 FORGE=$HOME/.foundry/bin/forge \
   tools/prepare-poc.sh \
     "$RPC_URL" "$ADMIN_ADDRESS" \
-    build/poc/bridge-fixtures/deposit-sync build/poc-sepolia
+    build/poc/testnet-bridge-fixtures/deposit-sync build/poc-sepolia
 ```
 
 This builds/derives program vkeys and writes the manifest. It does not prove.
+
+Build and pin the machine-local runtime images:
+
+```sh
+tools/build-machine-images.sh \
+  build/poc/testnet-bridge-fixtures/deposit-sync/vk.serde.json deploy/testnet
+```
 
 ## Read prover-network pricing
 
@@ -71,7 +94,9 @@ cargo run --release --bin network_quote -- \
   --proof-system groth16 --pgu "$MAX_PGU"
 ```
 
-The command reads auction parameters and never creates a request.
+The command reads auction parameters and never creates a request. The current
+maximum quote is `baseFee + maxPricePerPgu * PGU`; obtain PGU from network
+simulation rather than substituting local executor cycles.
 
 ## Testnet profile
 
@@ -81,6 +106,9 @@ docker compose --env-file deploy/testnet/.env \
   -f deploy/testnet/compose.yaml up -d
 docker compose --env-file deploy/testnet/.env \
   -f deploy/testnet/compose.yaml logs -f gateway sequencer prover
+
+tools/machine-actions-services.sh start deploy/testnet
+tools/machine-actions-services.sh status deploy/testnet
 ```
 
 ## Inspect and approve a job

@@ -58,7 +58,9 @@ initial_action_state=$(jq -r '.outerActionStateBeforeDeposit | ascii_downcase' \
   exit 1
 }
 
-cp "$CIRCUITS_CONFIG" "$TESTNET_DIR/config/circuits.json"
+if [[ $CIRCUITS_CONFIG != "$TESTNET_DIR/config/circuits.json" ]]; then
+  cp "$CIRCUITS_CONFIG" "$TESTNET_DIR/config/circuits.json"
+fi
 cp "$FIXTURE_ROOT/bridge-scenario.json" \
   "$TESTNET_DIR/config/bridge-scenario.json"
 cp "$FIXTURE_ROOT/bridge-genesis-ledger.json" \

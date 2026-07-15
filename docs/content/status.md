@@ -30,6 +30,14 @@ promoted to a persistent live Sepolia deployment.
 - `@zeko-labs/eth-bridge-sdk` owns Ethereum wallet operations and composes the
   existing bridge SDK for sequencer-side deposit finalization and withdrawal
   requests. The Actions services consume the gateway's Mina archive shape.
+- `bridge-ui/` is a standalone React application for the four browser-owned
+  operations: ETH deposit, Zeko deposit finalization, Zeko withdrawal request,
+  and Ethereum claim. It uses injected Ethereum wallets and Auro, with the PoC
+  signing domain fixed to Mina `testnet`.
+- The machine-local delivery workflow generates separated retained identities,
+  builds digest-pinned gateway/Zeko/DA images, deploys only behind an explicit
+  Sepolia confirmation, materializes runtime files, and preflights the complete
+  contract role/vkey/source identity.
 
 ## Verified local checkpoint
 
@@ -59,17 +67,22 @@ SP1 proof or network request was generated.
 
 ## Needed for the live PoC
 
-1. Retain a stable testnet genesis, sequencer/DA identities, exact circuit
-   configuration, OCaml verifier index, and bridge address.
-2. Build and pin Zeko and gateway images from that identity.
-3. Deploy the real SP1 verifier plus the settlement and bridge proxies on
-   Sepolia, then assign separated roles and fund the required accounts.
-4. Add the gateway and Ethereum-specific sequencer settings to the NixOS
-   machines repository, or deploy the pinned Compose profile on a dedicated
-   operator host.
-5. Run each genuine job through execute-only validation, approve its quoted
-   cost, obtain the three network proofs used by the demo, and complete the
-   acceptance checklist.
+1. Complete and archive the retained two-commit OCaml export under the exact
+   `testnet` signing domain, then replay it through the full local execute-only
+   round trip.
+2. Build and record immutable machine-local images from the final committed
+   source and retained verifier index.
+3. Provide a funded Sepolia RPC/admin/gateway identity and a funded Succinct
+   requester, deploy the settlement and bridge proxies, and pass preflight.
+4. Run each genuine job through execute-only validation, obtain a
+   simulation-derived PGU value, review the capped quote, and explicitly
+   approve the three paid proofs used by the demo.
+5. Complete one browser-driven Sepolia round trip and archive transaction,
+   proof-request, cost, confirmation, DA, and balance/liability evidence.
+
+No Sepolia deployment or paid Succinct proof has been performed by the checked
+in delivery workflow yet. Those remain credential-, funding-, and
+approval-gated external operations.
 
 ## Explicitly out of scope
 

@@ -37,17 +37,22 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 
 ## Build and deploy order
 
-1. Reserve the final bridge proxy address with `tools/prepare-poc.sh`. The
-   CREATE2 factory deploys and initializes each proxy atomically. Configure the
-   OCaml circuit's `ethereum_holder_account_l1` as
+1. Generate the retained admin and predict the final bridge proxy with
+   `tools/init-machine-testnet-identity.sh`. The CREATE2 factory later deploys
+   and initializes each proxy atomically. Configure the OCaml circuit's
+   `ethereum_holder_account_l1` as
    the compressed key `(x = uint160(proxy), is_odd = false)`. This address is
    proof-bound; changing it requires rebuilding the OCaml bridge VK and SP1
    programs.
-2. Build the OCaml outer rules and export their wrap verifier index. Build the
+2. Export the real two-commit OCaml bridge scenario with the retained circuit,
+   sequencer, recipient, and three DA identities. Both OCaml chains and the
+   external signer use Mina network ID `testnet` for Auro compatibility. Build
+   the OCaml outer rules and export their wrap verifier index. Build the
    settlement ELF with `SETTLEMENT_VK_JSON` pointing to that exact JSON. Do not
    deploy an ELF built with the copied o1 example VK.
-3. Obtain the SP1 program vkey with the host tooling and deploy an SP1 verifier
-   supported by SP1 6.1.
+3. Run `tools/prepare-poc.sh` against Sepolia to obtain the SP1 program vkeys
+   and bind the manifest to the official SP1 6.1 Groth16 verifier. Preparation
+   does not prove or deploy.
 4. Deploy `ZekoSettlement` and `EthereumZekoBridge` behind `ERC1967Proxy`.
    Initialize the full eight outer-state fields, action state/length, genesis
    timestamp, slot duration, fork slot, program vkey and SHA-256 PoC VK
@@ -63,8 +68,9 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
    `VIRTUAL_MINA_ACCOUNTS_PATH` to its container path and
    `VIRTUAL_MINA_OUTER_PUBLIC_KEY` to the rollup outer account.
 8. Point the sequencer L1 GraphQL URI at `<gateway>/graphql` and set
-   `ZEKO_ETHEREUM_GATEWAY_TOKEN` to the API key. The modified committer sends
-   the proof export with its normal `send_zkapp` call.
+   `ZEKO_ETHEREUM_GATEWAY_TOKEN` to the API key and
+   `ZEKO_SIGNATURE_KIND=testnet`. The modified committer sends the proof export
+   with its normal `send_zkapp` call.
 9. Start with `API_EXECUTE_ONLY=true`. Produce one real OCaml commit and verify
    that the job reaches `executed` and its public values match the initialized
    contract.
@@ -85,6 +91,8 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 - Mina façade: genesis timestamp, fork slot, account-creation fee, initial
   state hash and `VIRTUAL_MINA_ACCOUNTS_PATH`.
 - OCaml sequencer: gateway GraphQL URL and `ZEKO_ETHEREUM_GATEWAY_TOKEN`.
+- Browser signing: `MINA_SIGNING_NETWORK_ID=testnet` everywhere; Auro's custom
+  network display name is not a signing salt.
 - Native bridge: final bridge proxy address in the OCaml circuit config,
   `BRIDGE_CONTRACT_ADDRESS`, `BRIDGE_PRIVATE_KEY`, and
   `VIRTUAL_MINA_OUTER_PUBLIC_KEY`.
@@ -106,6 +114,11 @@ quorum two, the gateway, both databases, RabbitMQ, isolated signers, bounded DA
 bootstrap, and a prover-readiness barrier. Run `tools/testnet-preflight.sh`
 before starting it; tags, mismatched vkeys/roles/identities, bypass modes, and
 non-Sepolia RPCs are rejected.
+
+The standalone React application lives in `bridge-ui/`. It uses public gateway,
+sequencer/archive, and Actions endpoints for deposit, deposit finalization,
+withdrawal request, and claim flows. It must never receive the proof operator
+API key.
 
 ## Acceptance tests
 

@@ -59,12 +59,26 @@ The Ethereum-enabled sequencer needs:
 ```text
 ZEKO_ETHEREUM_GATEWAY_TOKEN=<same logical secret as PROOF_API_KEY>
 ZEKO_CIRCUITS_CONFIG=/config/circuits.json
-ZEKO_SIGNATURE_KIND=zeko-testnet
+ZEKO_SIGNATURE_KIND=testnet
 ```
 
 and command-line values for gateway L1/archive URIs, three DA nodes/keys,
 quorum two, `--inner-sync-period 30`, and the proof-bound commit validity
 period.
+
+For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
+materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing
+domain to custom endpoints. Do not substitute the display name or
+`zeko-testnet`; signatures and circuit commitments must use the same salt.
+
+## Browser application
+
+The standalone `bridge-ui/` build reads public configuration from
+`/runtime-config.json`. It contains the gateway, sequencer/archive, and Actions
+URLs, Sepolia chain ID, display names, fee, polling interval, and deposit cap.
+It must contain `minaSigningNetworkId: "testnet"` and must never contain the
+gateway proof API key, Ethereum submitter key, or Succinct requester key. See
+[bridge web application](/bridge-ui) for the schema and deployment boundary.
 
 ## Immutable public files
 
