@@ -35,7 +35,10 @@ promoted to a persistent live Sepolia deployment.
 
 The July 14, 2026 round trip used a real two-commit OCaml export with DA quorum
 2 of 3. It locked 10 ETH and claimed 5 ETH after the deposit-synchronizing and
-withdrawal-bearing settlements.
+withdrawal-bearing settlements. The July browser-readiness rerun submitted the
+deposit and claim through `@zeko-labs/eth-bridge-sdk`, automatically queued the
+finalized deposit, and observed its outer Witness through the production
+Actions indexer/API pair.
 
 | Execution | SP1 cycles | Ethereum gas in local mock submission |
 | --- | ---: | ---: |
