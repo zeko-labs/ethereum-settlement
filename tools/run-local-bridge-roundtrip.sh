@@ -39,6 +39,13 @@ for executable in "$CAST" "$FORGE" "$ANVIL"; do
     exit 1
   }
 done
+private_key_address=$(
+  "$CAST" wallet address --private-key "$PRIVATE_KEY"
+)
+[[ ${private_key_address,,} == "${ADMIN_ADDRESS,,}" ]] || {
+  echo "ETHEREUM_PRIVATE_KEY must belong to ADMIN_ADDRESS" >&2
+  exit 1
+}
 [[ -x "$NIX" ]] || {
   echo "Missing Nix executable: $NIX" >&2
   exit 1
@@ -128,6 +135,11 @@ done
 # tens of minutes on the CPU. Otherwise Anvil follows wall time and a narrow
 # OCaml commit window can expire before the locally verified receipt is sent.
 "$CAST" rpc anvil_setBlockTimestampInterval 1 --rpc-url "$RPC_URL" >/dev/null
+# The retained testnet fixture is compiled against its generated admin's
+# deterministic bridge address rather than Anvil's built-in first account.
+# Fund whichever fixture admin was selected so the same runner handles both.
+"$CAST" rpc anvil_setBalance "$ADMIN_ADDRESS" 0x21e19e0c9bab2400000 \
+  --rpc-url "$RPC_URL" >/dev/null
 
 rm -rf "$DEPLOY_DIR"
 mkdir -p "$DEPLOY_DIR"
