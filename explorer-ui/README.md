@@ -39,6 +39,8 @@ pnpm test:e2e
 Development uses `127.0.0.1:5175`; preview uses `127.0.0.1:4175`. The UI polls
 visible pages at the configured interval, stops polling while the document is
 hidden, and re-fetches authoritative state when a tab becomes visible again.
+The overview's commit countdown advances locally once per second from the
+gateway summary timestamp; it does not add requests between normal polls.
 
 All archive quantities and identifiers that may exceed JavaScript's safe
 integer range remain decimal strings from API to rendering.

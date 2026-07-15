@@ -156,16 +156,19 @@ The public withdrawal endpoints return depth-16 Keccak proofs and read the live
 virtual slot plus per-recipient cursor, so a user can discover and claim on
 Ethereum without generating a Mina or SP1 proof.
 
-The worker records `cycleCount`, `proverGas`, the network base/max prices,
-actual PROVE deduction after refund, Ethereum gas, confirmations, and explorer
-URL when those values are available.
+The worker records `cycleCount` when a local zkVM execution occurred,
+`proverGas`, the network base/max prices, actual PROVE deduction after refund,
+Ethereum gas, confirmations, and explorer URL when those values are available.
+Operational settlement validation is native, so its cycle count stays null
+until the network reports metrics.
 
 ## Paid proof approval
 
 Persistent testnet deployments should set `API_REQUIRE_PROOF_APPROVAL=true`.
-Every job then runs the full local SP1 preflight and pauses in
-`awaiting_approval`; the worker cannot call the Succinct network from that
-state. Inspect the job and read a quote:
+Every job then completes its local preflight and pauses in
+`awaiting_approval`; settlement uses pinned native Pickles verification while
+bridge/withdraw use the zkVM executor. The worker cannot call the Succinct
+network from that state. Inspect the job and read a quote:
 
 ```sh
 curl -H "x-api-key: $PROOF_API_KEY" \

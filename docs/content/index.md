@@ -26,10 +26,10 @@ features:
     link: /protocol/deposit-bridge
 
   - title: Mina-compatible gateway
-    details: The sequencer keeps using the GraphQL subset it expects while the gateway owns SP1 execution, proving, submission, and indexing.
+    details: The sequencer keeps using the GraphQL subset it expects while the gateway owns pinned local validation, SP1 proving, submission, and indexing.
     link: /gateway/api
 
   - title: Operator-controlled cost
-    details: Every paid Succinct request pauses after local execution until an operator approves its exact digest and price caps.
+    details: Every paid Succinct request pauses after local verification until an operator approves its exact digest and price caps.
     link: /gateway/proving
 ---

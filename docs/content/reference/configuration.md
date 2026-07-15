@@ -10,6 +10,7 @@ environment file.
 | --- | --- |
 | `DATABASE_URL` | Gateway PostgreSQL connection. |
 | `ARCHIVE_DATABASE_URL` | Optional read-only Zeko archive PostgreSQL connection used only by public explorer reads. |
+| `SEQUENCER_GRAPHQL_URL` | Optional internal sequencer GraphQL endpoint. When set, `/v1/explorer/summary` includes the exact commit-loop phase and schedule. |
 | `PROOF_API_KEY` | GraphQL mutation token and operator REST API key. |
 | `API_BIND` | Listen address; use loopback/private networking. |
 | `API_EXECUTE_ONLY` | Execute SP1 and stop without proving or submission. |
@@ -67,6 +68,11 @@ ZEKO_SIGNATURE_KIND=testnet
 and command-line values for gateway L1/archive URIs, three DA nodes/keys,
 quorum two, `--inner-sync-period 30`, and the proof-bound commit validity
 period.
+
+The Ethereum reference profile sets `--commitment-period` from
+`ZEKO_COMMITMENT_PERIOD_SECONDS`, defaulting to 900 seconds. This changes only
+the Ethereum Compose profile; the OCaml CLI and Mina deployment defaults stay
+unchanged. The sequencer exposes this live schedule through `commitSchedule`.
 
 The Ethereum profile runs the sequencer with `--deposit-delay-blocks 0` because
 the gateway only exposes consensus-finalized outer actions. Mina deployments

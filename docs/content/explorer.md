@@ -10,6 +10,8 @@ interface:
   `InnerActionBatchAccepted` events indexed from Ethereum
 - native deposits, synchronized outer actions, withdrawal inclusion proofs,
   delay state, and canonical claim events from the gateway
+- exact periodic-commit phase and timestamps fetched server-side from the
+  sequencer GraphQL API
 
 The browser never connects to PostgreSQL, never receives an API key, and never
 calls proof quote, approval, cancellation, or submission routes.
@@ -37,13 +39,20 @@ link canonical claim transactions when indexed.
 Every amount, height, nonce, sequence, and slot that can exceed JavaScript's
 safe integer range is returned and rendered as a decimal string.
 
+The overview shows a live **Next commit** metric. While the sequencer is
+waiting it counts down to `nextAttemptAt`; while a commit is being assembled it
+shows elapsed time from `lastAttemptStartedAt`. The browser advances this clock
+once per second using the summary `asOf` value, without increasing the normal
+gateway polling rate. If the internal sequencer endpoint is unavailable, only
+this metric becomes unavailable.
+
 ## Public endpoints
 
 All endpoints are `GET` routes under `/v1/explorer`:
 
 | Route | Data |
 | --- | --- |
-| `/summary` | Source health and aggregate L2/settlement/bridge metrics. |
+| `/summary` | Source health, aggregate L2/settlement/bridge metrics, and optional sequencer commit schedule. |
 | `/search?q=…` | Exact block, transaction, account, settlement, deposit, and withdrawal matches. |
 | `/blocks`, `/blocks/:height-or-hash` | Zeko archive blocks and their single transaction. |
 | `/transactions`, `/transactions/:hash` | User/zkApp commands and ordered account updates. |

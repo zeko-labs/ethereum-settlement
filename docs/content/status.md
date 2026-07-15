@@ -68,9 +68,13 @@ settlement validation; this checkpoint generates no SP1 proof.
 | Deposit-synchronizing settlement | 52,191,513,620 | 275,825 |
 | Withdrawal-bearing settlement | 52,187,890,758 | 318,602 |
 
-All guests executed and their public values were checked before submission.
-The local verifier accepted empty proof bytes only on Anvil chain ID 31337. No
-SP1 proof or network request was generated.
+This table is the retained full-zkVM audit checkpoint: all guests executed and
+their public values were checked before submission. The operational gateway
+now verifies settlement Pickles proofs natively with the same pinned verifier
+and receipt derivation, so new settlement jobs normally store a null cycle
+count. `API_EXECUTE_ONLY=true` still reproduces the full audit. The local
+verifier accepted empty proof bytes only on Anvil chain ID 31337. No SP1 proof
+or network request was generated.
 
 ## Needed for the live PoC
 

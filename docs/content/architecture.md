@@ -14,7 +14,7 @@ commits into proof jobs and canonical Ethereum state.
               v                              v
         +---------------- Zeko Ethereum gateway ----------------+
         | Mina GraphQL façade | PostgreSQL | canonical indexer   |
-        | local SP1 preflight | approval   | proof/submission    |
+        | native/zkVM checks  | approval   | proof/submission    |
         +-------------------------+------------------------------+
                                   |
                          Succinct Groth16 proof
@@ -30,7 +30,7 @@ commits into proof jobs and canonical Ethereum state.
 | Component | Owns | Does not own |
 | --- | --- | --- |
 | OCaml sequencer/prover | Transaction ordering, ledger transition, Pickles proof, action semantics, multisig DA writes. | Ethereum custody or SP1 request policy. |
-| Gateway | Compatibility API, job persistence, local execution, proof approval, transaction submission, Ethereum-derived views. | Zeko ledger semantics or a trusted `stateAfter`. |
+| Gateway | Compatibility API, job persistence, pinned native Pickles validation for settlements, zkVM checks for other guests, proof approval, transaction submission, Ethereum-derived views. | Zeko ledger semantics or a trusted `stateAfter`. |
 | Settlement guest | Complete Pickles verification and proof-bound receipt derivation. | Ethereum continuity or finality. |
 | Bridge guest | Deposit accumulator replay and exact Poseidon outer actions. | Which logs are canonical; the gateway supplies only finalized contiguous logs. |
 | Settlement contract | SP1 verification, outer-state continuity, action checkpoints, virtual slot, V2 inner root. | Pickles internals or L2 transaction execution. |

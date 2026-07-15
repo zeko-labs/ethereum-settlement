@@ -61,12 +61,17 @@ Mina values:
 | `--da-node` | The three retained PoC DA endpoints |
 | `--da-keys` | Exactly the three retained public keys |
 | `--da-quorum` | `2` |
-| `--commitment-period` | `900` seconds in the reference profile |
+| `--commitment-period` | `${ZEKO_COMMITMENT_PERIOD_SECONDS:-900}` in the Ethereum reference profile; Mina defaults are unchanged |
 | `--commit-validity-period` | `2400` slots |
 | circuit config | Exact file built with the final bridge proxy address |
 
 Keep the OCaml prover and RabbitMQ path. The gateway performs SP1 proving, not
 Pickles proving, so it does not replace the existing prover fleet.
+
+Give the gateway private network access to the sequencer GraphQL endpoint and
+set `SEQUENCER_GRAPHQL_URL`. This is a read-only observability dependency: a
+failure removes the explorer countdown but must not affect proof processing or
+sequencer operation.
 
 The Mina daemon and Mina archive may remain online for the existing Mina Zeko
 network, but the Ethereum-PoC sequencer must not use them as its settlement L1

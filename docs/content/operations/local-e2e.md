@@ -38,8 +38,9 @@ SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
 ```
 
 The gateway equivalent is `API_EXECUTE_ONLY=true`: it persists the job,
-executes SP1, validates the public values against live contract state, and
-stops at `executed` without changing Ethereum.
+forces the settlement guest through SP1, validates the public values against
+live contract state, and stops at `executed` without changing Ethereum. Normal
+operational and local-mock settlement jobs use the faster pinned native path.
 
 ## 3. Live sequencer and browser bridge checkpoint
 
@@ -91,8 +92,8 @@ operations through `@zeko-labs/eth-bridge-sdk`. It then:
    locks 10 ETH through the browser SDK
 4. indexes the finalized deposit, automatically queues it, and executes the bridge guest
 5. submits the validated bridge receipt with empty proof bytes
-6. executes and submits the real deposit-synchronizing OCaml settlement
-7. executes and submits the real withdrawal-bearing OCaml settlement
+6. natively verifies and submits the real deposit-synchronizing OCaml settlement
+7. natively verifies and submits the real withdrawal-bearing OCaml settlement
 8. verifies the deposit Witness is consumable through Actions API
 9. obtains the public Merkle path from the gateway
 10. advances through the configured withdrawal delay and claims 5 ETH through
@@ -112,9 +113,10 @@ the matching retained admin address/private key. The runner funds that account
 inside Anvil and verifies that its deterministic bridge address is the one
 bound into the OCaml circuit. No real funds or external chain are used.
 
-The latest recorded checkpoint consumed 3,433,016 cycles for the bridge and
-roughly 52.19 billion cycles for each settlement. See [current status](/status)
-for the exact values.
+The retained full-zkVM audit checkpoint consumed 3,433,016 cycles for the
+bridge and roughly 52.19 billion cycles for each settlement. The normal local
+mock path now verifies settlements natively and reports no settlement cycle
+count. See [current status](/status) for the recorded audit values.
 
 ## Regenerate the OCaml fixture
 

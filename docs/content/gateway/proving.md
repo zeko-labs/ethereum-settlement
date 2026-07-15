@@ -12,10 +12,19 @@ queued -> validating -> awaiting_approval -> approved
   -> proving / proof_requested -> submitting -> submitted -> confirmed
 ```
 
-`validating` runs the complete SP1 guest locally through the low-memory direct
-executor. It records public values and cycle count, validates them against live
-contract state, and hashes the hydrated proof input. No paid request exists at
-this point.
+`validating` verifies every proof input before any paid request exists. A
+settlement is checked natively with the same baked Pickles verifier blob used
+by the SP1 guest, then its receipt is derived by the exact shared guest
+function. This avoids a roughly 52-billion-cycle zkVM replay on the operational
+path. Bridge and legacy-withdraw jobs still execute their SP1 guests through
+the low-memory executor. The gateway validates the resulting public values
+against live contract state and hashes the hydrated proof input.
+
+Native settlement validation deliberately records `cycleCount: null`; native
+runtime is not an SP1 cycle or network-PGU measurement. Set
+`API_EXECUTE_ONLY=true` on a separate audit gateway to force the complete
+settlement guest through the zkVM when guest/host equivalence needs to be
+rechecked.
 
 Other terminal or recovery states include `executed` (execute-only), `rejected`,
 `failed`, `proof_failed`, `ethereum_reverted`, and `reorged`.
@@ -39,8 +48,9 @@ curl -H "x-api-key: $PROOF_API_KEY" \
   "$GATEWAY_URL/v1/proofs/$JOB_ID/quote?maxPgu=$MAX_PGU&maxPricePerPgu=$MAX_PRICE"
 ```
 
-Executor cycles are not network PGU. Supply a PGU cap from an SP1 simulation
-or a deliberately conservative operator budget. The quote reads current
+Executor cycles are not network PGU. Native settlement jobs have no cycle
+count at all. Supply an explicit PGU cap from a reviewed SP1 simulation or a
+deliberately conservative operator budget. The quote reads current
 auction base fee and maximum price; it does not register a program or create a
 proof request.
 
@@ -65,12 +75,15 @@ only tighten the deployment-wide `PROVER_GAS_LIMIT` and
 Approval re-reads live contract state and, for settlements, requires at least
 `PROVER_MIN_REMAINING_SLOTS` before the proof-bound upper slot. The worker
 creates the paid request only after atomically claiming the approved job.
+Approval mode always supplies the configured `PROVER_GAS_LIMIT`; the SP1
+Network request therefore skips its redundant zkVM simulation and uses the
+reviewed cap directly.
 
 ## Cost accounting
 
 When available, each job records:
 
-- local execution cycles
+- local execution cycles when the zkVM executor was used
 - network prover gas (PGU)
 - base fee and maximum price per PGU
 - actual PROVE deduction after refund
@@ -104,9 +117,9 @@ The gateway rejects it on other chain IDs, and testnet preflight rejects it.
 
 | Mode | Behavior | Allowed environment |
 | --- | --- | --- |
-| `API_EXECUTE_ONLY=true` | Executes and validates SP1, then stops at `executed`; no proof and no Ethereum write. | Development and pre-deployment validation. |
-| `API_LOCAL_MOCK_SUBMIT=true` | Executes SP1, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier` only. |
-| Approval mode | Executes, pauses, then obtains a network proof after approval. | Persistent testnet. |
+| `API_EXECUTE_ONLY=true` | Forces every guest, including settlement, through the zkVM and stops at `executed`; no proof and no Ethereum write. | Development and pre-deployment audit. |
+| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier` only. |
+| Approval mode | Uses the operational preflight, pauses, then obtains a network proof with the approved explicit PGU cap. | Persistent testnet. |
 
 Execute-only and local-mock-submit are mutually exclusive. The gateway refuses
 mock mode on Sepolia.

@@ -15,7 +15,7 @@ batch data.
 | Layer | Responsibility |
 | --- | --- |
 | OCaml Zeko | Sequences transactions, stores batches through multisig DA, produces Pickles proofs, and exports proof-bound settlement/bridge data. |
-| Gateway | Implements the Mina GraphQL subset used by the sequencer, executes SP1 locally, obtains approved network proofs, submits Ethereum transactions, and indexes canonical Ethereum state. |
+| Gateway | Implements the Mina GraphQL subset used by the sequencer, natively verifies settlement Pickles proofs, executes the smaller guests locally, obtains approved network proofs, submits Ethereum transactions, and indexes canonical Ethereum state. |
 | SP1 settlement guest | Verifies the full Pickles proof and derives the Zeko outer-state receipt and optional inner-action claim tree. |
 | SP1 bridge guest | Replays finalized native ETH deposits into exact Zeko outer Witness actions and Poseidon checkpoints. |
 | Ethereum contracts | Hold ETH, verify SP1 proofs, enforce state continuity and slot bounds, record checkpoints, and release delayed Merkle claims. |
@@ -27,7 +27,7 @@ Normal settlement:
 
 ```text
 transaction -> sequencer -> 2-of-3 DA -> OCaml prover -> Pickles commit
-  -> gateway GraphQL -> local SP1 execution -> operator approval
+  -> gateway GraphQL -> pinned native verification -> operator approval
   -> Succinct proof -> ZekoSettlement -> confirmed virtual Mina state
 ```
 

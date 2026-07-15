@@ -13,6 +13,11 @@ from the exact commit/config used to generate the fixtures. Push them, resolve
 registry digests, then copy `.env.example` to `.env` and use only
 `repo@sha256:<digest>` image references.
 
+The Ethereum profile defaults `ZEKO_COMMITMENT_PERIOD_SECONDS` to 900. Keep it
+explicit in the deployment environment so the explorer and operator runbook
+match the running sequencer; changing it does not alter Mina deployment
+defaults.
+
 Generate the final bridge proxy address before building OCaml circuits. The
 machine initializer creates a new admin first, predicts that admin's
 deterministic proxy, and then generates the retained Zeko, DA,
@@ -172,8 +177,10 @@ connects to PostgreSQL and never calls proof-operator routes.
 
 ## Proof runbook
 
-Every bridge or settlement job first executes SP1 locally and stops in
-`awaiting_approval`. For each of the three paid boundaries in the demo:
+Every bridge or settlement job is verified locally and stops in
+`awaiting_approval`. Settlement verification uses the pinned native Pickles
+path; bridge validation executes its guest. For each of the three paid
+boundaries in the demo:
 
 1. Inspect the job public values and live contract state.
 2. Call `GET /v1/proofs/:id/quote` with a simulation-derived PGU cap.

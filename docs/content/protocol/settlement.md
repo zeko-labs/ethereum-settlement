@@ -92,11 +92,13 @@ settlement.
 
 ## 5. Gateway lifecycle
 
-Every testnet job executes the guest locally first. In approval mode it pauses
-at `awaiting_approval`; only an operator-approved digest and per-job cost caps
-may proceed to the Succinct Network. The resulting Groth16 proof is simulated,
-submitted, and held in `submitted` until its receipt block reaches Ethereum
-consensus finality.
+Every testnet settlement is first verified natively against the same baked
+Pickles verifier used by the guest, and its receipt is produced by the shared
+derivation code. In approval mode it pauses at `awaiting_approval`; only an
+operator-approved digest and per-job cost caps may proceed to the Succinct
+Network. With the required PGU cap, the network request skips redundant zkVM
+simulation. The resulting Groth16 proof is submitted and held in `submitted`
+until its receipt block reaches Ethereum consensus finality.
 
 Confirmed state updates the gateway's virtual Mina account, action, pending
 pool, and best-chain views. A reorg restores their prior snapshots and reuses
