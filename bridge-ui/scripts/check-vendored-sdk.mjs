@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const expected = new Map([
-  ["zeko-labs-bridge-sdk-0.3.4.tgz", "284184707b0e19d141e27e4d12c271db155e6cbd0d134581c2a48d96a929af9d"],
+  ["zeko-labs-bridge-sdk-0.3.4.tgz", "9d1b1e6b277340d2c3624a26d2b376637ac9c1273b4e98c4df9480961d60b192"],
   ["zeko-labs-eth-bridge-sdk-0.1.0.tgz", "2e280e62a02f75b6e5a88847a0be79bdf80e3dd9abee7e4d36757f018bafc72d"]
 ])
 

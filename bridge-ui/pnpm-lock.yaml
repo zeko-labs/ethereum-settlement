@@ -629,7 +629,7 @@ packages:
     resolution: {integrity: sha512-fB2V0JFrQSMsCo9HiSq3Ezpdv4iYaXRG1Sx8edX3MwxfyNn83mKiGzOcH+Fkxt4MHxr3y42fQi1oeAInqgX2QA==}
 
   '@zeko-labs/bridge-sdk@file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz':
-    resolution: {integrity: sha512-TkOIXFiIMgpSV3o93V1+Ytr8mDIbQvE8hNM0pU/YVOwL+/1YMWCDWR3SVbThBHuXiYo6zbXQkJPRxRn+bGggRg==, tarball: file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz}
+    resolution: {integrity: sha512-RKbBxMqJ58Mi5gcfIm4PElp5QKPV/8o67Cg4rn7wsElWpCFX4tHujRU1lfzOtAYve+gPM3PlfAM2q/t2S21d1g==, tarball: file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz}
     version: 0.3.4
 
   '@zeko-labs/eth-bridge-sdk@file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz':
