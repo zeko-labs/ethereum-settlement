@@ -55,11 +55,13 @@ export const BackgroundWave = ({ className, src, storageKey }: { className: stri
 
 export const WalletChip = ({
   network,
+  ethereumNetworkName = "Sepolia",
   account,
   balance,
   onClick
 }: {
   network: "ethereum" | "zeko"
+  ethereumNetworkName?: string
   account?: string
   balance?: string
   onClick: () => void
@@ -72,7 +74,7 @@ export const WalletChip = ({
   >
     <NetworkIcon network={network} compact />
     <span className="wallet-copy">
-      <span className="wallet-network">{network === "ethereum" ? "Sepolia" : "Zeko Testnet"}</span>
+      <span className="wallet-network">{network === "ethereum" ? ethereumNetworkName : "Zeko Testnet"}</span>
       <span className="wallet-address">{account ? shortAddress(account) : `Connect ${network === "ethereum" ? "wallet" : "Auro"}`}</span>
       {balance !== undefined && <span className="wallet-balance">{balance} ETH</span>}
     </span>

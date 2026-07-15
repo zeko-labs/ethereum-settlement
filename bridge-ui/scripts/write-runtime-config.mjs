@@ -30,7 +30,9 @@ const url = (name, fallback) => {
 }
 
 const chainId = integer("BRIDGE_UI_ETHEREUM_CHAIN_ID", "11155111", { min: 1 })
-if (chainId !== 11155111) throw new Error("The browser PoC currently supports Sepolia chain 11155111 only")
+if (chainId !== 11155111 && chainId !== 31337) {
+  throw new Error("The browser PoC supports Sepolia or local chain 31337")
+}
 
 const config = {
   schemaVersion: 1,

@@ -25,6 +25,11 @@ describe("runtime configuration", () => {
     })
   })
 
+  it("accepts the local manual-flow chain", () => {
+    expect(parseRuntimeConfig({ ...validConfig, expectedEthereumChainId: 31_337 }))
+      .toMatchObject({ expectedEthereumChainId: 31_337 })
+  })
+
   it("rejects custom Auro signing salts", () => {
     expect(() => parseRuntimeConfig({ ...validConfig, minaSigningNetworkId: "zeko-testnet" })).toThrow(
       /requires minaSigningNetworkId "testnet"/

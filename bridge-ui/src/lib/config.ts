@@ -14,6 +14,9 @@ export type RuntimeConfig = {
   maxDepositWei: string
 }
 
+export const ethereumNetworkName = (chainId: number): string =>
+  chainId === 31_337 ? "Local Ethereum" : "Sepolia"
+
 const asRecord = (value: unknown, label: string): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be an object`)
@@ -65,7 +68,9 @@ export const parseRuntimeConfig = (value: unknown): RuntimeConfig => {
   const cap = requiredUintString(row, "maxDepositWei")
   if (BigInt(cap) === 0n) throw new Error("maxDepositWei must be positive")
   const chainId = requiredInteger(row, "expectedEthereumChainId", { min: 1 })
-  if (chainId !== 11155111) throw new Error("This PoC requires Ethereum Sepolia chain 11155111")
+  if (chainId !== 11_155_111 && chainId !== 31_337) {
+    throw new Error("This PoC requires Ethereum Sepolia or local chain 31337")
+  }
 
   return {
     schemaVersion: 1,

@@ -52,6 +52,19 @@ describe("wallet adapters", () => {
     })
   })
 
+  it("adds local Anvil when the wallet does not know chain 31337", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce("0x1")
+      .mockRejectedValueOnce({ code: 4902 })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("0x7a69")
+    await ensureEthereumNetwork({ request } as unknown as EthereumProvider, 31_337)
+    expect(request).toHaveBeenNthCalledWith(3, {
+      method: "wallet_addEthereumChain",
+      params: [expect.objectContaining({ chainId: "0x7a69", rpcUrls: ["http://127.0.0.1:8545"] })]
+    })
+  })
+
   it("forwards Ethereum account and chain changes and unregisters listeners", () => {
     const listeners = new Map<string, (value: unknown) => void>()
     const provider = {

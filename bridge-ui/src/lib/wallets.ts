@@ -55,10 +55,24 @@ export const ensureEthereumNetwork = async (
   const current = await provider.request({ method: "eth_chainId" })
   const currentId = Number.parseInt(String(current), 16)
   if (currentId === expectedChainId) return
-  await provider.request({
-    method: "wallet_switchEthereumChain",
-    params: [{ chainId: `0x${expectedChainId.toString(16)}` as Hex }]
-  })
+  const chainId = `0x${expectedChainId.toString(16)}` as Hex
+  try {
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId }]
+    })
+  } catch (error) {
+    if (expectedChainId !== 31_337 || !isProviderError(error) || error.code !== 4902) throw error
+    await provider.request({
+      method: "wallet_addEthereumChain",
+      params: [{
+        chainId,
+        chainName: "Local Ethereum",
+        nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+        rpcUrls: ["http://127.0.0.1:8545"]
+      }]
+    })
+  }
   const switched = Number.parseInt(String(await provider.request({ method: "eth_chainId" })), 16)
   if (switched !== expectedChainId) throw new Error(`Ethereum wallet did not switch to chain ${expectedChainId}`)
 }

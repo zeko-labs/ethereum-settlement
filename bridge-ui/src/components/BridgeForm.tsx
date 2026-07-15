@@ -1,5 +1,5 @@
 import { formatUnits, normalizeAmountInput } from "../lib/amount"
-import type { RuntimeConfig } from "../lib/config"
+import { ethereumNetworkName, type RuntimeConfig } from "../lib/config"
 import { shortAddress } from "../lib/wallets"
 import { NetworkIcon, Notice, type Direction } from "./BridgeUi"
 
@@ -29,6 +29,7 @@ export const BridgeForm = (props: Props) => {
   const sourceAccount = deposit ? props.ethereumAccount : props.zekoAccount
   const sourceBalance = deposit ? props.ethereumBalance : props.zekoBalance
   const maxDeposit = formatUnits(BigInt(props.config.maxDepositWei), 18, 9)
+  const ethereum = ethereumNetworkName(props.config.expectedEthereumChainId)
   return (
     <section className="bridge-form" data-screen-label="Bridge form">
       <div className="form-heading">
@@ -43,7 +44,7 @@ export const BridgeForm = (props: Props) => {
             <span className="fiat-value">Native ETH · maximum 9 decimal places</span>
           </div>
           <div className="network-side">
-            <div className="network-pill"><NetworkIcon network={source} /><span className="network-pill-copy"><span className="network-name">{deposit ? "Ethereum Sepolia" : "Zeko Testnet"}</span><span className="network-type">{deposit ? "Settlement & custody" : "Execution network"}</span></span><span className="token-label">ETH</span></div>
+            <div className="network-pill"><NetworkIcon network={source} /><span className="network-pill-copy"><span className="network-name">{deposit ? ethereum : "Zeko Testnet"}</span><span className="network-type">{deposit ? "Settlement & custody" : "Execution network"}</span></span><span className="token-label">ETH</span></div>
             <div className="recipient-row"><span>{sourceAccount ? "Connected" : "Required"}</span><strong>{sourceAccount ? shortAddress(sourceAccount) : `Connect ${deposit ? "Ethereum wallet" : "Auro"}`}</strong></div>
           </div>
         </div>
@@ -55,7 +56,7 @@ export const BridgeForm = (props: Props) => {
             <span className="fiat-value">Network gas is paid separately in the signing wallet</span>
           </div>
           <div className="network-side">
-            <div className="network-pill"><NetworkIcon network={destination} /><span className="network-pill-copy"><span className="network-name">{deposit ? "Zeko Testnet" : "Ethereum Sepolia"}</span><span className="network-type">{deposit ? "Execution network" : "Settlement & custody"}</span></span><span className="token-label">ETH</span></div>
+            <div className="network-pill"><NetworkIcon network={destination} /><span className="network-pill-copy"><span className="network-name">{deposit ? "Zeko Testnet" : ethereum}</span><span className="network-type">{deposit ? "Execution network" : "Settlement & custody"}</span></span><span className="token-label">ETH</span></div>
             <label className="recipient-editor"><span className="recipient-label-text">Recipient</span><input className="recipient-input" aria-label={deposit ? "Zeko recipient" : "Ethereum recipient"} placeholder={deposit ? "B62…" : "0x…"} value={props.recipient} onChange={(event) => props.onRecipientChange(event.target.value.trim())} /></label>
           </div>
         </div>

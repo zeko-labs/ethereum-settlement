@@ -22,7 +22,7 @@ import {
   requestNativeWithdrawal,
   zekoTransactionUrl
 } from "./lib/bridge"
-import { loadRuntimeConfig, type RuntimeConfig } from "./lib/config"
+import { ethereumNetworkName, loadRuntimeConfig, type RuntimeConfig } from "./lib/config"
 import {
   operationStorageKey,
   readOperations,
@@ -43,9 +43,9 @@ import {
 type Screen = "form" | "review" | "deposit-progress" | "withdrawal-progress" | "complete"
 type Completion = { direction: Direction; amount: string; hash: string; url: string }
 
-const missingWalletMessage = (wallet: "ethereum" | "auro") =>
+const missingWalletMessage = (wallet: "ethereum" | "auro", ethereum = "Sepolia") =>
   wallet === "ethereum"
-    ? "Connect an Ethereum wallet on Sepolia before continuing."
+    ? `Connect an Ethereum wallet on ${ethereum} before continuing.`
     : "Connect Auro to Zeko Testnet before continuing."
 
 export default function App() {
@@ -79,6 +79,7 @@ export default function App() {
   const [completion, setCompletion] = useState<Completion>()
   const [toast, setToast] = useState("")
   const [actionError, setActionError] = useState("")
+  const ethereum = config ? ethereumNetworkName(config.expectedEthereumChainId) : "Sepolia"
   const activityRunning = useRef(false)
 
   useEffect(() => {
@@ -126,13 +127,13 @@ export default function App() {
       const account = await connectEthereum(config)
       await setEthereumConnection(account)
       if (direction === "withdrawal") setRecipient(account)
-      setToast("Ethereum wallet connected to Sepolia.")
+      setToast(`Ethereum wallet connected to ${ethereum}.`)
     } catch (error) {
       setActionError(formatWalletError(error))
     } finally {
       setBusy(false)
     }
-  }, [config, direction, setEthereumConnection])
+  }, [config, direction, ethereum, setEthereumConnection])
 
   const connectAuroWallet = useCallback(async () => {
     if (!config) return
@@ -195,7 +196,7 @@ export default function App() {
       setClient(undefined)
       setZekoClient(undefined)
       if (chain !== config.expectedEthereumChainId) {
-        setActionError(`Ethereum wallet is on chain ${chain}; Sepolia ${config.expectedEthereumChainId} is required.`)
+        setActionError(`Ethereum wallet is on chain ${chain}; ${ethereum} ${config.expectedEthereumChainId} is required.`)
         return
       }
       setActionError("")
@@ -225,7 +226,7 @@ export default function App() {
       ethereum?.removeListener?.("chainChanged", onEthereumChain)
       auro?.removeAllListeners?.()
     }
-  }, [config, setEthereumConnection])
+  }, [config, ethereum, setEthereumConnection])
 
   useEffect(() => {
     if (!recipient) {
@@ -276,7 +277,7 @@ export default function App() {
       return false
     }
     if (direction === "deposit" && !ethereumAccount) {
-      setValidation(missingWalletMessage("ethereum"))
+      setValidation(missingWalletMessage("ethereum", ethereum))
       return false
     }
     if (direction === "withdrawal" && !zekoAccount) {
@@ -401,7 +402,7 @@ export default function App() {
         setSelectedOperation(operation)
         setSelectedDeposit(result.deposit)
         setScreen("deposit-progress")
-        setToast("ETH locked on Sepolia. Gateway tracking has started.")
+        setToast(`ETH locked on ${ethereum}. Gateway tracking has started.`)
       } else {
         if (!zekoAccount) throw new Error(missingWalletMessage("auro"))
         await ensureAuroPoCNetwork(getAuroProvider(), config)
@@ -535,15 +536,15 @@ export default function App() {
       <div className="background-wash"></div>
       <header className="site-header">
         <button type="button" className="brand-link" onClick={() => { setTab("bridge"); setScreen("form") }} aria-label="Zeko bridge home"><img src="/assets/zeko-logo.svg" alt="Zeko" /></button>
-        <div className="network-health"><span className="health-dot"></span><span>Sepolia · Experimental</span></div>
+        <div className="network-health"><span className="health-dot"></span><span>{ethereum} · Experimental</span></div>
         <div className="header-actions">
-          <WalletChip network="ethereum" account={ethereumAccount} balance={ethereumBalance} onClick={() => void connectEthereumWallet()} />
+          <WalletChip network="ethereum" ethereumNetworkName={ethereum} account={ethereumAccount} balance={ethereumBalance} onClick={() => void connectEthereumWallet()} />
           <WalletChip network="zeko" account={zekoAccount} balance={zekoBalance} onClick={() => void connectAuroWallet()} />
         </div>
       </header>
       <main className="main-content">
         <div className="hero"><p className="eyebrow">Ethereum settlement</p><h1>Ethereum ↔ Zeko Bridge</h1><p className="hero-copy">Move native ETH between Ethereum custody and Zeko execution, with every transition proven through SP1 and anchored to settlement state.</p></div>
-        <div className="environment-banner"><strong>Experimental PoC</strong><span>Sepolia</span><span>·</span><span>No cancellation/refund</span><span>·</span><span>Zeko signs as temporary <code>testnet</code></span></div>
+        <div className="environment-banner"><strong>Experimental PoC</strong><span>{ethereum}</span><span>·</span><span>No cancellation/refund</span><span>·</span><span>Zeko signs as temporary <code>testnet</code></span></div>
         <div className="bridge-card">
           <div className="card-header">
             <div className="tabs" role="tablist" aria-label="Bridge navigation"><button type="button" className={`tab${tab === "bridge" ? " active" : ""}`} role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>Bridge</button><button type="button" className={`tab${tab === "activity" ? " active" : ""}`} role="tab" aria-selected={tab === "activity"} onClick={openActivity}>Activity</button></div>
