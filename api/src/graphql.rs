@@ -281,14 +281,7 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
                 .as_array()
                 .ok_or_else(|| anyhow::anyhow!("gateway action data must be an array"))?
                 .iter()
-                .map(|data| {
-                    Ok(json!({
-                        "data": data
-                            .as_array()
-                            .ok_or_else(|| anyhow::anyhow!("gateway action must be an array"))?,
-                        "transactionInfo": {"hash": transaction_hash.clone()}
-                    }))
-                })
+                .map(|data| action_data_value(request, data, &transaction_hash))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             Ok(json!({
                 "actionState": {
@@ -296,16 +289,74 @@ async fn actions(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<V
                     "actionStateTwo": before
                 },
                 "actionData": action_data,
-                "blockInfo": {
-                    "timestamp": indexed_at.timestamp_millis().to_string(),
-                    "height": height,
-                    "distanceFromMaxBlockHeight": tip.saturating_sub(height),
-                    "chainStatus": if finalized { "canonical" } else { "pending" }
-                }
+                "blockInfo": block_info_value(
+                    request,
+                    indexed_at.timestamp_millis(),
+                    height,
+                    tip,
+                    finalized,
+                )
             }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(json!({"actions": actions}))
+}
+
+fn action_data_value(
+    request: &GraphqlRequest,
+    data: &Value,
+    transaction_hash: &str,
+) -> anyhow::Result<Value> {
+    let mut value = serde_json::Map::new();
+    if request.query.contains("data") {
+        value.insert(
+            "data".to_owned(),
+            Value::Array(
+                data.as_array()
+                    .ok_or_else(|| anyhow::anyhow!("gateway action must be an array"))?
+                    .clone(),
+            ),
+        );
+    }
+    if request.query.contains("transactionInfo") {
+        value.insert(
+            "transactionInfo".to_owned(),
+            json!({"hash": transaction_hash}),
+        );
+    }
+    Ok(Value::Object(value))
+}
+
+fn block_info_value(
+    request: &GraphqlRequest,
+    timestamp_millis: i64,
+    height: i64,
+    tip: i64,
+    finalized: bool,
+) -> Value {
+    let mut value = serde_json::Map::new();
+    if request.query.contains("timestamp") {
+        value.insert(
+            "timestamp".to_owned(),
+            Value::String(timestamp_millis.to_string()),
+        );
+    }
+    if request.query.contains("height") {
+        value.insert("height".to_owned(), Value::from(height));
+    }
+    if request.query.contains("distanceFromMaxBlockHeight") {
+        value.insert(
+            "distanceFromMaxBlockHeight".to_owned(),
+            Value::from(tip.saturating_sub(height)),
+        );
+    }
+    if request.query.contains("chainStatus") {
+        value.insert(
+            "chainStatus".to_owned(),
+            Value::String(if finalized { "canonical" } else { "pending" }.to_owned()),
+        );
+    }
+    Value::Object(value)
 }
 
 async fn network_state(state: &AppState) -> anyhow::Result<Value> {
@@ -405,5 +456,23 @@ mod tests {
         assert_eq!(canonical_token_id(MINA_DEFAULT_TOKEN_ID), "1");
         assert_eq!(canonical_token_id("1"), "1");
         assert_eq!(canonical_token_id("custom-token"), "custom-token");
+    }
+
+    #[test]
+    fn action_response_omits_fields_not_requested_by_ocaml_client() {
+        let request = GraphqlRequest {
+            query:
+                "actions { actionData { data } blockInfo { height distanceFromMaxBlockHeight } }"
+                    .to_owned(),
+            variables: Value::Null,
+        };
+        assert_eq!(
+            action_data_value(&request, &json!(["1", "2"]), "0x123").unwrap(),
+            json!({"data": ["1", "2"]})
+        );
+        assert_eq!(
+            block_info_value(&request, 1_234, 10, 12, true),
+            json!({"height": 10, "distanceFromMaxBlockHeight": 2})
+        );
     }
 }
