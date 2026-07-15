@@ -274,6 +274,17 @@ block-timestamp interval while SP1 is executing so the real 20-slot OCaml
 window neither stalls below its lower bound nor expires through wall-clock
 drift. No SP1 proof or network request was generated.
 
+The 2026-07-15 retained-identity checkpoint regenerated that scenario under
+the exact Mina `testnet` signing and DA receipt domain, with deterministic
+bridge `0xf77f7f4Fb6287dd5F36831E80a5AFa59b590E023` and verifier-index SHA-256
+`a9bca935bad09638d2e335a7cfc4ecc110389d15c033db6b0413593ca9193c74`.
+The browser SDK deposit and production Actions services were part of the same
+run. The bridge guest executed in 3,435,291 cycles and used 218,336 gas. The
+deposit-synchronizing settlement executed in 52,191,513,620 cycles and used
+275,825 gas; the withdrawal-bearing settlement executed in 52,187,890,758
+cycles and used 318,602 gas. The depth-16 claim released 5 ETH, all escrow
+liability checks passed, and the recorded result has `sp1ProofsGenerated: 0`.
+
 The faster Solidity component checkpoint remains:
 
 ```sh

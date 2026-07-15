@@ -41,9 +41,12 @@ promoted to a persistent live Sepolia deployment.
 
 ## Verified local checkpoint
 
-The July 14, 2026 round trip used a real two-commit OCaml export with DA quorum
-2 of 3. It locked 10 ETH and claimed 5 ETH after the deposit-synchronizing and
-withdrawal-bearing settlements. The July browser-readiness rerun submitted the
+The July 15, 2026 retained-identity round trip used a genuine two-commit OCaml
+export with DA quorum 2 of 3 and Mina signing domain `testnet`. Its verifier
+index SHA-256 is
+`a9bca935bad09638d2e335a7cfc4ecc110389d15c033db6b0413593ca9193c74`.
+It locked 10 ETH and claimed 5 ETH after the deposit-synchronizing and
+withdrawal-bearing settlements. The browser-readiness path submitted the
 deposit and claim through `@zeko-labs/eth-bridge-sdk`, automatically queued the
 finalized deposit, and observed its outer Witness through the production
 Actions indexer/API pair.
@@ -57,9 +60,9 @@ settlement validation; this checkpoint generates no SP1 proof.
 
 | Execution | SP1 cycles | Ethereum gas in local mock submission |
 | --- | ---: | ---: |
-| Native deposit bridge | 3,433,016 | 218,288 |
-| Deposit-synchronizing settlement | 52,186,638,600 | 275,837 |
-| Withdrawal-bearing settlement | 52,189,369,576 | 318,590 |
+| Native deposit bridge | 3,435,291 | 218,336 |
+| Deposit-synchronizing settlement | 52,191,513,620 | 275,825 |
+| Withdrawal-bearing settlement | 52,187,890,758 | 318,602 |
 
 All guests executed and their public values were checked before submission.
 The local verifier accepted empty proof bytes only on Anvil chain ID 31337. No
@@ -67,17 +70,13 @@ SP1 proof or network request was generated.
 
 ## Needed for the live PoC
 
-1. Complete and archive the retained two-commit OCaml export under the exact
-   `testnet` signing domain, then replay it through the full local execute-only
-   round trip.
-2. Build and record immutable machine-local images from the final committed
+1. Build and record immutable machine-local images from the final committed
    source and retained verifier index.
-3. Provide a funded Sepolia RPC/admin/gateway identity and a funded Succinct
+2. Provide a funded Sepolia RPC/admin/gateway identity and a funded Succinct
    requester, deploy the settlement and bridge proxies, and pass preflight.
-4. Run each genuine job through execute-only validation, obtain a
-   simulation-derived PGU value, review the capped quote, and explicitly
-   approve the three paid proofs used by the demo.
-5. Complete one browser-driven Sepolia round trip and archive transaction,
+3. Obtain a network-simulation PGU value for each genuine job, review the
+   capped quote, and explicitly approve the three paid proofs used by the demo.
+4. Complete one browser-driven Sepolia round trip and archive transaction,
    proof-request, cost, confirmation, DA, and balance/liability evidence.
 
 No Sepolia deployment or paid Succinct proof has been performed by the checked
