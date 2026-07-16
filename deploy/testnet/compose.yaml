@@ -105,7 +105,9 @@ services:
         rabbitmq-plugins enable --offline rabbitmq_management
         exec docker-entrypoint.sh rabbitmq-server
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test:
+        - CMD-SHELL
+        - rabbitmq-diagnostics -q check_running >/dev/null && rabbitmqctl -q list_queues name >/dev/null
       interval: 10s
       timeout: 5s
       retries: 20
@@ -445,7 +447,13 @@ services:
     ports:
       - "${SEQUENCER_BIND_ADDRESS:-127.0.0.1}:${SEQUENCER_PORT:-1923}:1923"
     healthcheck:
-      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/1923'"]
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS --max-time 4 -H 'content-type: application/json'
+          --data '{"query":"query Health { sequencerPk }"}'
+          http://127.0.0.1:1923/graphql |
+          jq -e '.data.sequencerPk | type == "string"' >/dev/null
       interval: 10s
       timeout: 5s
       retries: 60
