@@ -16,6 +16,7 @@ type Withdrawal = {
   globalActionIndex: number
   recipient: string
   claimableSlot: number
+  currentVirtualSlot: number
   status: string
 }
 
@@ -30,6 +31,10 @@ const rpcUrl = required("BRIDGE_E2E_RPC_URL")
 const explorerUrl = required("BRIDGE_E2E_EXPLORER_UI_URL")
 const proofApiKey = required("BRIDGE_E2E_PROOF_API_KEY")
 const zekoPrivateKeys = required("BRIDGE_E2E_ZEKO_PRIVATE_KEYS").split(",")
+const virtualMinaSlotSeconds = positiveInteger(
+  "BRIDGE_E2E_VIRTUAL_MINA_SLOT_SECONDS",
+  process.env.BRIDGE_E2E_VIRTUAL_MINA_SLOT_SECONDS ?? "12"
+)
 const timeline: Array<{ at: string; event: string; value?: unknown }> = []
 
 test("two destination wallets complete isolated deposit and withdrawal roundtrips", async ({ page, request }, testInfo) => {
@@ -97,7 +102,7 @@ test("two destination wallets complete isolated deposit and withdrawal roundtrip
     await assertSettledRow(page, 0, 0, settledToA)
     await assertSettledRow(page, 1, 1, settledToB)
 
-    await advanceTime(3600)
+    await advancePastWithdrawalDelay(settledToA, settledToB)
     await waitWithdrawalStatus(request, settledToA, "claimable")
     await waitWithdrawalStatus(request, settledToB, "claimable")
 
@@ -340,6 +345,14 @@ async function advanceTime(seconds: number) {
   await rpc("evm_mine")
 }
 
+async function advancePastWithdrawalDelay(...withdrawals: Withdrawal[]) {
+  const remainingSlots = Math.max(
+    0,
+    ...withdrawals.map((withdrawal) => withdrawal.claimableSlot - withdrawal.currentVirtualSlot)
+  )
+  await advanceTime((remainingSlots + 2) * virtualMinaSlotSeconds)
+}
+
 async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
   const response = await fetch(rpcUrl, {
     method: "POST",
@@ -370,4 +383,10 @@ function required(name: string): string {
   const value = process.env[name]
   if (!value) throw new Error(`${name} is required for the live bridge E2E suite`)
   return value
+}
+
+function positiveInteger(name: string, value: string): number {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${name} must be a positive integer`)
+  return parsed
 }

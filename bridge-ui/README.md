@@ -101,6 +101,10 @@ keys and exports them as `BRIDGE_E2E_ZEKO_PRIVATE_KEYS` plus their addresses as
 accounts to genesis with enough balance for deposit
 finalization and one withdrawal request. Reuse mode instead requires that
 variable to contain two keys which are already funded in the retained stack.
+The local virtual Mina slot duration defaults to 12 seconds; override it with
+`BRIDGE_E2E_VIRTUAL_MINA_SLOT_SECONDS` when the retained deployment uses a
+different duration. The withdrawal step derives its time jump from the live
+`claimableSlot` instead of assuming a fixed delay.
 The runner builds both UIs, injects real RPC-backed wallet providers, and
 retains Playwright traces plus a protocol-state timeline on failure. It never
 intercepts application APIs and does not request an SP1 proof.
