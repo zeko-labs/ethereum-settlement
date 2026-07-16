@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test"
-import { installLiveWallets, selectWallets, stopLiveWalletWorkers } from "./wallets"
+import { installLiveWallets, selectWallets } from "./wallets"
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -31,10 +31,6 @@ const explorerUrl = required("BRIDGE_E2E_EXPLORER_UI_URL")
 const proofApiKey = required("BRIDGE_E2E_PROOF_API_KEY")
 const zekoPrivateKeys = required("BRIDGE_E2E_ZEKO_PRIVATE_KEYS").split(",")
 const timeline: Array<{ at: string; event: string; value?: unknown }> = []
-
-test.afterAll(async () => {
-  await stopLiveWalletWorkers()
-})
 
 test("two destination wallets complete isolated deposit and withdrawal roundtrips", async ({ page, request }, testInfo) => {
   test.setTimeout(45 * 60 * 1_000)
@@ -101,8 +97,7 @@ test("two destination wallets complete isolated deposit and withdrawal roundtrip
     await assertSettledRow(page, 0, 0, settledToA)
     await assertSettledRow(page, 1, 1, settledToB)
 
-    await rpc("evm_increaseTime", [3600])
-    await mine(1)
+    await advanceTime(3600)
     await waitWithdrawalStatus(request, settledToA, "claimable")
     await waitWithdrawalStatus(request, settledToB, "claimable")
 
@@ -336,6 +331,13 @@ async function poll<T>(label: string, timeout: number, read: () => Promise<T | u
 
 async function mine(blocks: number) {
   await rpc("anvil_mine", [`0x${blocks.toString(16)}`])
+}
+
+async function advanceTime(seconds: number) {
+  const latest = await rpc<{ timestamp: string }>("eth_getBlockByNumber", ["latest", false])
+  const nextTimestamp = Number(BigInt(latest.timestamp)) + seconds
+  await rpc("evm_setNextBlockTimestamp", [nextTimestamp])
+  await rpc("evm_mine")
 }
 
 async function rpc<T = unknown>(method: string, params: unknown[] = []): Promise<T> {

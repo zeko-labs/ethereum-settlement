@@ -3,10 +3,6 @@ import { Mina, PrivateKey } from "o1js"
 
 declare const process: { env: Record<string, string | undefined> }
 
-type O1jsWorkerGlobal = typeof globalThis & {
-  terminateWorkers?: () => Promise<unknown>
-}
-
 export type LiveWallets = {
   ethereumAccounts: `0x${string}`[]
   zekoAccounts: string[]
@@ -150,15 +146,6 @@ export async function selectWallets(page: Page, ethereumIndex: number, zekoIndex
     await wallets.selectEthereum(ethereum)
     await wallets.selectZeko(zeko)
   }, [ethereumIndex, zekoIndex])
-}
-
-export async function stopLiveWalletWorkers() {
-  try {
-    await (globalThis as O1jsWorkerGlobal).terminateWorkers?.()
-  } catch {
-    // o1js clears its worker list after a clean shutdown. Calling the global
-    // cleanup hook in that state throws even though no workers remain.
-  }
 }
 
 function required(name: string): string {
