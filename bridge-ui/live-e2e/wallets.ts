@@ -36,7 +36,7 @@ export async function installLiveWallets(
       ? JSON.parse(input.transaction) as Parameters<typeof Mina.Transaction.fromJSON>[0]
       : input.transaction as Parameters<typeof Mina.Transaction.fromJSON>[0]
     const signed = Mina.Transaction.fromJSON(json).sign([key])
-    return JSON.stringify({ zkappCommand: signed.toJSON() })
+    return JSON.stringify({ zkappCommand: JSON.parse(signed.toJSON()) })
   })
 
   await page.addInitScript(({ ethereumAccounts, zekoAccounts, rpcUrl }) => {
