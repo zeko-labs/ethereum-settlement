@@ -209,6 +209,37 @@ describe("bridge application", () => {
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })
 
+  it("does not starve a slow activity response with overlapping refreshes", async () => {
+    let resolveActivity!: (value: Awaited<ReturnType<typeof mocks.listActivity>>) => void
+    mocks.listActivity.mockReturnValue(new Promise((resolve) => {
+      resolveActivity = resolve
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await waitFor(() => expect(mocks.listActivity).toHaveBeenCalledTimes(1))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(mocks.listActivity).toHaveBeenCalledTimes(1)
+
+    resolveActivity({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [{
+        globalActionIndex: 4,
+        transactionHash: "5JslowArchiveWithdrawal",
+        blockHeight: 9,
+        timestamp: "1784159326275",
+        recipient: ethereumAccount,
+        amount: "50000000",
+        status: "pendingSettlement",
+        nextAction: "waitForSettlement"
+      }]
+    })
+    expect(await screen.findByTestId("activity-withdrawal-4")).toBeVisible()
+  })
+
   it("replaces activity with the latest destination-wallet snapshot", async () => {
     const request = {
       globalActionIndex: 4,

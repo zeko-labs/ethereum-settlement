@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test"
-import { installLiveWallets, selectWallets } from "./wallets"
+import { installLiveWallets, selectWallets, stopLiveWalletWorkers } from "./wallets"
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -36,6 +36,10 @@ const virtualMinaSlotSeconds = positiveInteger(
   process.env.BRIDGE_E2E_VIRTUAL_MINA_SLOT_SECONDS ?? "12"
 )
 const timeline: Array<{ at: string; event: string; value?: unknown }> = []
+
+test.afterAll(async () => {
+  await stopLiveWalletWorkers()
+})
 
 test("two destination wallets complete isolated deposit and withdrawal roundtrips", async ({ page, request }, testInfo) => {
   test.setTimeout(45 * 60 * 1_000)

@@ -85,6 +85,7 @@ export default function App() {
   const [actionError, setActionError] = useState("")
   const ethereum = config ? ethereumNetworkName(config.expectedEthereumChainId) : "Sepolia"
   const activityRequest = useRef(0)
+  const activityRefreshes = useRef(new Set<string>())
   const selectedOperationRef = useRef<PendingOperation>()
   const ethereumConnectionRequest = useRef(0)
 
@@ -358,6 +359,9 @@ export default function App() {
 
   const refreshActivity = useCallback(async () => {
     if (!client || (!zekoAccount && !ethereumAccount)) return
+    const refreshKey = `${client.account}:${ethereumAccount ?? ""}:${zekoAccount ?? ""}`
+    if (activityRefreshes.current.has(refreshKey)) return
+    activityRefreshes.current.add(refreshKey)
     const request = ++activityRequest.current
     setActivityLoading(true)
     try {
@@ -436,6 +440,7 @@ export default function App() {
         setActivityError(error instanceof Error ? error.message : String(error))
       }
     } finally {
+      activityRefreshes.current.delete(refreshKey)
       if (request === activityRequest.current) setActivityLoading(false)
     }
   }, [bridgeAddress, client, config, ethereumAccount, zekoAccount, zekoClient])
@@ -456,7 +461,6 @@ export default function App() {
 
   useEffect(() => {
     if (!config || !bridgeAddress) return
-    activityRequest.current += 1
     setActivityLoading(false)
     setActivityError("")
     setDeposits([])
