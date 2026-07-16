@@ -81,5 +81,29 @@ pnpm build
 pnpm test:e2e
 ```
 
+The fixture-free browser roundtrip is intentionally separate because it starts
+from a clean full Zeko/Ethereum stack and can spend tens of minutes compiling
+circuits and waiting for real OCaml commits:
+
+```bash
+BRIDGE_E2E_REUSE_STACK=true \
+BRIDGE_E2E_DEPLOY_DIR=../build/manual-stack/deploy \
+../tools/run-live-bridge-browser-e2e.sh
+```
+
+For an isolated run, set `BRIDGE_E2E_STACK_COMMAND` to the foreground launcher
+for the prepared local deployment instead of `BRIDGE_E2E_REUSE_STACK`. The
+launcher must provide Anvil chain 31337, gateway, sequencer/prover, three DA
+nodes, archive relay/archive, Actions services, and disable automatic deposit
+proving. Before invoking the launcher, the runner generates two Zeko signing
+keys and exports them as `BRIDGE_E2E_ZEKO_PRIVATE_KEYS` plus their addresses as
+`BRIDGE_E2E_ZEKO_PUBLIC_KEYS`; the launcher must add both corresponding
+accounts to genesis with enough balance for deposit
+finalization and one withdrawal request. Reuse mode instead requires that
+variable to contain two keys which are already funded in the retained stack.
+The runner builds both UIs, injects real RPC-backed wallet providers, and
+retains Playwright traces plus a protocol-state timeline on failure. It never
+intercepts application APIs and does not request an SP1 proof.
+
 The production host must allow the UI origin through `API_CORS_ALLOWED_ORIGINS`
 on both the gateway and sequencer-facing services.

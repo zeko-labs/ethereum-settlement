@@ -12,7 +12,8 @@
     "test": "vitest run && pnpm test:vendor",
     "test:vendor": "node scripts/check-vendored-sdk.mjs",
     "test:watch": "vitest",
-    "test:e2e": "pnpm build && playwright test"
+    "test:e2e": "pnpm build && playwright test",
+    "test:e2e:live": "playwright test --config playwright.live.config.ts"
   },
   "dependencies": {
     "@zeko-labs/bridge-sdk": "file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz",
