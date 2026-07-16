@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test"
-import { installLiveWallets, selectWallets } from "./wallets"
+import { installLiveWallets, selectWallets, stopLiveWalletWorkers } from "./wallets"
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -19,12 +19,22 @@ type Withdrawal = {
   status: string
 }
 
+type ExplorerSearch = {
+  groups?: {
+    deposits?: Array<{ nonce?: string }>
+  }
+}
+
 const gateway = required("BRIDGE_E2E_GATEWAY_URL")
 const rpcUrl = required("BRIDGE_E2E_RPC_URL")
 const explorerUrl = required("BRIDGE_E2E_EXPLORER_UI_URL")
 const proofApiKey = required("BRIDGE_E2E_PROOF_API_KEY")
 const zekoPrivateKeys = required("BRIDGE_E2E_ZEKO_PRIVATE_KEYS").split(",")
 const timeline: Array<{ at: string; event: string; value?: unknown }> = []
+
+test.afterAll(async () => {
+  await stopLiveWalletWorkers()
+})
 
 test("two destination wallets complete isolated deposit and withdrawal roundtrips", async ({ page, request }, testInfo) => {
   test.setTimeout(45 * 60 * 1_000)
@@ -227,8 +237,8 @@ async function assertExplorerDeposit(page: Page, nonce: number, recipient: strin
   await expect(page.getByRole("heading", { name: `Deposit #${nonce}` })).toBeVisible()
   await expect(page.getByText(recipient, { exact: true })).toBeVisible()
   const response = await fetch(`${gateway}/v1/explorer/search?q=${encodeURIComponent(recipient)}`)
-  const search = await response.json() as { deposits?: Array<{ nonce?: string }> }
-  expect(search.deposits?.some((deposit) => deposit.nonce === String(nonce))).toBeTruthy()
+  const search = await response.json() as ExplorerSearch
+  expect(search.groups?.deposits?.some((deposit) => deposit.nonce === String(nonce))).toBeTruthy()
 }
 
 async function assertExplorerWithdrawalTransaction(page: Page, transactionHash: string) {
