@@ -1,9 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { validConfig } from "./test/fixtures"
 
 const ethereumAccount = "0x0000000000000000000000000000000000000001"
+const ethereumAccountB = "0x0000000000000000000000000000000000000002"
 const zekoAccount = "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2"
 
 const mocks = vi.hoisted(() => ({
@@ -206,5 +207,100 @@ describe("bridge application", () => {
     await user.click(screen.getByRole("tab", { name: "Activity" }))
     expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
+  })
+
+  it("replaces activity with the latest destination-wallet snapshot", async () => {
+    const request = {
+      globalActionIndex: 4,
+      transactionHash: "5JwalletAWithdrawal",
+      blockHeight: 9,
+      timestamp: "1784159326275",
+      recipient: ethereumAccount,
+      amount: "50000000",
+      status: "pendingSettlement" as const,
+      nextAction: "waitForSettlement" as const
+    }
+    mocks.listActivity.mockResolvedValue({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [request]
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByTestId("activity-withdrawal-4")).toBeVisible()
+
+    mocks.listActivity.mockResolvedValue({ deposits: [], withdrawals: [], withdrawalRequests: [] })
+    await user.click(screen.getByRole("tab", { name: "Bridge" }))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    await waitFor(() => expect(screen.queryByTestId("activity-withdrawal-4")).not.toBeInTheDocument())
+  })
+
+  it("ignores an activity response from the previously selected Ethereum account", async () => {
+    let onAccountsChanged: ((accounts: string[]) => void) | undefined
+    window.ethereum = {
+      request: vi.fn(async ({ method }: { method: string }) => {
+        if (method === "eth_accounts") return []
+        if (method === "eth_chainId") return "0xaa36a7"
+        return null
+      }),
+      on: vi.fn((event: string, listener: (value: unknown) => void) => {
+        if (event === "accountsChanged") onAccountsChanged = listener as (accounts: string[]) => void
+      }),
+      removeListener: vi.fn()
+    } as typeof window.ethereum
+    mocks.createClient.mockImplementation(async ({ account }: { account: string }) => ({
+      ...client,
+      account
+    }))
+    let resolveOldActivity!: (value: Awaited<ReturnType<typeof mocks.listActivity>>) => void
+    mocks.listActivity
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveOldActivity = resolve
+      }))
+      .mockResolvedValue({ deposits: [], withdrawals: [], withdrawalRequests: [] })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await waitFor(() => expect(mocks.listActivity).toHaveBeenCalledTimes(1))
+    expect(onAccountsChanged).toBeDefined()
+    await act(async () => onAccountsChanged?.([ethereumAccountB]))
+    await waitFor(() => expect(mocks.listActivity.mock.calls.length).toBeGreaterThanOrEqual(2))
+
+    resolveOldActivity({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [{
+        globalActionIndex: 9,
+        transactionHash: "5JoldWalletWithdrawal",
+        blockHeight: 11,
+        timestamp: "1784159326275",
+        recipient: ethereumAccount,
+        amount: "50000000",
+        status: "pendingSettlement",
+        nextAction: "waitForSettlement"
+      }]
+    })
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    await waitFor(() => expect(screen.queryByTestId("activity-withdrawal-9")).not.toBeInTheDocument())
+  })
+
+  it("shows archive read failures only where activity is displayed", async () => {
+    mocks.listActivity.mockRejectedValue(new Error("could not read pending withdrawals from the Zeko archive"))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await waitFor(() => expect(mocks.listActivity).toHaveBeenCalled())
+    expect(screen.queryByText(/could not read pending withdrawals/i)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText(/could not read pending withdrawals/i)).toBeVisible()
   })
 })

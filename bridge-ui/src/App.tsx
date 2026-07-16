@@ -73,6 +73,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
+  const [activityError, setActivityError] = useState("")
   const [deposits, setDeposits] = useState<DepositStatus[]>([])
   const [withdrawals, setWithdrawals] = useState<WithdrawalProof[]>([])
   const [operations, setOperations] = useState<PendingOperation[]>([])
@@ -83,7 +84,9 @@ export default function App() {
   const [toast, setToast] = useState("")
   const [actionError, setActionError] = useState("")
   const ethereum = config ? ethereumNetworkName(config.expectedEthereumChainId) : "Sepolia"
-  const activityRunning = useRef(false)
+  const activityRequest = useRef(0)
+  const selectedOperationRef = useRef<PendingOperation>()
+  const ethereumConnectionRequest = useRef(0)
 
   useEffect(() => {
     let active = true
@@ -109,9 +112,12 @@ export default function App() {
   const setEthereumConnection = useCallback(
     async (account: Address) => {
       if (!config) throw new Error("Runtime configuration is not loaded")
+      const request = ++ethereumConnectionRequest.current
       const provider = getEthereumProvider()
       await ensureEthereumNetwork(provider, config.expectedEthereumChainId)
       const connectedClient = await createEthereumBridgeClient({ config, provider, account })
+      if (request !== ethereumConnectionRequest.current) return connectedClient
+      activityRequest.current += 1
       setEthereumAccount(account)
       setClient(connectedClient)
       setZekoClient(undefined)
@@ -145,6 +151,7 @@ export default function App() {
     try {
       const account = await connectAuro(config)
       rememberAuroConnection(true)
+      activityRequest.current += 1
       setZekoAccount(account)
       setZekoClient(undefined)
       setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
@@ -163,6 +170,7 @@ export default function App() {
     void connectAuro(config)
       .then(async (account) => {
         if (!active) return
+        activityRequest.current += 1
         setZekoAccount(account)
         setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
         setRecipient((current) => current || account)
@@ -201,10 +209,12 @@ export default function App() {
     const auro = window.mina
     const onEthereumAccounts = (value: unknown) => {
       const account = Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined
+      activityRequest.current += 1
       setClient(undefined)
       setZekoClient(undefined)
       setActivityLoading(false)
       if (!account || !isAddress(account)) {
+        ethereumConnectionRequest.current += 1
         setEthereumAccount(undefined)
         setEthereumBalance(undefined)
         return
@@ -225,6 +235,7 @@ export default function App() {
       void ethereum?.request({ method: "eth_accounts" }).then(onEthereumAccounts).catch(() => undefined)
     }
     const onAuroAccounts = (accounts: string[]) => {
+      activityRequest.current += 1
       setZekoClient(undefined)
       setZekoAccount(accounts[0])
       if (accounts[0]) {
@@ -346,8 +357,8 @@ export default function App() {
   }
 
   const refreshActivity = useCallback(async () => {
-    if (!client || activityRunning.current || (!zekoAccount && !ethereumAccount)) return
-    activityRunning.current = true
+    if (!client || (!zekoAccount && !ethereumAccount)) return
+    const request = ++activityRequest.current
     setActivityLoading(true)
     try {
       let activityClient = client
@@ -365,6 +376,8 @@ export default function App() {
         zekoRecipient: zekoAccount,
         ethereumRecipient: ethereumAccount
       })
+      if (request !== activityRequest.current) return
+      setActivityError("")
       setDeposits(result.deposits)
       setWithdrawals(result.withdrawals)
       const discoveredOperations: PendingOperation[] = result.withdrawalRequests.map((request) => ({
@@ -373,30 +386,59 @@ export default function App() {
         amount: formatUnits(BigInt(request.amount), 9, 9),
         recipient: request.recipient,
         transactionHash: request.transactionHash,
-        createdAt: archiveTimestamp(request.timestamp)
+        createdAt: archiveTimestamp(request.timestamp),
+        globalActionIndex: request.globalActionIndex
       }))
-      setOperations((current) => [
+      const recovered = currentActivityOperations(config, bridgeAddress, zekoAccount, ethereumAccount)
+      const discoveredByTransaction = new Map(
+        discoveredOperations.map((operation) => [operation.transactionHash, operation])
+      )
+      const enrichedRecovered = recovered.map((operation) => {
+        const discovered = discoveredByTransaction.get(operation.transactionHash)
+        if (!discovered || operation.globalActionIndex !== undefined) return operation
+        const enriched = { ...operation, globalActionIndex: discovered.globalActionIndex }
+        upsertOperation(operationKey(operation.recipient), enriched)
+        return enriched
+      })
+      const nextOperations = [
         ...new Map(
-          [...discoveredOperations, ...current].map((operation) => [operation.id, operation])
+          [...discoveredOperations, ...enrichedRecovered].map((operation) => [operation.id, operation])
         ).values()
-      ])
-      setSelectedDeposit((current) => current ? result.deposits.find((row) => row.nonce === current.nonce) ?? current : current)
-      setSelectedWithdrawal((current) => current ? result.withdrawals.find((row) => row.settlementSequence === current.settlementSequence && row.offset === current.offset) ?? current : current)
-      if (!selectedWithdrawal && selectedOperation?.direction === "withdrawal") {
-        const matching = [...result.withdrawals].reverse().find(
-          (row) =>
-            row.recipient.toLowerCase() === selectedOperation.recipient.toLowerCase() &&
-            formatUnits(BigInt(row.amount), 9, 9) === selectedOperation.amount
-        )
-        if (matching) setSelectedWithdrawal(matching)
-      }
+      ]
+      setOperations(nextOperations)
+      const selected = selectedOperationRef.current
+      setSelectedDeposit((current) => current
+        ? result.deposits.find((row) => row.nonce === current.nonce)
+        : undefined)
+      setSelectedWithdrawal((current) => current
+        ? result.withdrawals.find(
+            (row) => row.globalActionIndex === current.globalActionIndex
+          )
+        : selected?.globalActionIndex === undefined
+          ? undefined
+          : result.withdrawals.find(
+              (row) => row.globalActionIndex === selected.globalActionIndex
+            ))
+      setSelectedOperation((current) => {
+        const next = current
+          ? nextOperations.find(
+            (operation) =>
+              operation.id === current.id ||
+              (operation.globalActionIndex !== undefined &&
+                operation.globalActionIndex === current.globalActionIndex)
+          )
+          : undefined
+        selectedOperationRef.current = next
+        return next
+      })
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error))
+      if (request === activityRequest.current) {
+        setActivityError(error instanceof Error ? error.message : String(error))
+      }
     } finally {
-      activityRunning.current = false
-      setActivityLoading(false)
+      if (request === activityRequest.current) setActivityLoading(false)
     }
-  }, [client, config, ethereumAccount, selectedOperation, selectedWithdrawal, zekoAccount, zekoClient])
+  }, [bridgeAddress, client, config, ethereumAccount, zekoAccount, zekoClient])
 
   useEffect(() => {
     if (!config || !client) return
@@ -414,12 +456,20 @@ export default function App() {
 
   useEffect(() => {
     if (!config || !bridgeAddress) return
-    const recovered = [
-      ...(zekoAccount ? readOperations(operationStorageKey(config.expectedEthereumChainId, bridgeAddress, zekoAccount)) : []),
-      ...(ethereumAccount ? readOperations(operationStorageKey(config.expectedEthereumChainId, bridgeAddress, ethereumAccount)) : [])
-    ]
-    setOperations([...new Map(recovered.map((operation) => [operation.id, operation])).values()])
+    activityRequest.current += 1
+    setActivityLoading(false)
+    setActivityError("")
+    setDeposits([])
+    setWithdrawals([])
+    setOperations(currentActivityOperations(config, bridgeAddress, zekoAccount, ethereumAccount))
+    setSelectedDeposit(undefined)
+    setSelectedWithdrawal(undefined)
+    setSelectedOperation(undefined)
   }, [bridgeAddress, config, ethereumAccount, zekoAccount])
+
+  useEffect(() => {
+    selectedOperationRef.current = selectedOperation
+  }, [selectedOperation])
 
   useEffect(() => {
     if (!toast) return
@@ -599,6 +649,7 @@ export default function App() {
           </div>
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
+            {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
             {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
@@ -624,4 +675,22 @@ const archiveTimestamp = (value: string): string => {
   }
   const date = new Date(value)
   return Number.isNaN(date.valueOf()) ? new Date(0).toISOString() : date.toISOString()
+}
+
+const currentActivityOperations = (
+  config: RuntimeConfig | undefined,
+  bridgeAddress: string,
+  zekoAccount: string | undefined,
+  ethereumAccount: Address | undefined
+): PendingOperation[] => {
+  if (!config || !bridgeAddress) return []
+  const deposits = zekoAccount
+    ? readOperations(operationStorageKey(config.expectedEthereumChainId, bridgeAddress, zekoAccount))
+        .filter((operation) => operation.direction === "deposit")
+    : []
+  const withdrawals = ethereumAccount
+    ? readOperations(operationStorageKey(config.expectedEthereumChainId, bridgeAddress, ethereumAccount))
+        .filter((operation) => operation.direction === "withdrawal")
+    : []
+  return [...new Map([...deposits, ...withdrawals].map((operation) => [operation.id, operation])).values()]
 }

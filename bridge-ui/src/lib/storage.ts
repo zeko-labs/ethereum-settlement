@@ -6,6 +6,7 @@ export type PendingOperation = {
   transactionHash: string
   createdAt: string
   depositNonce?: number
+  globalActionIndex?: number
   zekoTransactionHash?: string
   ethereumClaimHash?: string
 }
@@ -35,6 +36,7 @@ export const readOperations = (key: string, storage: Storage = localStorage): Pe
       if (typeof row !== "object" || row === null) return false
       const value = row as Record<string, unknown>
       const nonce = value.depositNonce
+      const globalActionIndex = value.globalActionIndex
       return (
         typeof value.id === "string" &&
         (value.direction === "deposit" || value.direction === "withdrawal") &&
@@ -45,6 +47,10 @@ export const readOperations = (key: string, storage: Storage = localStorage): Pe
         !Number.isNaN(Date.parse(value.createdAt)) &&
         (nonce === undefined ||
           (typeof nonce === "number" && Number.isSafeInteger(nonce) && nonce >= 0)) &&
+        (globalActionIndex === undefined ||
+          (typeof globalActionIndex === "number" &&
+            Number.isSafeInteger(globalActionIndex) &&
+            globalActionIndex >= 0)) &&
         (value.zekoTransactionHash === undefined || typeof value.zekoTransactionHash === "string") &&
         (value.ethereumClaimHash === undefined || typeof value.ethereumClaimHash === "string")
       )

@@ -10,6 +10,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -17,6 +18,8 @@ use crate::AppState;
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
+const MINA_PUBLIC_KEY_VERSION: u8 = 203;
+const MINA_PUBLIC_KEY_PAYLOAD_LEN: usize = 35;
 
 const COMMIT_SCHEDULE_QUERY: &str =
     "query ExplorerCommitSchedule { commitSchedule { periodSeconds phase lastAttemptStartedAt nextAttemptAt } }";
@@ -799,6 +802,7 @@ async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>)
         }
     }
     let numeric = needle.parse::<i64>().ok();
+    let packed_zeko_recipient = packed_zeko_address_from_base58(needle).ok();
     if let Ok(rows) = sqlx::query(
         "SELECT batch_sequence::text, ethereum_tx_hash FROM gateway_explorer_settlements
          WHERE NOT removed AND (ethereum_tx_hash = $1 OR mina_transaction_hash = $1
@@ -815,11 +819,13 @@ async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>)
     if let Ok(rows) = sqlx::query(
         "SELECT nonce::text, ethereum_tx_hash, sender FROM gateway_bridge_deposits
          WHERE NOT removed AND (ethereum_tx_hash = $1 OR lower(sender) = lower($1)
-           OR zeko_recipient = $1 OR ($2::bigint IS NOT NULL AND nonce = $2))
+           OR zeko_recipient = $1 OR zeko_recipient = $3
+           OR ($2::bigint IS NOT NULL AND nonce = $2))
          ORDER BY nonce DESC LIMIT 5",
     )
     .bind(needle)
     .bind(numeric)
+    .bind(packed_zeko_recipient)
     .fetch_all(&state.pool)
     .await
     {
@@ -1165,11 +1171,12 @@ fn deposit_json(row: &sqlx::postgres::PgRow) -> Result<Value> {
         bridge_proven,
         synchronized,
     );
+    let packed_zeko_recipient = row.try_get::<String, _>("zeko_recipient")?;
     Ok(json!({
         "nonce": row.try_get::<i64, _>("nonce")?.to_string(),
         "token": row.try_get::<String, _>("token")?,
         "sender": row.try_get::<String, _>("sender")?,
-        "zekoRecipient": row.try_get::<String, _>("zeko_recipient")?,
+        "zekoRecipient": packed_zeko_address_to_base58(&packed_zeko_recipient)?,
         "ethereumAmount": row.try_get::<String, _>("ethereum_amount")?,
         "zekoAmount": row.try_get::<String, _>("zeko_amount")?,
         "timeout": row.try_get::<i64, _>("timeout")?.to_string(),
@@ -1185,6 +1192,123 @@ fn deposit_json(row: &sqlx::postgres::PgRow) -> Result<Value> {
         "nextAction": next_action,
         "accuracyNote": if synchronized { Some("Synchronization is authoritative; the archive does not persist a canonical deposit-nonce to L2-finalization mapping.") } else { None }
     }))
+}
+
+fn packed_zeko_address_to_base58(packed: &str) -> Result<String> {
+    let value = packed
+        .strip_prefix("0x")
+        .context("packed Zeko address must start with 0x")?;
+    let mut bytes = hex::decode(value).context("decode packed Zeko address")?;
+    anyhow::ensure!(bytes.len() == 32, "packed Zeko address must be 32 bytes");
+    let is_odd = bytes[0] & 0x80 != 0;
+    bytes[0] &= 0x7f;
+
+    let mut payload = Vec::with_capacity(MINA_PUBLIC_KEY_PAYLOAD_LEN);
+    payload.extend([1, 1]);
+    payload.extend(bytes.into_iter().rev());
+    payload.push(u8::from(is_odd));
+    Ok(base58_check_encode(MINA_PUBLIC_KEY_VERSION, &payload))
+}
+
+fn packed_zeko_address_from_base58(address: &str) -> Result<String> {
+    let (version, payload) = base58_check_decode(address)?;
+    anyhow::ensure!(
+        version == MINA_PUBLIC_KEY_VERSION,
+        "unexpected Mina public-key version"
+    );
+    anyhow::ensure!(
+        payload.len() == MINA_PUBLIC_KEY_PAYLOAD_LEN,
+        "unexpected Mina public-key payload length"
+    );
+    anyhow::ensure!(
+        payload[0..2] == [1, 1],
+        "unexpected Mina public-key encoding"
+    );
+    anyhow::ensure!(matches!(payload[34], 0 | 1), "invalid public-key parity");
+
+    let mut packed = payload[2..34].iter().rev().copied().collect::<Vec<_>>();
+    if payload[34] == 1 {
+        packed[0] |= 0x80;
+    }
+    Ok(format!("0x{}", hex::encode(packed)))
+}
+
+fn base58_check_encode(version: u8, payload: &[u8]) -> String {
+    let mut bytes = Vec::with_capacity(payload.len() + 5);
+    bytes.push(version);
+    bytes.extend(payload);
+    bytes.extend(base58_checksum(&bytes));
+    base58_encode(&bytes)
+}
+
+fn base58_check_decode(value: &str) -> Result<(u8, Vec<u8>)> {
+    let bytes = base58_decode(value)?;
+    anyhow::ensure!(bytes.len() >= 5, "Base58Check value is too short");
+    let (body, checksum) = bytes.split_at(bytes.len() - 4);
+    anyhow::ensure!(
+        checksum == base58_checksum(body),
+        "invalid Base58Check checksum"
+    );
+    Ok((body[0], body[1..].to_vec()))
+}
+
+fn base58_checksum(value: &[u8]) -> [u8; 4] {
+    let first = Sha256::digest(value);
+    let second = Sha256::digest(first);
+    second[..4]
+        .try_into()
+        .expect("SHA-256 prefixes are four bytes")
+}
+
+fn base58_encode(value: &[u8]) -> String {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let leading_zeroes = value.iter().take_while(|byte| **byte == 0).count();
+    let mut digits = Vec::<u8>::new();
+    for byte in value {
+        let mut carry = u32::from(*byte);
+        for digit in &mut digits {
+            let next = u32::from(*digit) * 256 + carry;
+            *digit = (next % 58) as u8;
+            carry = next / 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let mut encoded = String::with_capacity(leading_zeroes + digits.len());
+    encoded.extend(std::iter::repeat_n('1', leading_zeroes));
+    encoded.extend(
+        digits
+            .iter()
+            .rev()
+            .map(|digit| ALPHABET[*digit as usize] as char),
+    );
+    encoded
+}
+
+fn base58_decode(value: &str) -> Result<Vec<u8>> {
+    const ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let leading_zeroes = value.bytes().take_while(|byte| *byte == b'1').count();
+    let mut bytes = Vec::<u8>::new();
+    for character in value.bytes() {
+        let mut carry = ALPHABET
+            .bytes()
+            .position(|candidate| candidate == character)
+            .context("invalid Base58 character")? as u32;
+        for byte in &mut bytes {
+            let next = u32::from(*byte) * 58 + carry;
+            *byte = (next & 0xff) as u8;
+            carry = next >> 8;
+        }
+        while carry > 0 {
+            bytes.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    let mut decoded = vec![0; leading_zeroes];
+    decoded.extend(bytes.into_iter().rev());
+    Ok(decoded)
 }
 
 async fn withdrawal_json(state: &AppState, sequence: u64, offset: u32) -> Result<Value> {
@@ -1347,5 +1471,31 @@ mod tests {
             ..schedule
         };
         assert!(validate_commit_schedule(&invalid).is_err());
+    }
+
+    #[test]
+    fn packed_zeko_addresses_roundtrip_through_canonical_base58() {
+        let vectors = [
+            (
+                "0x16bbb00183854f6126da6d40cf43b0bb13a6dc426b08f80e998b3fbb650f8e41",
+                "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2",
+            ),
+            (
+                "0xafcd347c85840a68930691c4066e08455fa414e74e6db2c4d31c2e61275d186f",
+                "B62qnBHBA1HiRbWzJyWxdgDsQ5ndFFgtnb5CjLVDxYCasRzMrxRbib5",
+            ),
+        ];
+        for (packed, base58) in vectors {
+            assert_eq!(packed_zeko_address_to_base58(packed).unwrap(), base58);
+            assert_eq!(packed_zeko_address_from_base58(base58).unwrap(), packed);
+        }
+    }
+
+    #[test]
+    fn base58_zeko_address_rejects_a_bad_checksum() {
+        assert!(packed_zeko_address_from_base58(
+            "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn3"
+        )
+        .is_err());
     }
 }

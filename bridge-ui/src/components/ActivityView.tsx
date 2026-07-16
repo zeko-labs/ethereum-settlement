@@ -14,7 +14,11 @@ export const ActivityView = ({ deposits, withdrawals, operations, loading, onDep
 }) => {
   const withdrawalRows = withdrawals.map((withdrawal) => ({
     withdrawal,
-    operation: operations.find((row) => row.direction === "withdrawal" && row.recipient.toLowerCase() === withdrawal.recipient.toLowerCase() && row.amount === formatUnits(BigInt(withdrawal.amount), 9, 9))
+    operation: operations.find(
+      (row) =>
+        row.direction === "withdrawal" &&
+        row.globalActionIndex === withdrawal.globalActionIndex
+    )
   }))
   const matchedOperationIds = new Set(withdrawalRows.flatMap(({ operation }) => operation ? [operation.id] : []))
   const pendingWithdrawals = operations.filter(
@@ -27,14 +31,14 @@ export const ActivityView = ({ deposits, withdrawals, operations, loading, onDep
       {rows === 0 ? <div className="empty-state"><strong>No indexed bridge activity</strong><span>Connect both wallets or submit a new transfer.</span></div> : <div className="activity-list">
         {deposits.map((deposit) => {
           const progress = depositProgress(deposit)
-          return <article className="activity-row" key={`deposit-${deposit.nonce}`}><span className="activity-route-icon"><NetworkIcon network="ethereum" compact /><NetworkIcon network="zeko" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{formatUnits(BigInt(deposit.zekoAmount), 9, 9)} ETH · Deposit #{deposit.nonce}</strong><span className={`status-badge ${progress.tone}`}>{deposit.status}</span></div><span className="activity-secondary">{progress.label}</span></div><button type="button" className="secondary-button compact-button" onClick={() => onDeposit(deposit)}>Resume</button></article>
+          return <article className="activity-row" data-testid={`activity-deposit-${deposit.nonce}`} key={`deposit-${deposit.nonce}`}><span className="activity-route-icon"><NetworkIcon network="ethereum" compact /><NetworkIcon network="zeko" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{formatUnits(BigInt(deposit.zekoAmount), 9, 9)} ETH · Deposit #{deposit.nonce}</strong><span className={`status-badge ${progress.tone}`}>{deposit.status}</span></div><span className="activity-secondary">{progress.label}</span></div><button type="button" className="secondary-button compact-button" onClick={() => onDeposit(deposit)}>Resume</button></article>
         })}
         {withdrawalRows.map(({ withdrawal, operation }) => {
           const progress = withdrawalProgress(withdrawal)
           const fallback: PendingOperation = operation ?? { id: `withdrawal:${withdrawal.settlementSequence}:${withdrawal.offset}`, direction: "withdrawal", amount: formatUnits(BigInt(withdrawal.amount), 9, 9), recipient: withdrawal.recipient, transactionHash: "Gateway-discovered transaction", createdAt: new Date(0).toISOString() }
-          return <article className="activity-row" key={`withdrawal-${withdrawal.settlementSequence}-${withdrawal.offset}`}><span className="activity-route-icon"><NetworkIcon network="zeko" compact /><NetworkIcon network="ethereum" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{formatUnits(BigInt(withdrawal.amount), 9, 9)} ETH · Withdrawal {withdrawal.settlementSequence}:{withdrawal.offset}</strong><span className={`status-badge ${progress.tone}`}>{withdrawal.status}</span></div><span className="activity-secondary">{progress.label}</span></div><button type="button" className="secondary-button compact-button" onClick={() => onWithdrawal(withdrawal, fallback)}>Resume</button></article>
+          return <article className="activity-row" data-testid={`activity-withdrawal-${withdrawal.globalActionIndex}`} key={`withdrawal-${withdrawal.settlementSequence}-${withdrawal.offset}`}><span className="activity-route-icon"><NetworkIcon network="zeko" compact /><NetworkIcon network="ethereum" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{formatUnits(BigInt(withdrawal.amount), 9, 9)} ETH · Withdrawal {withdrawal.settlementSequence}:{withdrawal.offset}</strong><span className={`status-badge ${progress.tone}`}>{withdrawal.status}</span></div><span className="activity-secondary">{progress.label}</span></div><button type="button" className="secondary-button compact-button" onClick={() => onWithdrawal(withdrawal, fallback)}>Resume</button></article>
         })}
-        {pendingWithdrawals.map((operation) => <article className="activity-row" key={operation.id}><span className="activity-route-icon"><NetworkIcon network="zeko" compact /><NetworkIcon network="ethereum" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{operation.amount} ETH · Withdrawal request</strong><span className="status-badge active">pending</span></div><span className="activity-secondary">Waiting for Zeko settlement</span></div><button type="button" className="secondary-button compact-button" onClick={() => onWithdrawal(undefined, operation)}>Resume</button></article>)}
+        {pendingWithdrawals.map((operation) => <article className="activity-row" data-testid={operation.globalActionIndex === undefined ? operation.id : `activity-withdrawal-${operation.globalActionIndex}`} key={operation.id}><span className="activity-route-icon"><NetworkIcon network="zeko" compact /><NetworkIcon network="ethereum" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{operation.amount} ETH · Withdrawal request</strong><span className="status-badge active">pending</span></div><span className="activity-secondary">Waiting for Zeko settlement</span></div><button type="button" className="secondary-button compact-button" onClick={() => onWithdrawal(undefined, operation)}>Resume</button></article>)}
       </div>}
     </section>
   )
