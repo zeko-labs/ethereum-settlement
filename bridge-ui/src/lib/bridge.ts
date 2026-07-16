@@ -24,6 +24,14 @@ type SignTransaction = (
 ) => Promise<O1Transaction<boolean, true>>
 let modulePromise: Promise<{ sdk: SdkModule; o1: O1Module }> | undefined
 
+const DEPOSIT_PREPARATION_TIMEOUT_MS = 5 * 60 * 1_000
+
+const isTransientDepositPreparationReason = (reason: string | null): boolean =>
+  reason === "No outer commit available yet" ||
+  reason === "No deposit witnesses found" ||
+  reason?.includes("accepted but not confirmed yet") === true ||
+  reason?.includes("not finalizable yet") === true
+
 export const loadBridgeModules = () => {
   modulePromise ??= Promise.all([import("@zeko-labs/eth-bridge-sdk"), import("o1js")]).then(
     ([sdk, o1]) => ({ sdk, o1 })
@@ -139,8 +147,15 @@ export const finalizeDeposit = async ({
 }): Promise<string> => {
   const { o1 } = await loadBridgeModules()
   const publicKey = o1.PublicKey.fromBase58(recipient)
-  const preparation = await client.prepareDepositFinalization(publicKey)
-  if (!preparation.available) throw new Error(preparation.reason ?? "Deposit is not ready to finalize")
+  const deadline = Date.now() + DEPOSIT_PREPARATION_TIMEOUT_MS
+  for (;;) {
+    const preparation = await client.prepareDepositFinalization(publicKey)
+    if (preparation.available) break
+    if (!isTransientDepositPreparationReason(preparation.reason) || Date.now() >= deadline) {
+      throw new Error(preparation.reason ?? "Deposit is not ready to finalize")
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, config.pollIntervalMs))
+  }
   return client.finalizeDeposit(publicKey, createAuroSigner(provider, config))
 }
 

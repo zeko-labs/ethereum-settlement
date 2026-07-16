@@ -18,7 +18,12 @@ vi.mock("o1js", () => ({
   UInt64: { from: vi.fn() }
 }))
 
-import { createAuroSigner, createEthereumBridgeClient, zekoTransactionUrl } from "./bridge"
+import {
+  createAuroSigner,
+  createEthereumBridgeClient,
+  finalizeDeposit,
+  zekoTransactionUrl
+} from "./bridge"
 
 const config = {
   schemaVersion: 1,
@@ -95,6 +100,56 @@ describe("SDK integration", () => {
     const transaction = { toJSON: () => "{\"unsigned\":true}" }
     await expect(signer(transaction as Parameters<typeof signer>[0])).rejects.toThrow("User rejected signing")
     expect(mocks.fromJSON).not.toHaveBeenCalled()
+  })
+
+  it("retries deposit preparation while the synchronized outer commit reaches the actions indexer", async () => {
+    vi.useFakeTimers()
+    const publicKey = { toBase58: () => "B62recipient" }
+    vi.mocked((await import("o1js")).PublicKey.fromBase58).mockReturnValue(
+      publicKey as never
+    )
+    const client = {
+      prepareDepositFinalization: vi.fn()
+        .mockResolvedValueOnce({ available: false, reason: "No outer commit available yet" })
+        .mockResolvedValueOnce({ available: true, reason: null, index: 17 }),
+      finalizeDeposit: vi.fn().mockResolvedValue("5Jfinalized")
+    }
+    const provider = {
+      requestNetwork: vi.fn(async () => ({ networkID: "testnet" }))
+    } as unknown as AuroProvider
+
+    const result = finalizeDeposit({
+      client: client as never,
+      recipient: "B62recipient",
+      config,
+      provider
+    })
+    await vi.advanceTimersByTimeAsync(config.pollIntervalMs)
+
+    await expect(result).resolves.toBe("5Jfinalized")
+    expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(2)
+    expect(client.finalizeDeposit).toHaveBeenCalledWith(publicKey, expect.any(Function))
+    vi.useRealTimers()
+  })
+
+  it("does not retry a non-transient deposit preparation rejection", async () => {
+    const client = {
+      prepareDepositFinalization: vi.fn().mockResolvedValue({
+        available: false,
+        reason: "No finalizable deposit found"
+      })
+    }
+    const provider = {
+      requestNetwork: vi.fn(async () => ({ networkID: "testnet" }))
+    } as unknown as AuroProvider
+
+    await expect(finalizeDeposit({
+      client: client as never,
+      recipient: "B62recipient",
+      config,
+      provider
+    })).rejects.toThrow("No finalizable deposit found")
+    expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(1)
   })
 
   it("uses the explorer's canonical transaction detail route", () => {
