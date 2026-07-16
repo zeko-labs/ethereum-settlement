@@ -17,12 +17,7 @@ export default defineConfig({
   outputDir: artifactRoot ? `${artifactRoot}/playwright` : "test-results/live-artifacts",
   use: {
     baseURL: process.env.BRIDGE_E2E_BRIDGE_UI_URL ?? "http://127.0.0.1:4174",
-    trace: {
-      mode: "retain-on-failure",
-      screenshots: false,
-      snapshots: true,
-      sources: true
-    },
+    trace: "off",
     screenshot: "only-on-failure",
     video: "retain-on-failure"
   },

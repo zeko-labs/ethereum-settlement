@@ -106,8 +106,11 @@ The local virtual Mina slot duration defaults to 12 seconds; override it with
 different duration. The withdrawal step derives its time jump from the live
 `claimableSlot` instead of assuming a fixed delay.
 The runner builds both UIs, injects real RPC-backed wallet providers, and
-retains Playwright traces plus a protocol-state timeline on failure. It never
-intercepts application APIs and does not request an SP1 proof.
+retains failure screenshots and video plus a protocol-state timeline in the
+Playwright report. Browser tracing is disabled for this long-running suite
+because its continuous network stream can prevent Playwright from shutting
+down after the test has completed. The runner never intercepts application
+APIs and does not request an SP1 proof.
 
 The production host must allow the UI origin through `API_CORS_ALLOWED_ORIGINS`
 on both the gateway and sequencer-facing services.

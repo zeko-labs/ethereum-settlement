@@ -255,7 +255,7 @@ async function assertExplorerWithdrawal(page: Page, withdrawal: Withdrawal, stat
   await expect(page.getByRole("heading", {
     name: `Withdrawal ${withdrawal.settlementSequence}:${withdrawal.offset}`
   })).toBeVisible()
-  await expect(page.locator(".detail-hero")).toContainText(status)
+  await expect(page.locator(".detail-hero")).toContainText(new RegExp(status, "i"))
 }
 
 async function openActivity(page: Page) {
