@@ -113,4 +113,7 @@ down after the test has completed. The runner never intercepts application
 APIs and does not request an SP1 proof.
 
 The production host must allow the UI origin through `API_CORS_ALLOWED_ORIGINS`
-on both the gateway and sequencer-facing services.
+on both the gateway and sequencer-facing services. It must also serve the UI
+with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`; o1js uses those isolation headers
+for its `SharedArrayBuffer` workers.
