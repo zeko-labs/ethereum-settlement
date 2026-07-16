@@ -35,7 +35,16 @@ export async function installLiveWallets(
     const json = typeof input.transaction === "string"
       ? JSON.parse(input.transaction) as Parameters<typeof Mina.Transaction.fromJSON>[0]
       : input.transaction as Parameters<typeof Mina.Transaction.fromJSON>[0]
-    const signed = Mina.Transaction.fromJSON(json).sign([key])
+    const transaction = Mina.Transaction.fromJSON(json)
+    for (const update of transaction.transaction.accountUpdates) {
+      if (
+        update.body.authorizationKind.isSigned.toBoolean() &&
+        update.publicKey.equals(key.toPublicKey()).toBoolean()
+      ) {
+        update.lazyAuthorization = { kind: "lazy-signature" }
+      }
+    }
+    const signed = transaction.sign([key])
     return JSON.stringify({ zkappCommand: JSON.parse(signed.toJSON()) })
   })
 
