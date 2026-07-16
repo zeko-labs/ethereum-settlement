@@ -42,6 +42,7 @@ pub struct Config {
     pub finality_mode: FinalityMode,
     pub confirmations: u64,
     pub poll_interval: Duration,
+    pub fee_payer_public_key: Option<String>,
 }
 
 pub async fn run(pool: PgPool, ethereum: Ethereum, config: Config) {
@@ -69,7 +70,14 @@ async fn tick(pool: &PgPool, ethereum: &Ethereum, config: &Config) -> Result<()>
     };
     index_blocks(pool, ethereum, config, head, finalized_block.as_ref()).await?;
     index_explorer_events_through(pool, ethereum, config, head).await?;
+    recover_gateway_state(pool, ethereum, config).await?;
     reconcile_jobs(pool, ethereum, config, head, finalized_block.as_ref()).await?;
+    sqlx::query(
+        "UPDATE gateway_config SET recovery_ready = TRUE, updated_at = NOW()
+         WHERE id = TRUE",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -234,6 +242,12 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
+    sqlx::query(
+        "UPDATE gateway_config SET recovery_ready = FALSE, updated_at = NOW()
+         WHERE id = TRUE",
+    )
+    .execute(&mut *tx)
+    .await?;
     // A deep reorg can orphan several already-confirmed settlements while a
     // newer settlement is still proving. Only the earliest orphaned receipt
     // can be replayed against the rolled-back contract state. Preserve its
@@ -242,6 +256,7 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     let retry_settlement = sqlx::query_scalar::<_, uuid::Uuid>(
         "SELECT id FROM proof_jobs
          WHERE kind = 'settlement'
+           AND input->>'recoveredFromEthereum' IS DISTINCT FROM 'true'
            AND submitted_block_number > $1
            AND status IN ('submitted', 'confirmed')
          ORDER BY submitted_block_number, created_at
@@ -315,6 +330,13 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     .execute(&mut *tx)
     .await?;
     sqlx::query(
+        "UPDATE gateway_explorer_bridge_transitions SET removed = TRUE
+         WHERE NOT removed AND ethereum_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
         "UPDATE gateway_native_withdrawal_claims SET removed = TRUE
          WHERE NOT removed AND ethereum_block_number > $1",
     )
@@ -348,6 +370,14 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
          FROM proof_jobs jobs
          WHERE deposits.bridge_job_id = jobs.id
            AND jobs.submitted_block_number > $1",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proof_jobs
+         WHERE input->>'recoveredFromEthereum' = 'true'
+           AND submitted_block_number > $1",
     )
     .bind(ancestor)
     .execute(&mut *tx)
@@ -538,6 +568,41 @@ async fn index_explorer_events(
     from_block: u64,
     to_block: u64,
 ) -> Result<()> {
+    for transition in ethereum
+        .bridge_transition_accepted_logs(from_block, to_block)
+        .await?
+    {
+        sqlx::query(
+            "INSERT INTO gateway_explorer_bridge_transitions
+                (old_action_state, new_action_state, new_deposit_state,
+                 new_withdraw_state, new_deposit_nonce,
+                 ethereum_block_number, ethereum_block_hash,
+                 ethereum_tx_hash, ethereum_log_index, removed)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+             ON CONFLICT (ethereum_tx_hash, ethereum_log_index) DO UPDATE SET
+                 old_action_state = EXCLUDED.old_action_state,
+                 new_action_state = EXCLUDED.new_action_state,
+                 new_deposit_state = EXCLUDED.new_deposit_state,
+                 new_withdraw_state = EXCLUDED.new_withdraw_state,
+                 new_deposit_nonce = EXCLUDED.new_deposit_nonce,
+                 ethereum_block_number = EXCLUDED.ethereum_block_number,
+                 ethereum_block_hash = EXCLUDED.ethereum_block_hash,
+                 removed = FALSE,
+                 indexed_at = NOW()",
+        )
+        .bind(transition.old_action_state.to_string())
+        .bind(transition.new_action_state.to_string())
+        .bind(transition.new_deposit_state.to_string())
+        .bind(transition.new_withdraw_state.to_string())
+        .bind(i64::try_from(transition.new_deposit_nonce)?)
+        .bind(i64::try_from(transition.block_number)?)
+        .bind(transition.block_hash.to_string())
+        .bind(transition.transaction_hash.to_string())
+        .bind(i64::try_from(transition.log_index)?)
+        .execute(pool)
+        .await?;
+    }
+
     for settlement in ethereum
         .settlement_accepted_logs(from_block, to_block)
         .await?
@@ -654,6 +719,208 @@ async fn index_explorer_events(
     Ok(())
 }
 
+async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Config) -> Result<()> {
+    let events = sqlx::query(
+        "SELECT kind, ethereum_block_number, ethereum_block_hash,
+                ethereum_tx_hash, ethereum_log_index
+         FROM (
+           SELECT 'bridge'::text AS kind, transitions.ethereum_block_number,
+                  transitions.ethereum_block_hash,
+                  transitions.ethereum_tx_hash,
+                  transitions.ethereum_log_index
+           FROM gateway_explorer_bridge_transitions transitions
+           JOIN gateway_blocks blocks
+             ON blocks.block_number = transitions.ethereum_block_number
+            AND blocks.block_hash = transitions.ethereum_block_hash
+            AND blocks.canonical AND blocks.finalized
+           WHERE NOT transitions.removed
+           UNION ALL
+           SELECT 'settlement', settlements.ethereum_block_number,
+                  settlements.ethereum_block_hash,
+                  settlements.ethereum_tx_hash,
+                  settlements.ethereum_log_index
+           FROM gateway_explorer_settlements settlements
+           JOIN gateway_blocks blocks
+             ON blocks.block_number = settlements.ethereum_block_number
+            AND blocks.block_hash = settlements.ethereum_block_hash
+            AND blocks.canonical AND blocks.finalized
+           WHERE NOT settlements.removed
+         ) accepted
+         ORDER BY ethereum_block_number, ethereum_log_index",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    for event in events {
+        let kind: String = event.try_get("kind")?;
+        let block_number = u64::try_from(event.try_get::<i64, _>("ethereum_block_number")?)?;
+        let block_hash: String = event.try_get("ethereum_block_hash")?;
+        let transaction_hash: String = event.try_get("ethereum_tx_hash")?;
+        let already_applied = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+               SELECT 1 FROM gateway_account_history history
+               JOIN proof_jobs jobs ON jobs.id = history.job_id
+               WHERE lower(jobs.transaction_hash) = lower($1)
+             )",
+        )
+        .bind(&transaction_hash)
+        .fetch_one(pool)
+        .await?;
+        if already_applied {
+            continue;
+        }
+
+        let public_values = ethereum
+            .accepted_public_values(&kind, &transaction_hash)
+            .await?;
+        let public_values_hex = format!("0x{}", hex::encode(&public_values));
+        let existing = sqlx::query(
+            "SELECT id, input FROM proof_jobs
+             WHERE lower(transaction_hash) = lower($1)
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(&transaction_hash)
+        .fetch_optional(pool)
+        .await?;
+        let (job_id, input) = match existing {
+            Some(row) => {
+                let original: Value = row.try_get("input")?;
+                let input = if kind == "settlement" && original.get("submission").is_none() {
+                    recovered_settlement_input(pool, config, &public_values).await?
+                } else {
+                    original
+                };
+                (row.try_get("id")?, input)
+            }
+            None => {
+                let input = if kind == "settlement" {
+                    recovered_settlement_input(pool, config, &public_values).await?
+                } else {
+                    json!({ "recoveredFromEthereum": true })
+                };
+                let id = uuid::Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO proof_jobs
+                        (id, kind, status, idempotency_key, input,
+                         public_values, transaction_hash,
+                         submitted_block_number, submitted_block_hash,
+                         confirmations, completed_at)
+                     VALUES ($1, $2::proof_kind, 'confirmed', $3, $4, $5, $6,
+                             $7, $8, 1, NOW())",
+                )
+                .bind(id)
+                .bind(&kind)
+                .bind(format!(
+                    "recovered:{kind}:{}",
+                    transaction_hash.to_lowercase()
+                ))
+                .bind(&input)
+                .bind(&public_values_hex)
+                .bind(&transaction_hash)
+                .bind(i64::try_from(block_number)?)
+                .bind(&block_hash)
+                .execute(pool)
+                .await?;
+                (id, input)
+            }
+        };
+
+        match kind.as_str() {
+            "bridge" => {
+                apply_confirmed_bridge(
+                    pool,
+                    job_id,
+                    &public_values_hex,
+                    block_number,
+                    &block_hash,
+                    &transaction_hash,
+                )
+                .await?;
+            }
+            "settlement" => {
+                apply_confirmed_settlement(
+                    pool,
+                    job_id,
+                    &input,
+                    &public_values_hex,
+                    block_number,
+                    &block_hash,
+                    &transaction_hash,
+                )
+                .await?;
+            }
+            _ => unreachable!(),
+        }
+        sqlx::query(
+            "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
+                    submitted_block_number = $3, submitted_block_hash = $4,
+                    confirmations = GREATEST(confirmations, 1),
+                    completed_at = COALESCE(completed_at, NOW()),
+                    updated_at = NOW()
+             WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(&public_values_hex)
+        .bind(i64::try_from(block_number)?)
+        .bind(&block_hash)
+        .execute(pool)
+        .await?;
+        tracing::info!(%kind, %transaction_hash, "recovered finalized gateway state from Ethereum");
+    }
+    Ok(())
+}
+
+async fn recovered_settlement_input(
+    pool: &PgPool,
+    config: &Config,
+    public_values: &[u8],
+) -> Result<Value> {
+    let decoded = SettlementPublicValues::decode(public_values).map_err(anyhow::Error::msg)?;
+    let receipt = decoded.settlement();
+    let outer_public_key = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT outer_public_key FROM gateway_config WHERE id = TRUE",
+    )
+    .fetch_one(pool)
+    .await?
+    .context("VIRTUAL_MINA_OUTER_PUBLIC_KEY is required for gateway recovery")?;
+    let fee_payer_public_key = config
+        .fee_payer_public_key
+        .as_deref()
+        .context("VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY is required for gateway recovery")?;
+    let nonce = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT account_json->>'nonce' FROM gateway_accounts
+         WHERE public_key = $1 AND token_id = '1'",
+    )
+    .bind(fee_payer_public_key)
+    .fetch_one(pool)
+    .await?
+    .unwrap_or_else(|| "0".to_owned())
+    .parse::<u64>()
+    .context("virtual Mina fee-payer nonce is invalid")?;
+    let action = [
+        [0u8; 32],
+        receipt.state_after.fields[2],
+        receipt.state_after.fields[3],
+        receipt.state_after.fields[4],
+        receipt.synchronized_outer_action_state,
+        u32_word(receipt.synchronized_outer_action_state_length),
+        u32_word(receipt.slot_lower),
+        u32_word(receipt.slot_upper),
+    ]
+    .into_iter()
+    .map(|field| Value::String(format!("0x{}", hex::encode(field))))
+    .collect::<Vec<_>>();
+    Ok(json!({
+        "recoveredFromEthereum": true,
+        "submission": {
+            "outerAccountPublicKey": outer_public_key,
+            "feePayerPublicKey": fee_payer_public_key,
+            "nonce": nonce
+        },
+        "proof": { "binding": { "actions": [action] } }
+    }))
+}
+
 async fn reconcile_jobs(
     pool: &PgPool,
     ethereum: &Ethereum,
@@ -764,7 +1031,7 @@ async fn reconcile_jobs(
     Ok(())
 }
 
-async fn apply_confirmed_settlement(
+pub(crate) async fn apply_confirmed_settlement(
     pool: &PgPool,
     job_id: uuid::Uuid,
     input: &Value,
@@ -874,22 +1141,24 @@ async fn apply_confirmed_settlement(
         .bind(job_id)
         .execute(&mut *tx)
         .await?;
-    if let SettlementPublicValues::V2(v2) = &decoded {
-        store_inner_action_leaves(
-            &mut tx,
-            input,
-            v2,
-            block_number,
-            block_hash,
-            transaction_hash,
-        )
-        .await?;
+    if input.pointer("/proof/innerActionBatch").is_some() {
+        if let SettlementPublicValues::V2(v2) = &decoded {
+            store_inner_action_leaves(
+                &mut tx,
+                input,
+                v2,
+                block_number,
+                block_hash,
+                transaction_hash,
+            )
+            .await?;
+        }
     }
     tx.commit().await?;
     Ok(())
 }
 
-async fn apply_confirmed_bridge(
+pub(crate) async fn apply_confirmed_bridge(
     pool: &PgPool,
     job_id: uuid::Uuid,
     public_values_hex: &str,
@@ -1136,7 +1405,7 @@ async fn store_inner_action_leaves(
     Ok(())
 }
 
-fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
+pub(crate) fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
     let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
     encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_FIELDS_V2").0);
     encoded.extend_from_slice(&u32_word(fields.len() as u32));
@@ -1146,7 +1415,7 @@ fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
     keccak256(encoded).0
 }
 
-fn hash_native_withdrawal_leaf(
+pub(crate) fn hash_native_withdrawal_leaf(
     chain_id: u64,
     bridge: Address,
     global_index: u32,
@@ -1165,7 +1434,7 @@ fn hash_native_withdrawal_leaf(
     keccak256(encoded).0
 }
 
-fn hash_raw_inner_action_leaf(
+pub(crate) fn hash_raw_inner_action_leaf(
     chain_id: u64,
     bridge: Address,
     global_index: u32,
@@ -1180,7 +1449,7 @@ fn hash_raw_inner_action_leaf(
     keccak256(encoded).0
 }
 
-fn inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
+pub(crate) fn inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
     let zero_hashes = inner_action_zero_hashes();
     if leaves.is_empty() {
         return zero_hashes[16];

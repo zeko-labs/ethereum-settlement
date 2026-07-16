@@ -32,9 +32,45 @@ pub async fn handle(
     }
 }
 
+pub async fn archive_handle(
+    State(state): State<AppState>,
+    Json(request): Json<GraphqlRequest>,
+) -> impl IntoResponse {
+    let result = async {
+        if request.query.contains("networkState") {
+            return crate::withdrawal_activity::archive_network_state(&state).await;
+        }
+        if request.query.contains("actions(") {
+            let public_key = variable_string(&request, "pk")?;
+            let from = variable_optional_i64(&request, "from").unwrap_or(0).max(0);
+            let to = variable_optional_i64(&request, "to").unwrap_or(i64::MAX);
+            anyhow::ensure!(to >= from, "archive action block range is invalid");
+            return crate::withdrawal_activity::archive_actions(&state, public_key, from, to).await;
+        }
+        anyhow::bail!("unsupported Zeko archive GraphQL query")
+    }
+    .await;
+    match result {
+        Ok(data) => Json(json!({"data": data})),
+        Err(error) => {
+            tracing::warn!(%error, query = %request.query, "Zeko archive GraphQL query failed");
+            Json(json!({"errors": [{"message": error.to_string()}]}))
+        }
+    }
+}
+
 async fn execute(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<Value> {
     let query = request.query.as_str();
     if query.contains("sendZkapp") {
+        let recovery_ready = sqlx::query_scalar::<_, bool>(
+            "SELECT recovery_ready FROM gateway_config WHERE id = TRUE",
+        )
+        .fetch_one(&state.pool)
+        .await?;
+        anyhow::ensure!(
+            recovery_ready,
+            "Ethereum gateway is replaying canonical state; retry shortly"
+        );
         return send_zkapp(state, request).await;
     }
     if query.contains("pooledZkappCommands") {
@@ -154,6 +190,40 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| anyhow::anyhow!("transaction hash was reused for different proof input"))?;
+    if actual_job_id == job_id {
+        let configured_fee_payer = state
+            .fee_payer_public_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("virtual Mina fee payer is not configured"))?;
+        anyhow::ensure!(
+            configured_fee_payer == settlement.fee_payer_public_key,
+            "settlement fee payer does not match gateway configuration"
+        );
+        let configured_outer = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT outer_public_key FROM gateway_config WHERE id = TRUE FOR UPDATE",
+        )
+        .fetch_one(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("virtual Mina outer account is not configured"))?;
+        anyhow::ensure!(
+            configured_outer == settlement.outer_account_public_key,
+            "settlement outer account does not match gateway configuration"
+        );
+        let expected_nonce = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT account_json->>'nonce' FROM gateway_accounts
+             WHERE public_key = $1 AND token_id = '1' FOR UPDATE",
+        )
+        .bind(&settlement.fee_payer_public_key)
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or_else(|| "0".to_owned())
+        .parse::<u64>()?;
+        anyhow::ensure!(
+            settlement.nonce == expected_nonce,
+            "settlement fee-payer nonce {} does not match gateway nonce {expected_nonce}",
+            settlement.nonce
+        );
+    }
     sqlx::query(
         "INSERT INTO gateway_pending_commands
             (job_id, public_key, nonce, command_kind, command_base64)

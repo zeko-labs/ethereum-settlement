@@ -25,6 +25,12 @@ The gateway implements only operations used by
 Operations outside this subset return a GraphQL error. This is not a general
 Mina node proxy.
 
+The separate `POST /archive/graphql` route exposes the two read-only operations
+needed by the Actions indexer and browser SDK: `networkState` and block-ranged
+`actions`. It derives them from the canonical Zeko archive PostgreSQL pool,
+including action-state boundaries, transaction hashes, and account-update IDs.
+It is an archive adapter, not a second source of L2 state.
+
 ### Settlement mutation authentication
 
 The current OCaml client cannot attach a custom HTTP header, so `sendZkapp`
@@ -34,6 +40,9 @@ carries `gatewayToken` as a GraphQL variable. The sequencer reads it from
 The mutation is idempotent by the exported Mina transaction hash. Reusing a
 hash for different proof input is rejected. The command remains visible in the
 pending pool until the Ethereum transaction reaches consensus finality.
+New commands must also use the configured outer account and the fee payer's
+current virtual nonce. This prevents failed proof attempts from creating nonce
+gaps that could not be derived when replaying accepted settlements.
 
 ## REST API
 
@@ -60,6 +69,7 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | `GET /v1/bridge/config` | Chain, contract, decimal, finality-mode, and withdrawal-delay discovery for browser clients. |
 | `GET /v1/bridge/deposits?zekoRecipient=0x...&after=N&limit=N` | Recover a wallet's deposits after a page reload. |
 | `GET /v1/bridge/deposits/:nonce` | Deposit finality, proof, synchronization, and next user action. |
+| `GET /v1/bridge/withdrawal-requests?recipient=0x...&after=N` | Discover withdrawal requests as soon as their canonical inner actions reach the archive, before settlement. |
 | `GET /v1/bridge/withdrawals?recipient=0x...&after=N` | Discover indexed native claims. |
 | `GET /v1/bridge/withdrawals/:sequence/:offset` | Return one fixed-depth Merkle proof and live delay/cursor status. |
 | `GET /health` | Database and Ethereum connectivity. |
@@ -93,6 +103,8 @@ front of them and apply route-specific policy:
 
 - `/graphql` serves Mina-compatible account/archive reads to the sequencer and
   bridge clients; settlement submission still requires `gatewayToken`.
+- `/archive/graphql` serves the read-only Mina archive subset backed by the
+  recoverable Zeko archive database.
 - proof job, quote, approval, and cancellation routes require both network
   restriction and API-key authentication.
 - bridge config, deposit/withdrawal discovery, and read-only GraphQL operations
@@ -128,4 +140,12 @@ indexer where to publish bridge-produced actions.
 
 Confirmed settlements update `zkappState`, the five-element action state,
 fee-payer nonce, actions, block view, and pending pool atomically with a stored
-pre-state snapshot. That snapshot is what makes reorg rollback deterministic.
+pre-state snapshot. That snapshot makes live reorg rollback deterministic.
+
+The snapshot and proof job are not the only recovery source. A fresh gateway
+indexes finalized bridge-transition and settlement events, decodes the exact
+accepted public values from Ethereum transaction calldata, and replays the
+outer account and action sequence in block/log order. For withdrawal proofs it
+joins the Ethereum-accepted root with canonical inner-action preimages from the
+Zeko archive and accepts the reconstruction only when the full Merkle root
+matches. See [recovery and rebuild](/operations/recovery).

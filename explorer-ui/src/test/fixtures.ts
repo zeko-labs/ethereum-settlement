@@ -42,6 +42,13 @@ export const transaction = {
   nonce: "18446744073709551615",
   memo: "Zeko transaction",
   accountUpdateCount: "1",
+  bridgeOperation: {
+    kind: "nativeWithdrawalRequest" as const,
+    phase: "pendingSettlement" as const,
+    globalActionIndex: 4,
+    recipient: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    amount: "5000000000",
+  },
   accountUpdates: [{ index: "0", publicKey: "B62qAccountUpdate11111111111111111111111111111111111", tokenId: "1", balanceChange: "1000000000", incrementNonce: false, callDepth: "0", authorizationKind: "Proof", useFullCommitment: true, mayUseToken: "No" }]
 }
 

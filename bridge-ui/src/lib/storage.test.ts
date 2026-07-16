@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { operationStorageKey, readOperations, upsertOperation } from "./storage"
+import {
+  operationStorageKey,
+  readOperations,
+  rememberAuroConnection,
+  upsertOperation,
+  wasAuroConnected
+} from "./storage"
 
 describe("operation persistence", () => {
   it("keys history by chain, bridge, and wallet identity", () => {
@@ -26,5 +32,20 @@ describe("operation persistence", () => {
     upsertOperation("key", operation, adapter)
     expect(readOperations("key", adapter)).toEqual([operation])
     expect(storage.get("key")).not.toContain("privateKey")
+  })
+
+  it("remembers only whether Auro was previously authorized", () => {
+    const storage = new Map<string, string>()
+    const adapter = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key)
+    } as Storage
+    expect(wasAuroConnected(adapter)).toBe(false)
+    rememberAuroConnection(true, adapter)
+    expect(wasAuroConnected(adapter)).toBe(true)
+    expect([...storage.values()]).toEqual(["true"])
+    rememberAuroConnection(false, adapter)
+    expect(wasAuroConnected(adapter)).toBe(false)
   })
 })

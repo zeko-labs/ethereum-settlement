@@ -188,6 +188,8 @@ docker exec "$POSTGRES_CONTAINER" createdb -U postgres actions
 
 outer_public_key=$(jq -r '.outerAccountPublicKey' \
   "$FIXTURE_ROOT/deposit-sync/settlement.json")
+inner_public_key=$(jq -r '.[0][1].public_key' \
+  "$FIXTURE_ROOT/bridge-genesis-ledger.json")
 fee_payer_public_key=$(jq -r '.feePayerPublicKey' \
   "$FIXTURE_ROOT/deposit-sync/settlement.json")
 fee_payer_nonce=$(jq -r '.nonce' \
@@ -228,6 +230,8 @@ VIRTUAL_MINA_GENESIS_TIMESTAMP=$(date -u -d "@$genesis_timestamp" +%Y-%m-%dT%H:%
 export VIRTUAL_MINA_GENESIS_TIMESTAMP
 export VIRTUAL_MINA_FORK_SLOT="$FORK_SLOT"
 export VIRTUAL_MINA_OUTER_PUBLIC_KEY="$outer_public_key"
+export VIRTUAL_MINA_INNER_PUBLIC_KEY="$inner_public_key"
+export VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY="$fee_payer_public_key"
 export VIRTUAL_MINA_ACCOUNTS_PATH="$ACCOUNT_FILE"
 
 [[ -x "$API_BIN" ]] || {
@@ -255,9 +259,9 @@ ACTIONS_DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:$PG_PORT/actions"
   cd "$ZEKO_UI_ROOT"
   DATABASE_URL="$ACTIONS_DATABASE_URL" AUTH_TOKEN=local-actions-token \
     PORT="$ACTIONS_INDEXER_PORT" L1_ARCHIVE_URL="$API_URL/graphql" \
-    L1_FINALITY=1 L2_ARCHIVE_URL="$API_URL/graphql" L2_FINALITY_TIME_H=1 \
-    OUTER_PK="$outer_public_key" INNER_PK="$outer_public_key" \
-    INDEX_OUTER=true INDEX_INNER=false ENVIRONMENT=LOCAL \
+    L1_FINALITY=1 L2_ARCHIVE_URL="$API_URL/graphql" L2_FINALITY_TIME_H=0 \
+    OUTER_PK="$outer_public_key" INNER_PK="$inner_public_key" \
+    INDEX_OUTER=true INDEX_INNER=true ENVIRONMENT=LOCAL \
     "$NIX" develop -c pnpm exec moon run actions-indexer:start
 ) >"$ACTIONS_INDEXER_LOG" 2>&1 &
 ACTIONS_INDEXER_PID=$!

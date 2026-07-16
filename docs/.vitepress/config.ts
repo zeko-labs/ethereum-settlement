@@ -56,6 +56,7 @@ export default defineConfig({
         items: [
           { text: "Local E2E", link: "/operations/local-e2e" },
           { text: "Sepolia testnet", link: "/operations/testnet" },
+          { text: "Recovery and rebuild", link: "/operations/recovery" },
           { text: "DevOps and NixOS", link: "/operations/devops" }
         ]
       },

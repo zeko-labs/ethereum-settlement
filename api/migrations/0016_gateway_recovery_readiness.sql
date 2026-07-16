@@ -1,0 +1,2 @@
+ALTER TABLE gateway_config
+    ADD COLUMN recovery_ready BOOLEAN NOT NULL DEFAULT FALSE;

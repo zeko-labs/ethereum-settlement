@@ -129,7 +129,7 @@ export const DepositProgress = ({
         <div className="summary-row"><span>Settlement sequence</span><strong>{deposit.synchronizedSettlementSequence ?? "Pending"}</strong></div>
       </div>
       <button className="primary-button" type="button" disabled={busy || deposit.status !== "synchronized"} onClick={onFinalize}>
-        {busy ? "Opening Auro…" : deposit.status === "synchronized" ? "Finalize on Zeko" : "Waiting for settlement"}
+        {busy ? "Opening Auro…" : deposit.status === "synchronized" ? "Finalize on Zeko" : deposit.status === "finalized" ? "Finalized on Zeko" : "Waiting for settlement"}
       </button>
     </section>
   )

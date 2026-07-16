@@ -26,8 +26,10 @@ import { ethereumNetworkName, loadRuntimeConfig, type RuntimeConfig } from "./li
 import {
   operationStorageKey,
   readOperations,
+  rememberAuroConnection,
   type PendingOperation,
-  upsertOperation
+  upsertOperation,
+  wasAuroConnected
 } from "./lib/storage"
 import {
   connectAuro,
@@ -142,6 +144,7 @@ export default function App() {
     setActionError("")
     try {
       const account = await connectAuro(config)
+      rememberAuroConnection(true)
       setZekoAccount(account)
       setZekoClient(undefined)
       setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
@@ -153,6 +156,24 @@ export default function App() {
       setBusy(false)
     }
   }, [config, direction])
+
+  useEffect(() => {
+    if (!config || !window.mina || !wasAuroConnected()) return
+    let active = true
+    void connectAuro(config)
+      .then(async (account) => {
+        if (!active) return
+        setZekoAccount(account)
+        setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
+        setRecipient((current) => current || account)
+      })
+      .catch(() => {
+        if (active) rememberAuroConnection(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [config])
 
   useEffect(() => {
     if (!config) return
@@ -207,8 +228,10 @@ export default function App() {
       setZekoClient(undefined)
       setZekoAccount(accounts[0])
       if (accounts[0]) {
+        rememberAuroConnection(true)
         void fetchZekoBalance(config.sequencerGraphqlUrl, accounts[0]).then(setZekoBalance).catch(() => setZekoBalance("0"))
       } else {
+        rememberAuroConnection(false)
         setZekoBalance(undefined)
       }
     }
@@ -327,13 +350,36 @@ export default function App() {
     activityRunning.current = true
     setActivityLoading(true)
     try {
+      let activityClient = client
+      if (zekoAccount && config && ethereumAccount) {
+        activityClient = zekoClient ?? await createEthereumBridgeClient({
+          config,
+          provider: getEthereumProvider(),
+          account: ethereumAccount,
+          withZeko: true
+        })
+        if (!zekoClient) setZekoClient(activityClient)
+      }
       const result = await listWalletActivity({
-        client,
+        client: activityClient,
         zekoRecipient: zekoAccount,
         ethereumRecipient: ethereumAccount
       })
       setDeposits(result.deposits)
       setWithdrawals(result.withdrawals)
+      const discoveredOperations: PendingOperation[] = result.withdrawalRequests.map((request) => ({
+        id: `withdrawal:${request.transactionHash}`,
+        direction: "withdrawal",
+        amount: formatUnits(BigInt(request.amount), 9, 9),
+        recipient: request.recipient,
+        transactionHash: request.transactionHash,
+        createdAt: archiveTimestamp(request.timestamp)
+      }))
+      setOperations((current) => [
+        ...new Map(
+          [...discoveredOperations, ...current].map((operation) => [operation.id, operation])
+        ).values()
+      ])
       setSelectedDeposit((current) => current ? result.deposits.find((row) => row.nonce === current.nonce) ?? current : current)
       setSelectedWithdrawal((current) => current ? result.withdrawals.find((row) => row.settlementSequence === current.settlementSequence && row.offset === current.offset) ?? current : current)
       if (!selectedWithdrawal && selectedOperation?.direction === "withdrawal") {
@@ -350,7 +396,7 @@ export default function App() {
       activityRunning.current = false
       setActivityLoading(false)
     }
-  }, [client, ethereumAccount, selectedOperation, selectedWithdrawal, zekoAccount])
+  }, [client, config, ethereumAccount, selectedOperation, selectedWithdrawal, zekoAccount, zekoClient])
 
   useEffect(() => {
     if (!config || !client) return
@@ -553,7 +599,7 @@ export default function App() {
           </div>
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation ?? { id: `withdrawal:${withdrawal.settlementSequence}:${withdrawal.offset}`, direction: "withdrawal", amount: formatUnits(BigInt(withdrawal.amount), 9, 9), recipient: withdrawal.recipient, transactionHash: "Gateway-discovered transaction", createdAt: new Date().toISOString() }); setScreen("withdrawal-progress"); setTab("bridge") }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>
@@ -569,4 +615,13 @@ const recipientForDeposit = (deposit: DepositStatus, fallback: string): string =
   const operationRecipient = fallback
   if (!operationRecipient) throw new Error(`Deposit ${deposit.nonce} has no locally recovered B62 recipient`)
   return operationRecipient
+}
+
+const archiveTimestamp = (value: string): string => {
+  const milliseconds = Number(value)
+  if (Number.isFinite(milliseconds) && milliseconds >= 0) {
+    return new Date(milliseconds).toISOString()
+  }
+  const date = new Date(value)
+  return Number.isNaN(date.valueOf()) ? new Date(0).toISOString() : date.toISOString()
 }

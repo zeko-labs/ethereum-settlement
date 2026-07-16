@@ -69,6 +69,12 @@ cp "$POC_OUTPUT/manifest.json" "$TESTNET_DIR/artifacts/manifest.json"
 
 fixture="$FIXTURE_ROOT/deposit-sync/settlement.json"
 outer_public_key=$(jq -r '.outerAccountPublicKey' "$fixture")
+inner_public_key=$(jq -r '.[0][1].public_key' \
+  "$FIXTURE_ROOT/bridge-genesis-ledger.json")
+[[ $inner_public_key == B62* ]] || {
+  echo "Bridge genesis ledger does not contain the expected inner account" >&2
+  exit 1
+}
 fee_payer_public_key=$(jq -r '.feePayerPublicKey' "$fixture")
 fee_payer_nonce=$(jq -r '.nonce' "$fixture")
 action_state_decimal=$("$CAST" to-dec "$initial_action_state")
@@ -125,6 +131,8 @@ genesis_rfc3339=$(date -u -d "@$genesis_timestamp" +%Y-%m-%dT%H:%M:%SZ)
   echo "VIRTUAL_MINA_INITIAL_STATE_HASH=0x0000000000000000000000000000000000000000000000000000000000000000"
   echo "VIRTUAL_MINA_ACCOUNTS_PATH=/config/virtual-mina-accounts.json"
   echo "VIRTUAL_MINA_OUTER_PUBLIC_KEY=$outer_public_key"
+  echo "VIRTUAL_MINA_INNER_PUBLIC_KEY=$inner_public_key"
+  echo "VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY=$fee_payer_public_key"
 } >"$TESTNET_DIR/gateway.env"
 
 da_public_keys=$(jq -r '.daPublicKeys | join(",")' \

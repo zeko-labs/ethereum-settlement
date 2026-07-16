@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const expected = new Map([
   ["zeko-labs-bridge-sdk-0.3.4.tgz", "9d1b1e6b277340d2c3624a26d2b376637ac9c1273b4e98c4df9480961d60b192"],
-  ["zeko-labs-eth-bridge-sdk-0.1.0.tgz", "2e280e62a02f75b6e5a88847a0be79bdf80e3dd9abee7e4d36757f018bafc72d"]
+  ["zeko-labs-eth-bridge-sdk-0.1.0.tgz", "9e39f67f80cc1d287b63ba6a78bc2b70e62214292c7d69e846b73dce97260225"]
 ])
 
 for (const [name, digest] of expected) {

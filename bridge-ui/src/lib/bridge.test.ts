@@ -18,13 +18,13 @@ vi.mock("o1js", () => ({
   UInt64: { from: vi.fn() }
 }))
 
-import { createAuroSigner, createEthereumBridgeClient } from "./bridge"
+import { createAuroSigner, createEthereumBridgeClient, zekoTransactionUrl } from "./bridge"
 
 const config = {
   schemaVersion: 1,
   gatewayUrl: "http://127.0.0.1:8080",
   sequencerGraphqlUrl: "http://127.0.0.1:1923/graphql",
-  zekoArchiveGraphqlUrl: "http://127.0.0.1:1923/graphql",
+  zekoArchiveGraphqlUrl: "http://127.0.0.1:8080/archive/graphql",
   actionsApiUrl: "http://127.0.0.1:9101/graphql",
   expectedEthereumChainId: 11155111,
   minaSigningNetworkId: "testnet",
@@ -95,5 +95,11 @@ describe("SDK integration", () => {
     const transaction = { toJSON: () => "{\"unsigned\":true}" }
     await expect(signer(transaction as Parameters<typeof signer>[0])).rejects.toThrow("User rejected signing")
     expect(mocks.fromJSON).not.toHaveBeenCalled()
+  })
+
+  it("uses the explorer's canonical transaction detail route", () => {
+    expect(zekoTransactionUrl(config, "5Jtransaction")).toBe(
+      "https://zekoscan.io/testnet/transactions/5Jtransaction"
+    )
   })
 })

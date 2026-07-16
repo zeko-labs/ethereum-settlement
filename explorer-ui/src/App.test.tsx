@@ -49,5 +49,8 @@ describe("Zeko explorer", () => {
     );
     expect(await screen.findByText("Transaction hash")).toBeInTheDocument();
     expect(screen.getByText("18446744073709551615")).toBeInTheDocument();
+    expect(screen.getByText("Native withdrawal request")).toBeInTheDocument();
+    expect(screen.getByText("5 ZEKO")).toBeInTheDocument();
+    expect(screen.getByText("Pending Settlement")).toBeInTheDocument();
   });
 });

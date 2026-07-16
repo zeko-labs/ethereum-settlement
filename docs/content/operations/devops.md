@@ -30,7 +30,7 @@ machines flake a baseline, not an Ethereum-PoC deployment.
 | Addition | Deployment requirement |
 | --- | --- |
 | Gateway host/service | Run the pinned `zeko-proof-api` image or Nix package with a dedicated system user. It performs CPU-heavy local SP1 execution, so a separate x86_64 host is preferred over sharing the sequencer. |
-| Gateway PostgreSQL | Persistent private database for jobs, virtual Mina accounts/actions, Ethereum blocks, bridge logs, proof metrics, and rollback snapshots. |
+| Gateway PostgreSQL | Persistent private database for jobs, virtual Mina accounts/actions, Ethereum blocks, bridge logs, proof metrics, and rollback snapshots. Protocol state is replayable, but retain backups for proof-cost/audit history. |
 | Ethereum RPC | Reliable Sepolia JSON-RPC with archive/log access from the deployment block. Use a redundant provider pair or operate synchronized execution and consensus clients. |
 | Ethereum contracts | Real SP1 verifier plus deterministic settlement and bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
 | Succinct requester | Network private key, funded PROVE balance, Groth16 configuration, hard PGU/price caps, and six-hour worker timeout. |
@@ -104,6 +104,7 @@ modules/ethereum-poc-monitoring.nix
   directory
 - loopback/private bind on port 8080 and nginx TLS/rate-limit rules
 - database backup and restore procedure tested before launch
+- immutable deployment block, virtual-account genesis, and outer/inner/fee-payer public keys required by chain replay
 
 Package the gateway from a fixed repository revision and fixture VK. Do not run
 `cargo build` or fetch the verifier index on the production host at service
@@ -185,3 +186,10 @@ unbounded journal fields.
 Rollback means stopping new sequencer commits and bridge proof requests,
 preserving databases and manifests, and diagnosing the canonical state. Do not
 redeploy a proxy or change the circuit config to “fix” an identity mismatch.
+
+For DA-node replacement, start an empty node with
+`--restore-from-peer HOST:PORT`. If the peer retained competing tips, select
+one explicitly with `--restore-target-ledger-hash HASH`. This is a trusted-peer
+copy with chain-continuity checks, not an independent ledger-root
+recomputation. Follow the complete [recovery and rebuild](/operations/recovery)
+drill before testnet launch.

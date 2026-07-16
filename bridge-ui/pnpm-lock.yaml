@@ -633,7 +633,7 @@ packages:
     version: 0.3.4
 
   '@zeko-labs/eth-bridge-sdk@file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz':
-    resolution: {integrity: sha512-Sriub2ctWJbNG6diXS7vxM60NMVQUAdXt1WVSHtvPnYrEhDgJBGbO8fE3aTmnnDtg9b/QQv9Ma9tDEzbm0/xpw==, tarball: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz}
+    resolution: {integrity: sha512-rEQ94gJa/Kizas6DIWrESzLoBpuoZst32iZRveG4NEieq0r2VsQoRxY2Rrci0Xzyr8d+WABEdLi2q3OxhsGQzw==, tarball: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz}
     version: 0.1.0
 
   '@zeko-labs/graphql@0.3.4':

@@ -38,7 +38,7 @@ const config = {
   schemaVersion: 1,
   gatewayUrl: url("BRIDGE_UI_GATEWAY_URL", "http://127.0.0.1:8080"),
   sequencerGraphqlUrl: url("BRIDGE_UI_SEQUENCER_GRAPHQL_URL", "http://127.0.0.1:1923/graphql"),
-  zekoArchiveGraphqlUrl: url("BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL", "http://127.0.0.1:1923/graphql"),
+  zekoArchiveGraphqlUrl: url("BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL", "http://127.0.0.1:8080/archive/graphql"),
   actionsApiUrl: url("BRIDGE_UI_ACTIONS_API_URL", "http://127.0.0.1:9101/graphql"),
   expectedEthereumChainId: chainId,
   minaSigningNetworkId: "testnet",

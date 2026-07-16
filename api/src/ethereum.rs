@@ -1,4 +1,5 @@
 use alloy::{
+    consensus::Transaction,
     eips::BlockNumberOrTag,
     network::EthereumWallet,
     primitives::{Address, Bytes, TxHash, B256, U256},
@@ -6,7 +7,7 @@ use alloy::{
     rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol,
-    sol_types::SolEvent,
+    sol_types::{SolCall, SolEvent},
 };
 use anyhow::{Context, Result};
 use std::str::FromStr;
@@ -83,6 +84,13 @@ sol! {
             uint64 zekoAmount,
             uint256 ethereumAmount,
             bytes32 actionFieldsHash
+        );
+        event BridgeTransitionAccepted(
+            bytes32 indexed oldActionState,
+            bytes32 indexed newActionState,
+            bytes32 indexed newDepositState,
+            bytes32 newWithdrawState,
+            uint64 newDepositNonce
         );
     }
 
@@ -177,6 +185,19 @@ pub struct NativeWithdrawalClaimedLog {
     pub zeko_amount: u64,
     pub ethereum_amount: U256,
     pub action_fields_hash: B256,
+    pub block_number: u64,
+    pub block_hash: B256,
+    pub transaction_hash: TxHash,
+    pub log_index: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct BridgeTransitionAcceptedLog {
+    pub old_action_state: B256,
+    pub new_action_state: B256,
+    pub new_deposit_state: B256,
+    pub new_withdraw_state: B256,
+    pub new_deposit_nonce: u64,
     pub block_number: u64,
     pub block_hash: B256,
     pub transaction_hash: TxHash,
@@ -563,6 +584,79 @@ impl Ethereum {
             .collect()
     }
 
+    pub async fn bridge_transition_accepted_logs(
+        &self,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<BridgeTransitionAcceptedLog>> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let filter = Filter::new()
+            .address(self.bridge_address)
+            .event_signature(IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH)
+            .from_block(from_block)
+            .to_block(to_block);
+        provider
+            .get_logs(&filter)
+            .await?
+            .into_iter()
+            .map(|log| {
+                let decoded = log
+                    .log_decode_validate::<IEthereumZekoBridge::BridgeTransitionAccepted>()
+                    .context("decode BridgeTransitionAccepted log")?;
+                let data = decoded.data();
+                Ok(BridgeTransitionAcceptedLog {
+                    old_action_state: data.oldActionState,
+                    new_action_state: data.newActionState,
+                    new_deposit_state: data.newDepositState,
+                    new_withdraw_state: data.newWithdrawState,
+                    new_deposit_nonce: data.newDepositNonce,
+                    block_number: decoded
+                        .block_number
+                        .context("BridgeTransitionAccepted log missing block number")?,
+                    block_hash: decoded
+                        .block_hash
+                        .context("BridgeTransitionAccepted log missing block hash")?,
+                    transaction_hash: decoded
+                        .transaction_hash
+                        .context("BridgeTransitionAccepted log missing transaction hash")?,
+                    log_index: decoded
+                        .log_index
+                        .context("BridgeTransitionAccepted log missing log index")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn accepted_public_values(
+        &self,
+        kind: &str,
+        transaction_hash: &str,
+    ) -> Result<Vec<u8>> {
+        let hash: TxHash = transaction_hash
+            .parse()
+            .context("invalid Ethereum transaction hash")?;
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let transaction = provider
+            .get_transaction_by_hash(hash)
+            .await?
+            .context("accepted Ethereum transaction is unavailable")?;
+        let input = transaction.input();
+        let public_values = match kind {
+            "settlement" => {
+                IZekoSettlement::verifyAndUpdateRootCall::abi_decode_validate(input)
+                    .context("decode accepted settlement transaction calldata")?
+                    .publicValues
+            }
+            "bridge" => {
+                IEthereumZekoBridge::submitBridgeTransitionCall::abi_decode_validate(input)
+                    .context("decode accepted bridge transaction calldata")?
+                    .publicValues
+            }
+            _ => anyhow::bail!("unsupported accepted transaction kind: {kind}"),
+        };
+        Ok(public_values.to_vec())
+    }
+
     pub async fn withdrawal_delay_slots(&self) -> Result<u32> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
@@ -676,6 +770,16 @@ mod tests {
             IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH,
             alloy::primitives::keccak256(
                 "BridgeDeposit(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint256,uint256,uint64)"
+            )
+        );
+    }
+
+    #[test]
+    fn bridge_transition_signature_matches_the_recovery_event() {
+        assert_eq!(
+            IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH,
+            alloy::primitives::keccak256(
+                "BridgeTransitionAccepted(bytes32,bytes32,bytes32,bytes32,uint64)"
             )
         );
     }

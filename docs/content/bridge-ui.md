@@ -20,6 +20,13 @@ remain gateway/operator responsibilities. The app polls public deposit and
 withdrawal endpoints; it never calls proof approval routes and never receives
 `PROOF_API_KEY`.
 
+Reloading the page does not reset protocol progress. The app restores an
+authorized Auro session without opening another permission prompt, reloads
+deposit status from both the gateway and Zeko bridge state, and reloads pending
+withdrawal requests from the archive-backed gateway endpoint. A locally
+submitted withdrawal is also shown immediately while archive indexing catches
+up. Zeko transaction links use `/transactions/<hash>`.
+
 ## Auro signing domain
 
 Auro currently assigns the built-in network ID `testnet` when a custom Mina
@@ -63,9 +70,9 @@ in `bridge-ui/README.md`.
 | --- | --- |
 | `gatewayUrl` | Public gateway base URL for bridge discovery and status. |
 | `sequencerGraphqlUrl` | Zeko sequencer GraphQL endpoint used for user submissions. |
-| `zekoArchiveGraphqlUrl` | Mina-compatible archive endpoint used by the bridge SDK. |
+| `zekoArchiveGraphqlUrl` | Mina-compatible archive endpoint used by the bridge SDK; the local gateway serves it at `/archive/graphql` from the Zeko archive database. |
 | `actionsApiUrl` | Public Actions GraphQL endpoint used to prepare inclusion witnesses. |
-| `expectedEthereumChainId` | `11155111` for this Sepolia-only PoC. |
+| `expectedEthereumChainId` | `11155111` for Sepolia or `31337` for the local Anvil profile. |
 | `minaSigningNetworkId` | Exact value `testnet`. |
 | `auroNetworkName` | Wallet display name for the custom endpoint. |
 | `zekoTransactionFeeNanomina` | Fee supplied to sequencer bridge operations, as a decimal string. |

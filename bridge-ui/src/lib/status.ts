@@ -19,6 +19,7 @@ const DEPOSIT_PROGRESS: Record<string, UiProgress> = {
   executed: { label: "Proof executed", detail: "Operator submission is required to publish the bridge result.", step: 2, tone: "waiting" },
   bridgeProven: { label: "Bridge proof accepted", detail: "Waiting for a Zeko settlement commit to synchronize the deposit.", step: 2, tone: "active" },
   synchronized: { label: "Ready to finalize", detail: "Sign once with Auro to credit native ETH on Zeko.", step: 3, tone: "ready" },
+  finalized: { label: "Deposit finalized", detail: "Native ETH was credited on Zeko.", step: 3, tone: "complete" },
   proofFailed: { label: "Proof failed", detail: "The operator must retry this bridge proof.", step: 1, tone: "failed" }
 }
 

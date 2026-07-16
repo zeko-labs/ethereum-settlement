@@ -31,6 +31,13 @@ load_config() {
   : "${ZEKO_UI_ROOT:?set ZEKO_UI_ROOT in deploy/testnet/.env}"
   : "${ZEKO_UI_COMMIT:?set ZEKO_UI_COMMIT in deploy/testnet/.env}"
   : "${VIRTUAL_MINA_OUTER_PUBLIC_KEY:?materialize gateway.env first}"
+  VIRTUAL_MINA_INNER_PUBLIC_KEY=${VIRTUAL_MINA_INNER_PUBLIC_KEY:-$(
+    jq -r '.[0][1].public_key' "$DEPLOY_DIR/config/bridge-genesis-ledger.json"
+  )}
+  [[ $VIRTUAL_MINA_INNER_PUBLIC_KEY == B62* ]] || {
+    echo "Missing VIRTUAL_MINA_INNER_PUBLIC_KEY" >&2
+    exit 1
+  }
   : "${ACTIONS_DB_PORT:=5434}"
   : "${ACTIONS_INDEXER_PORT:=9100}"
   : "${ACTIONS_API_BIND_ADDRESS:=127.0.0.1}"
@@ -41,7 +48,25 @@ session_exists() {
   tmux has-session -t "$1" 2>/dev/null
 }
 
+stop_process_group() {
+  local pid_file=$1 pid
+  [[ -f $pid_file ]] || return 0
+  pid=$(<"$pid_file")
+  if [[ $pid =~ ^[1-9][0-9]*$ ]] \
+    && pgrep -g "$pid" -f 'actions-indexer:start|actions-api:dev' >/dev/null 2>&1; then
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      pgrep -g "$pid" >/dev/null 2>&1 || break
+      sleep 0.25
+    done
+    pgrep -g "$pid" >/dev/null 2>&1 && kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
 stop_services() {
+  stop_process_group "$DEPLOY_DIR/artifacts/actions-indexer.pid"
+  stop_process_group "$DEPLOY_DIR/artifacts/actions-api.pid"
   for session in "$INDEXER_SESSION" "$API_SESSION"; do
     if session_exists "$session"; then
       tmux kill-session -t "$session"
@@ -61,12 +86,12 @@ write_runtime_env() {
     printf 'PORT=%s\n' "$ACTIONS_INDEXER_PORT"
     printf 'L1_ARCHIVE_URL=http://127.0.0.1:%s/graphql\n' "${GATEWAY_PORT:-8080}"
     printf 'L1_FINALITY=12\n'
-    printf 'L2_ARCHIVE_URL=http://127.0.0.1:%s/graphql\n' "${SEQUENCER_PORT:-1923}"
-    printf 'L2_FINALITY_TIME_H=1\n'
+    printf 'L2_ARCHIVE_URL=http://127.0.0.1:%s/archive/graphql\n' "${GATEWAY_PORT:-8080}"
+    printf 'L2_FINALITY_TIME_H=%s\n' "${ACTIONS_L2_FINALITY_TIME_H:-0}"
     printf 'OUTER_PK=%s\n' "$VIRTUAL_MINA_OUTER_PUBLIC_KEY"
-    printf 'INNER_PK=%s\n' "$VIRTUAL_MINA_OUTER_PUBLIC_KEY"
+    printf 'INNER_PK=%s\n' "$VIRTUAL_MINA_INNER_PUBLIC_KEY"
     printf 'INDEX_OUTER=true\n'
-    printf 'INDEX_INNER=false\n'
+    printf 'INDEX_INNER=true\n'
     printf 'ENVIRONMENT=local\n'
   } >"$runtime_env"
   chmod 0600 "$runtime_env"
@@ -80,6 +105,8 @@ run_in_ui_shell() {
 
 run_indexer() {
   load_config
+  mkdir -p "$DEPLOY_DIR/artifacts"
+  printf '%s\n' "$$" >"$DEPLOY_DIR/artifacts/actions-indexer.pid"
   set -a
   source "$DEPLOY_DIR/secrets/actions-runtime.env"
   set +a
@@ -91,6 +118,7 @@ run_indexer() {
 run_api() {
   load_config
   mkdir -p "$DEPLOY_DIR/logs" "$DEPLOY_DIR/artifacts/wrangler-state"
+  printf '%s\n' "$$" >"$DEPLOY_DIR/artifacts/actions-api.pid"
   exec > >(tee -a "$DEPLOY_DIR/logs/actions-api.log") 2>&1
   run_in_ui_shell pnpm exec moon run actions-api:dev -- \
     --ip "$ACTIONS_API_BIND_ADDRESS" --port "$ACTIONS_API_PORT" \

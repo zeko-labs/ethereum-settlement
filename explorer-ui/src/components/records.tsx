@@ -48,7 +48,7 @@ export function TransactionTable({
             </span>
           </span>
           <strong className="gold-link">{row.blockHeight}</strong>
-          <span>{sentence(row.kind)}</span>
+          <span>{row.bridgeOperation ? "Native withdrawal" : sentence(row.kind)}</span>
           <Status>{row.status}</Status>
           <span className="muted">{timeAgo(row.timestamp)}</span>
           <Icon name="chevron" />

@@ -31,6 +31,7 @@ mod explorer;
 mod graphql;
 mod indexer;
 mod prover;
+mod withdrawal_activity;
 
 #[derive(Clone)]
 struct AppState {
@@ -48,6 +49,8 @@ struct AppState {
     ethereum_finality_mode: indexer::FinalityMode,
     ethereum_confirmations: u64,
     sequencer_graphql_url: Option<Arc<str>>,
+    inner_public_key: Option<Arc<str>>,
+    fee_payer_public_key: Option<Arc<str>>,
     http_client: reqwest::Client,
 }
 
@@ -341,6 +344,8 @@ async fn main() -> Result<()> {
         ethereum_finality_mode,
         ethereum_confirmations,
         sequencer_graphql_url: nonempty_env("SEQUENCER_GRAPHQL_URL").map(Into::into),
+        inner_public_key: nonempty_env("VIRTUAL_MINA_INNER_PUBLIC_KEY").map(Into::into),
+        fee_payer_public_key: nonempty_env("VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY").map(Into::into),
         http_client,
     };
     let worker_state = state.clone();
@@ -350,10 +355,18 @@ async fn main() -> Result<()> {
         finality_mode: ethereum_finality_mode,
         confirmations: ethereum_confirmations,
         poll_interval: Duration::from_secs(u64_env("ETHEREUM_POLL_INTERVAL_SECS", 3)?),
+        fee_payer_public_key: nonempty_env("VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY"),
     };
     let indexer_pool = state.pool.clone();
     let indexer_ethereum = state.ethereum.clone();
     tokio::spawn(async move { indexer::run(indexer_pool, indexer_ethereum, indexer_config).await });
+    if state.archive_pool.is_some() && state.inner_public_key.is_some() {
+        let recovery_state = state.clone();
+        let interval = Duration::from_secs(u64_env("WITHDRAWAL_RECOVERY_POLL_SECS", 5)?);
+        tokio::spawn(
+            async move { withdrawal_activity::recovery_loop(recovery_state, interval).await },
+        );
+    }
     if bool_env("BRIDGE_AUTO_PROVE_DEPOSITS")? {
         let auto_bridge_state = state.clone();
         let interval = Duration::from_secs(u64_env("BRIDGE_AUTO_PROVE_POLL_SECS", 5)?);
@@ -378,12 +391,17 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/graphql", post(graphql::handle))
+        .route("/archive/graphql", post(graphql::archive_handle))
         .route("/v1/bridge/config", get(get_bridge_config))
         .route(
             "/v1/bridge/withdrawals/:sequence/:offset",
             get(get_native_withdrawal_proof),
         )
         .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
+        .route(
+            "/v1/bridge/withdrawal-requests",
+            get(list_pending_withdrawals),
+        )
         .route("/v1/bridge/deposits", get(list_native_deposits))
         .route("/v1/bridge/deposits/:nonce", get(get_native_deposit))
         .merge(explorer::router())
@@ -1146,6 +1164,52 @@ async fn list_native_withdrawals(
     Json(withdrawals).into_response()
 }
 
+async fn list_pending_withdrawals(
+    State(state): State<AppState>,
+    Query(query): Query<ListWithdrawalsQuery>,
+) -> Response {
+    let recipient = match query.recipient {
+        Some(recipient) => match recipient.parse::<Address>() {
+            Ok(recipient) => Some(recipient),
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "recipient must be a 20-byte Ethereum address",
+                )
+            }
+        },
+        None => None,
+    };
+    let after = match query.after.map(u32::try_from).transpose() {
+        Ok(after) => after,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
+    };
+    let limit = usize::try_from(query.limit.unwrap_or(20).clamp(1, 100)).unwrap_or(20);
+    match withdrawal_activity::pending_withdrawals(&state).await {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .filter(|row| {
+                    recipient
+                        .map(|recipient| row.recipient.eq_ignore_ascii_case(&recipient.to_string()))
+                        .unwrap_or(true)
+                        && after
+                            .map(|after| row.global_action_index > after)
+                            .unwrap_or(true)
+                })
+                .take(limit)
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(error) => {
+            tracing::error!(%error, "list pending native withdrawals");
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "could not read pending withdrawals from the Zeko archive",
+            )
+        }
+    }
+}
+
 async fn load_native_withdrawal_proof(
     state: &AppState,
     sequence: u64,
@@ -1747,6 +1811,14 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
     sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
+    let recovery_ready =
+        sqlx::query_scalar::<_, bool>("SELECT recovery_ready FROM gateway_config WHERE id = TRUE")
+            .fetch_one(&mut *tx)
+            .await?;
+    if !recovery_ready {
+        tx.commit().await?;
+        return Ok(None);
+    }
     let job = sqlx::query_as::<_, ClaimedJob>(
         "SELECT queued.id, queued.kind::text AS kind, queued.input,
                 queued.proof_request_id, queued.status::text AS claimed_status,
@@ -2392,7 +2464,8 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
             outer_public_key = COALESCE(
                 gateway_config.outer_public_key,
                 EXCLUDED.outer_public_key
-            )",
+            ),
+            recovery_ready = FALSE",
     )
     .bind(genesis_timestamp)
     .bind(fork_slot)

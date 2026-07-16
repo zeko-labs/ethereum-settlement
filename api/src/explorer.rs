@@ -1,3 +1,4 @@
+use alloy::primitives::Address as EthereumAddress;
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
@@ -344,6 +345,7 @@ async fn list_transactions(
     .await
     {
         Ok(mut items) => {
+            annotate_withdrawal_requests(&state, &mut items).await;
             let limit = list_limit(query.limit) as usize;
             let more = items.len() > limit;
             items.truncate(limit);
@@ -371,6 +373,7 @@ async fn get_transaction(State(state): State<AppState>, Path(hash): Path<String>
     match row {
         Ok(Some(row)) => match transaction_json(&row) {
             Ok(mut transaction) => {
+                annotate_withdrawal_requests(&state, std::slice::from_mut(&mut transaction)).await;
                 if transaction.get("kind").and_then(Value::as_str) == Some("zkapp") {
                     match zkapp_updates(pool, &hash).await {
                         Ok(updates) => transaction["accountUpdates"] = Value::Array(updates),
@@ -413,17 +416,20 @@ async fn get_account(State(state): State<AppState>, Path(public_key): Path<Strin
     match account {
         Ok(Some(row)) => {
             match load_transactions(pool, None, None, None, Some(public_key.clone()), 20).await {
-                Ok(transactions) => Json(json!({
-                    "publicKey": row.try_get::<String, _>("public_key").ok(),
-                    "tokenId": row.try_get::<String, _>("token_id").ok(),
-                    "balance": row.try_get::<String, _>("balance").ok(),
-                    "nonce": row.try_get::<String, _>("nonce").ok(),
-                    "delegate": row.try_get::<Option<String>, _>("delegate").ok().flatten(),
-                    "lastUpdatedBlock": row.try_get::<String, _>("block_height").ok(),
-                    "lastUpdatedStateHash": row.try_get::<String, _>("state_hash").ok(),
-                    "transactions": transactions
-                }))
-                .into_response(),
+                Ok(mut transactions) => {
+                    annotate_withdrawal_requests(&state, &mut transactions).await;
+                    Json(json!({
+                        "publicKey": row.try_get::<String, _>("public_key").ok(),
+                        "tokenId": row.try_get::<String, _>("token_id").ok(),
+                        "balance": row.try_get::<String, _>("balance").ok(),
+                        "nonce": row.try_get::<String, _>("nonce").ok(),
+                        "delegate": row.try_get::<Option<String>, _>("delegate").ok().flatten(),
+                        "lastUpdatedBlock": row.try_get::<String, _>("block_height").ok(),
+                        "lastUpdatedStateHash": row.try_get::<String, _>("state_hash").ok(),
+                        "transactions": transactions
+                    }))
+                    .into_response()
+                }
                 Err(error) => explorer_error(StatusCode::INTERNAL_SERVER_ERROR, error),
             }
         }
@@ -955,6 +961,62 @@ fn transaction_json(row: &sqlx::postgres::PgRow) -> Result<Value> {
         "memo": row.try_get::<String, _>("memo")?,
         "accountUpdateCount": row.try_get::<i64, _>("account_update_count")?.to_string()
     }))
+}
+
+async fn annotate_withdrawal_requests(state: &AppState, transactions: &mut [Value]) {
+    let (Some(archive), Some(inner_public_key)) = (
+        state.archive_pool.as_ref(),
+        state.inner_public_key.as_deref(),
+    ) else {
+        return;
+    };
+    let actions =
+        match crate::withdrawal_activity::load_archive_inner_actions(archive, inner_public_key)
+            .await
+        {
+            Ok(actions) => actions,
+            Err(error) => {
+                tracing::debug!(%error, "could not annotate explorer withdrawal requests");
+                return;
+            }
+        };
+    let settled = sqlx::query_scalar::<_, i64>(
+        "SELECT global_action_index FROM gateway_inner_action_leaves WHERE NOT removed",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .collect::<std::collections::HashSet<_>>();
+    let by_hash = actions
+        .into_iter()
+        .filter_map(|action| {
+            let withdrawal = action.withdrawal?;
+            let phase = if settled.contains(&i64::from(action.global_action_index)) {
+                "settled"
+            } else {
+                "pendingSettlement"
+            };
+            Some((
+                action.transaction_hash,
+                json!({
+                    "kind": "nativeWithdrawalRequest",
+                    "phase": phase,
+                    "globalActionIndex": action.global_action_index,
+                    "recipient": EthereumAddress::from(withdrawal.recipient).to_string(),
+                    "amount": withdrawal.amount.to_string()
+                }),
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    for transaction in transactions {
+        let Some(hash) = transaction.get("hash").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some(operation) = by_hash.get(hash) {
+            transaction["bridgeOperation"] = operation.clone();
+        }
+    }
 }
 
 async fn zkapp_updates(pool: &PgPool, hash: &str) -> Result<Vec<Value>> {

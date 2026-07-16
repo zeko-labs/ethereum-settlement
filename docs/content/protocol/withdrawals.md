@@ -47,8 +47,15 @@ administrator can submit a separate withdrawal root.
 
 ## Gateway discovery
 
-After Ethereum consensus finality, the gateway validates and indexes the exact leaf
-set from the submitted settlement input. Public callers can use:
+Before settlement, the gateway reads canonical, applied inner actions from the
+Zeko archive and exposes matching native withdrawal requests through:
+
+- `GET /v1/bridge/withdrawal-requests?recipient=0x...&after=<global-index>`
+
+This lets a browser resume immediately after reload without treating local
+storage as authoritative.
+
+After Ethereum consensus finality, the gateway exposes claimable leaves through:
 
 - `GET /v1/bridge/withdrawals?recipient=0x...&after=<global-index>`
 - `GET /v1/bridge/withdrawals/:sequence/:offset`
@@ -56,6 +63,12 @@ set from the submitted settlement input. Public callers can use:
 The response contains recipient, amount, action-fields hash, settlement
 sequence, global index, 16 siblings, current virtual slot, claimable slot, and
 live claim status.
+
+The submitted proof job is not required for recovery. If the gateway database
+is empty, it reads the accepted root/range from Ethereum and the ordered action
+fields and withdrawal preimages from the recoverable Zeko archive. It stores
+the leaves only after recomputing the entire fixed-depth root and matching the
+Ethereum checkpoint exactly.
 
 ## Claim
 

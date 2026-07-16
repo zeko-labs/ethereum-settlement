@@ -11,6 +11,18 @@ export type PendingOperation = {
 }
 
 const STORAGE_PREFIX = "zeko-eth-bridge:v1"
+const AURO_CONNECTION_KEY = `${STORAGE_PREFIX}:auro-connected`
+
+export const wasAuroConnected = (storage: Storage = localStorage): boolean =>
+  storage.getItem(AURO_CONNECTION_KEY) === "true"
+
+export const rememberAuroConnection = (
+  connected: boolean,
+  storage: Storage = localStorage
+): void => {
+  if (connected) storage.setItem(AURO_CONNECTION_KEY, "true")
+  else storage.removeItem(AURO_CONNECTION_KEY)
+}
 
 export const operationStorageKey = (chainId: number, bridge: string, wallet: string): string =>
   `${STORAGE_PREFIX}:${chainId}:${bridge.toLowerCase()}:${wallet.toLowerCase()}`

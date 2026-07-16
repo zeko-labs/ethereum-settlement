@@ -42,7 +42,7 @@ Supported public variables:
 | --- | --- | --- |
 | `BRIDGE_UI_GATEWAY_URL` | `http://127.0.0.1:8080` | Public bridge gateway base URL |
 | `BRIDGE_UI_SEQUENCER_GRAPHQL_URL` | `http://127.0.0.1:1923/graphql` | Zeko sequencer GraphQL and Auro custom-network URL |
-| `BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL` | sequencer URL on local PoC | Mina-compatible archive GraphQL URL |
+| `BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL` | `http://127.0.0.1:8080/archive/graphql` | Read-only Mina-compatible view rebuilt from the Zeko archive database |
 | `BRIDGE_UI_ACTIONS_API_URL` | `http://127.0.0.1:9101/graphql` | Public actions preparation/index API |
 | `BRIDGE_UI_ETHEREUM_CHAIN_ID` | `11155111` | Sepolia, or 31337 for the local manual stack |
 | `BRIDGE_UI_AURO_NETWORK_NAME` | `Zeko Ethereum PoC` | Auro custom-network display name |

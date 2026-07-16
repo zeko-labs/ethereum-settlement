@@ -48,7 +48,7 @@ vi.mock("./lib/bridge", () => ({
   fetchEthereumBalance: vi.fn(async () => "1.25"),
   fetchZekoBalance: vi.fn(async () => "2.5"),
   ethereumTransactionUrl: vi.fn((_config, hash) => `https://sepolia.etherscan.io/tx/${hash}`),
-  zekoTransactionUrl: vi.fn((_config, hash) => `https://zekoscan.io/testnet/tx/${hash}`)
+  zekoTransactionUrl: vi.fn((_config, hash) => `https://zekoscan.io/testnet/transactions/${hash}`)
 }))
 
 import App from "./App"
@@ -84,7 +84,7 @@ describe("bridge application", () => {
     })
     mocks.finalizeDeposit.mockResolvedValue("5Jfinalized")
     mocks.requestWithdrawal.mockResolvedValue("5Jwithdrawal")
-    mocks.listActivity.mockResolvedValue({ deposits: [], withdrawals: [] })
+    mocks.listActivity.mockResolvedValue({ deposits: [], withdrawals: [], withdrawalRequests: [] })
     localStorage.clear()
     delete window.ethereum
     delete window.mina
@@ -121,7 +121,7 @@ describe("bridge application", () => {
     expect(await screen.findByRole("heading", { name: "Deposit finalized" })).toBeVisible()
     expect(screen.getByRole("link", { name: /View transaction/i })).toHaveAttribute(
       "href",
-      "https://zekoscan.io/testnet/tx/5Jfinalized"
+      "https://zekoscan.io/testnet/transactions/5Jfinalized"
     )
   })
 
@@ -168,5 +168,43 @@ describe("bridge application", () => {
         config: validConfig
       })
     )
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText("0.05 ETH · Withdrawal request")).toBeVisible()
+    expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
+  })
+
+  it("restores an already-authorized Auro connection after reload", async () => {
+    localStorage.setItem("zeko-eth-bridge:v1:auro-connected", "true")
+    window.mina = {} as typeof window.mina
+    render(<App />)
+
+    expect(await screen.findByRole("button", { name: /Auro wallet B62qke…ABn2/ })).toBeVisible()
+    expect(mocks.connectAuro).toHaveBeenCalledTimes(1)
+  })
+
+  it("recovers a pending withdrawal from gateway archive activity", async () => {
+    mocks.listActivity.mockResolvedValue({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [{
+        globalActionIndex: 0,
+        transactionHash: "5JarchiveWithdrawal",
+        blockHeight: 9,
+        timestamp: "1784159326275",
+        recipient: ethereumAccount,
+        amount: "5000000000",
+        status: "pendingSettlement",
+        nextAction: "waitForSettlement"
+      }]
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
+    expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })
 })

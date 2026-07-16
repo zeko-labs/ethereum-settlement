@@ -3,6 +3,6 @@
   "gatewayUrl": "http://127.0.0.1:8080",
   "bridgeUiUrl": "http://127.0.0.1:4174",
   "ethereumExplorerUrl": "https://sepolia.etherscan.io",
-  "networkName": "Zeko Testnet",
+  "networkName": "Zeko Local / Anvil",
   "pollIntervalMs": 5000
 }

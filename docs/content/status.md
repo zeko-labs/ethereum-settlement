@@ -24,6 +24,10 @@ promoted to a persistent live Sepolia deployment.
 - The gateway implements the sequencer's Mina GraphQL subset, persists proof
   jobs, gates paid requests on approval, waits for consensus finality, and rolls its
   virtual Mina view back on Ethereum reorgs.
+- A fresh gateway database rebuilds deposits, accepted bridge transitions,
+  settlements, claims, the virtual outer account/action sequence, and settled
+  withdrawal leaves from finalized Ethereum calldata/events plus canonical
+  archive preimages; it does not require the original local proof jobs.
 - Public browser APIs expose deployment config, resumable deposit state, and
   precision-safe withdrawal proofs. Finalized deposits can be queued
   automatically without an operator API call.
@@ -38,6 +42,9 @@ promoted to a persistent live Sepolia deployment.
   accounts, SP1/Ethereum settlements, deposits, withdrawals, and canonical
   claims. The gateway joins a read-only OCaml archive view with its existing
   Ethereum and bridge indexes.
+- Pending native withdrawal requests are classified in L2 transaction lists
+  and detail pages before their next settlement, and browser activity survives
+  reloads without relying on wallet/UI memory as protocol state.
 - The machine-local delivery workflow generates separated retained identities,
   builds digest-pinned gateway/Zeko/DA images, deploys only behind an explicit
   Sepolia deployment confirmation, materializes runtime files, and preflights the complete

@@ -82,6 +82,13 @@ export interface TransactionRecord {
   memo: string;
   accountUpdateCount: string;
   accountUpdates?: AccountUpdate[];
+  bridgeOperation?: {
+    kind: "nativeWithdrawalRequest";
+    phase: "pendingSettlement" | "settled";
+    globalActionIndex: number;
+    recipient: string;
+    amount: string;
+  };
 }
 
 export interface SettlementRecord {

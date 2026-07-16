@@ -222,7 +222,21 @@ export function TransactionDetailPage({
                 <Field label="Transaction hash" wide>
                   <Address copy>{transaction.hash}</Address>
                 </Field>
-                <Field label="Command type">{sentence(transaction.kind)}</Field>
+                <Field label="Command type">
+                  {transaction.bridgeOperation ? "Native withdrawal request" : sentence(transaction.kind)}
+                </Field>
+                {transaction.bridgeOperation ? (
+                  <>
+                    <Field label="Bridge phase">{sentence(transaction.bridgeOperation.phase)}</Field>
+                    <Field label="Withdrawal amount">{formatNano(transaction.bridgeOperation.amount)}</Field>
+                    <Field label="Ethereum recipient" wide>
+                      <Address copy>{transaction.bridgeOperation.recipient}</Address>
+                    </Field>
+                    <Field label="Inner action index">
+                      {transaction.bridgeOperation.globalActionIndex}
+                    </Field>
+                  </>
+                ) : null}
                 <Field label="Block">
                   <button
                     className="gold-link inline-link"

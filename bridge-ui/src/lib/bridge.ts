@@ -1,7 +1,8 @@
 import type {
   BridgeConfig,
-  DepositStatus,
+  DepositActivity,
   EthereumBridgeClient,
+  WithdrawalRequest,
   WithdrawalProof
 } from "@zeko-labs/eth-bridge-sdk"
 import type { Transaction as O1Transaction } from "o1js"
@@ -177,15 +178,19 @@ export const listWalletActivity = async ({
   client: EthereumBridgeClient
   zekoRecipient?: string
   ethereumRecipient?: Address
-}): Promise<{ deposits: DepositStatus[]; withdrawals: WithdrawalProof[] }> => {
+}): Promise<{
+  deposits: DepositActivity[]
+  withdrawals: WithdrawalProof[]
+  withdrawalRequests: WithdrawalRequest[]
+}> => {
   const { o1 } = await loadBridgeModules()
   const depositsPromise = async () => {
     if (!zekoRecipient) return []
     const recipient = o1.PublicKey.fromBase58(zekoRecipient)
-    const rows: DepositStatus[] = []
+    const rows: DepositActivity[] = []
     let after: number | undefined
     for (;;) {
-      const page = await client.listDeposits({ recipient, after, limit: 100 })
+      const page = await client.listDepositsWithStates({ recipient, after, limit: 100 })
       rows.push(...page)
       if (page.length < 100) return rows
       const next = page.at(-1)?.nonce
@@ -206,8 +211,25 @@ export const listWalletActivity = async ({
       after = next
     }
   }
-  const [deposits, withdrawals] = await Promise.all([depositsPromise(), withdrawalsPromise()])
-  return { deposits, withdrawals }
+  const withdrawalRequestsPromise = async () => {
+    if (!ethereumRecipient) return []
+    const rows: WithdrawalRequest[] = []
+    let after: number | undefined
+    for (;;) {
+      const page = await client.listWithdrawalRequests({ recipient: ethereumRecipient, after, limit: 100 })
+      rows.push(...page)
+      if (page.length < 100) return rows
+      const next = page.at(-1)?.globalActionIndex
+      if (next === undefined || next === after) throw new Error("Withdrawal request pagination did not advance")
+      after = next
+    }
+  }
+  const [deposits, withdrawals, withdrawalRequests] = await Promise.all([
+    depositsPromise(),
+    withdrawalsPromise(),
+    withdrawalRequestsPromise()
+  ])
+  return { deposits, withdrawals, withdrawalRequests }
 }
 
 export const fetchEthereumBalance = async (
@@ -245,4 +267,4 @@ export const ethereumTransactionUrl = (config: RuntimeConfig, hash: Hash | strin
   `${config.ethereumExplorerUrl}/tx/${hash}`
 
 export const zekoTransactionUrl = (config: RuntimeConfig, hash: string): string =>
-  `${config.zekoExplorerUrl}/tx/${hash}`
+  `${config.zekoExplorerUrl}/transactions/${hash}`

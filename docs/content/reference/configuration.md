@@ -50,6 +50,9 @@ Use credential files and the explicit variables in a persistent deployment.
 | `VIRTUAL_MINA_INITIAL_STATE_HASH` | Initial best-chain fallback before indexing. |
 | `VIRTUAL_MINA_ACCOUNTS_PATH` | Read-only complete account array. |
 | `VIRTUAL_MINA_OUTER_PUBLIC_KEY` | Outer account that receives indexed proof-emitted actions. |
+| `VIRTUAL_MINA_INNER_PUBLIC_KEY` | Inner account whose canonical archive actions supply pending withdrawals and recoverable leaf preimages. |
+| `VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY` | Settlement fee payer used when rebuilding the virtual Mina view from accepted Ethereum calldata. |
+| `WITHDRAWAL_RECOVERY_POLL_SECS` | Archive/root reconstruction interval; reference value 5. |
 
 The accounts file must contain the outer account and settlement fee payer with
 state and nonce matching the deployed genesis. Existing database rows are not
@@ -88,7 +91,7 @@ domain to custom endpoints. Do not substitute the display name or
 
 The standalone `bridge-ui/` build reads public configuration from
 `/runtime-config.json`. It contains the gateway, sequencer/archive, and Actions
-URLs, Sepolia chain ID, display names, fee, polling interval, and deposit cap.
+URLs, Ethereum chain ID, display names, fee, and polling interval.
 It must contain `minaSigningNetworkId: "testnet"` and must never contain the
 gateway proof API key, Ethereum submitter key, or Succinct requester key. See
 [bridge web application](/bridge-ui) for the schema and deployment boundary.
