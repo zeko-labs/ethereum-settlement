@@ -137,13 +137,13 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
         supplied_token == state.api_key.as_ref(),
         "invalid Ethereum gateway token"
     );
-    let mut settlement: GatewaySettlement = serde_json::from_value(
-        request
-            .variables
-            .get("settlement")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing settlement proof export"))?,
-    )?;
+    let mut settlement_json = request
+        .variables
+        .get("settlement")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing settlement proof export"))?;
+    normalize_settlement_mina_scalars(&mut settlement_json)?;
+    let mut settlement: GatewaySettlement = serde_json::from_value(settlement_json)?;
     anyhow::ensure!(
         settlement.schema_version == 1,
         "unsupported settlement schema"
@@ -246,6 +246,27 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
             }
         }
     }))
+}
+
+fn normalize_settlement_mina_scalars(settlement: &mut Value) -> anyhow::Result<()> {
+    let Some(actions) = settlement
+        .pointer_mut("/proof/innerActionBatch/actions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for action in actions {
+        let Some(amount) = action.pointer_mut("/withdrawal/amount") else {
+            continue;
+        };
+        if let Value::String(raw) = amount {
+            let parsed = raw.parse::<u64>().map_err(|_| {
+                anyhow::anyhow!("native withdrawal amount is not a valid UInt64: {raw}")
+            })?;
+            *amount = Value::from(parsed);
+        }
+    }
+    Ok(())
 }
 
 async fn config(state: &AppState) -> anyhow::Result<sqlx::postgres::PgRow> {
@@ -526,6 +547,47 @@ mod tests {
         assert_eq!(canonical_token_id(MINA_DEFAULT_TOKEN_ID), "1");
         assert_eq!(canonical_token_id("1"), "1");
         assert_eq!(canonical_token_id("custom-token"), "custom-token");
+    }
+
+    #[test]
+    fn normalizes_native_withdrawal_amount_from_ocaml_json() {
+        let mut settlement = json!({
+            "proof": {
+                "innerActionBatch": {
+                    "actions": [
+                        {"withdrawal": {"amount": "5000000000"}},
+                        {"withdrawal": {"amount": 7}},
+                        {}
+                    ]
+                }
+            }
+        });
+
+        normalize_settlement_mina_scalars(&mut settlement).unwrap();
+        assert_eq!(
+            settlement.pointer("/proof/innerActionBatch/actions/0/withdrawal/amount"),
+            Some(&json!(5_000_000_000_u64))
+        );
+        assert_eq!(
+            settlement.pointer("/proof/innerActionBatch/actions/1/withdrawal/amount"),
+            Some(&json!(7))
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_native_withdrawal_amount_from_ocaml_json() {
+        let mut settlement = json!({
+            "proof": {
+                "innerActionBatch": {
+                    "actions": [{"withdrawal": {"amount": "18446744073709551616"}}]
+                }
+            }
+        });
+
+        assert!(normalize_settlement_mina_scalars(&mut settlement)
+            .unwrap_err()
+            .to_string()
+            .contains("not a valid UInt64"));
     }
 
     #[test]
