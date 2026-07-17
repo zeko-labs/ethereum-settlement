@@ -2,8 +2,9 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
-ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
+zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 ENV_FILE=${POC_ENV_FILE:-$ROOT/build/poc/deployment.env}
 OUTPUT_DIR=${BRIDGE_LIVE_FIXTURE_ROOT:-$ROOT/build/poc/bridge-live-fixtures}
 LIVE_DIR=${BRIDGE_LIVE_STATE_DIR:-$ROOT/build/poc/bridge-live-sequencer}

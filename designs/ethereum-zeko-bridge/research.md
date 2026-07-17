@@ -4,12 +4,12 @@ This prototype is a design study, not a production bridge implementation.
 
 ## Source references
 
-- `/root/zeko-ui/apps/bridge-ui`: current Mina ↔ Zeko bridge UI structure, interactions, copy patterns, progress treatment, settings, responsive behavior, and animated contour background.
-- `/root/zeko-ui/packages/layer`: Zeko color, spacing, typography, button, logo, and status tokens.
-- `/root/mina-zeko-bridge-screenshot.png`: desktop composition and hierarchy reference.
-- `/root/zeko-ui/packages/eth-bridge-sdk`: native Ethereum bridge client operations and the four user-facing execution steps.
-- `/root/ethereum-settlement/contracts/src/EthereumZekoBridge.sol`: custody, deposit, timeout, withdrawal-delay, and claim semantics.
-- `/root/ethereum-settlement/api/src/main.rs`: deposit and withdrawal progress states exposed by the gateway.
+- `apps/bridge-ui` in the companion Zeko UI repository: current Mina ↔ Zeko bridge UI structure, interactions, copy patterns, progress treatment, settings, responsive behavior, and animated contour background.
+- `packages/layer` in the companion Zeko UI repository: Zeko color, spacing, typography, button, logo, and status tokens.
+- The retained Mina–Zeko bridge screenshot: desktop composition and hierarchy reference.
+- `packages/eth-bridge-sdk` in the companion Zeko UI repository: native Ethereum bridge client operations and the four user-facing execution steps.
+- `contracts/src/EthereumZekoBridge.sol`: custody, deposit, timeout, withdrawal-delay, and claim semantics.
+- `api/src/main.rs`: deposit and withdrawal progress states exposed by the gateway.
 
 ## Design decisions
 

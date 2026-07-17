@@ -17,7 +17,7 @@ The target architecture is:
 ## Multisig Testnet PoC Implementation Status (July 2026)
 
 The no-blob testnet milestone is now implemented across this repository and the
-companion `~/zeko` tree:
+companion Zeko repository:
 
 - the Pickles verifier recomputes the recursive application-statement binding
   and rejects unsupported lookup features and mutated deferred/accumulator data;
@@ -246,9 +246,9 @@ the ledger state and independently verify claim paths.
 
 ## Original Zeko Bridge Model
 
-The current design docs in
-`~/zeko/zeko/src/app/zeko/circuits/design` describe the bridge as a separate
-token bridge layered on top of the rollup communication mechanism.
+The current design docs under `src/app/zeko/circuits/design` in the companion
+Zeko repository describe the bridge as a separate token bridge layered on top
+of the rollup communication mechanism.
 
 The important protocol facts are:
 

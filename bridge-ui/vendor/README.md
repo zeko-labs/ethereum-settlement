@@ -1,6 +1,6 @@
 # Vendored Ethereum bridge SDK
 
-The base bridge SDK tarball was built from `/root/zeko-ui` at commit
+The base bridge SDK tarball was built from the Zeko UI repository at commit
 `930552298829c7cbdd12898dd8a43a584a35b3d5`; the Ethereum SDK was built from
 `d1da7a6e9efc735bb0a777a7eae55cb3a32876dc`, with:
 

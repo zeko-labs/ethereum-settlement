@@ -14,10 +14,11 @@ FIXTURE_DIR=${3:-fixtures/zeko-local-e2e}
 OUTPUT_DIR=${4:-build/poc}
 FORGE=${FORGE:-$HOME/.foundry/bin/forge}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
-ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
-ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
+zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 [[ $FIXTURE_DIR == /* ]] || FIXTURE_DIR="$ROOT/$FIXTURE_DIR"
 [[ $OUTPUT_DIR == /* ]] || OUTPUT_DIR="$ROOT/$OUTPUT_DIR"
 FIXTURE_DIR=$(realpath "$FIXTURE_DIR")

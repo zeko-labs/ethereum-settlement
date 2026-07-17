@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 BRIDGE_UI_ROOT=${BRIDGE_UI_ROOT:-$ROOT/bridge-ui}
 EXPLORER_UI_ROOT=${EXPLORER_UI_ROOT:-$ROOT/explorer-ui}
-ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
 DEPLOY_DIR=${BRIDGE_E2E_DEPLOY_DIR:-$ROOT/build/manual-stack/deploy}
 ARTIFACT_DIR=${BRIDGE_E2E_ARTIFACT_DIR:-$ROOT/build/e2e/live-bridge}
 GATEWAY_URL=${BRIDGE_E2E_GATEWAY_URL:-http://127.0.0.1:8080}

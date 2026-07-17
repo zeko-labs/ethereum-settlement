@@ -19,7 +19,7 @@ not as a replacement for the OCaml Zeko codebase.
 
 The current settlement PoC uses the o1 `o1js-to-zkvm` Pickles verifier path:
 
-- `crates/pickles-verifier` is adapted from `~/zeko/o1js-to-zkvm`.
+- `crates/pickles-verifier` is adapted from o1's `o1js-to-zkvm` verifier.
 - `vendor/proof-systems` is the o1 SP1-compatible proof-systems branch.
 - `program/settlement/build.rs` builds a verifier blob from
   `proofs/mainnet-blockchain-snark/vk.serde.json`.
@@ -119,28 +119,19 @@ Important current limitation: the PoC `vk_hash` is currently a SHA-256 over the
 fixture VK JSON bytes. Production must use the canonical OCaml/Mina
 verification-key hash.
 
-## Current Public Values Limitation
+## Current Public Values
 
-The current settlement public-values layout is still a PoC compatibility layout:
+The settlement guest derives versioned receipts from the verified OCaml proof:
 
-- `proof_valid`
-- `vk_hash`
-- `state_before[8]`
-- `state_after[8]`
-- `action_state_before`
+- V1 binds the complete eight-field outer state, outer action state and length,
+  synchronized checkpoint, slot range, Ethereum domain, batch sequence, Mina
+  transaction hash, and verification-key identifier.
+- V2 additionally binds the exact ordered inner actions to a depth-16 Keccak
+  tree used by native withdrawal claims.
 
-The state and action-state fields are currently zeroed. Production work must
-extract and commit the real Zeko outer state from the OCaml proof/public input:
-
-- ledger hash
-- inner action state and length
-- synchronized outer action state and length
-- current outer action-state checkpoint
-- slot range
-- DA metadata
-- any bridge/account-set fields needed by Solidity safety checks
-
-Version the public-values schema before treating it as production.
+The remaining production limitation is data availability: neither receipt binds
+EIP-4844 blob hashes or a canonical Zeko batch data root yet. Keep receipt and
+Solidity decoders versioned when extending the schema.
 
 ## Data Availability Direction
 
@@ -161,11 +152,8 @@ EIP-4844 blob commitments and the Zeko batch data root.
 
 ## Bridge Context
 
-Read the original Zeko design docs in:
-
-```text
-~/zeko/zeko/src/app/zeko/circuits/design
-```
+Read the original Zeko design docs in the sibling Zeko checkout under
+`src/app/zeko/circuits/design`.
 
 Important semantics from the OCaml design:
 

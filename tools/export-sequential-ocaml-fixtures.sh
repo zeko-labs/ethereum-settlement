@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 OUTPUT_DIR=${1:-$ROOT/build/poc/sequential-fixtures}
 ENV_FILE=${POC_ENV_FILE:-$ROOT/build/poc/deployment.env}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}

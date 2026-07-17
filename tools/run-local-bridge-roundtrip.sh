@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 FIXTURE_ROOT=${BRIDGE_FIXTURE_ROOT:-$ROOT/build/poc/bridge-fixtures}
 DEPLOY_DIR=${POC_DEPLOY_DIR:-$ROOT/build/poc/bridge-roundtrip}
 RPC_PORT=${RPC_PORT:-8547}
@@ -24,7 +26,6 @@ CAST=${CAST:-$HOME/.foundry/bin/cast}
 FORGE=${FORGE:-$HOME/.foundry/bin/forge}
 ANVIL=${ANVIL:-$HOME/.foundry/bin/anvil}
 API_BIN=${API_BIN:-$ROOT/target/release/zeko-proof-api}
-ZEKO_UI_ROOT=${ZEKO_UI_ROOT:-/root/zeko-ui}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 
 for command in bc curl docker jq date pgrep; do

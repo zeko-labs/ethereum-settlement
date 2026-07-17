@@ -21,13 +21,16 @@ The SP1 program vkey is intentionally not recorded here: it changes whenever
 the guest verifier changes. Rebuild it with this fixture's VK before deploying
 the local settlement contract.
 
-To regenerate from the sibling Zeko checkout:
+To regenerate from the sibling Zeko checkout, start in the shared parent
+directory:
 
 ```sh
-ZEKO_SETTLEMENT_FIXTURE_DIR="$PWD/fixtures/zeko-local-e2e" \
-  nix develop 'git+file:///root/zeko?submodules=1' --command \
-  dune exec ./src/app/zeko/tests/test_all_real.exe
+cd zeko
+ZEKO_SETTLEMENT_FIXTURE_DIR="$(realpath \
+  ../ethereum-settlement/fixtures/zeko-local-e2e)" \
+  nix develop "git+file://$PWD?submodules=1" --command \
+  dune exec src/app/zeko/tests/test_all_real.exe
 ```
 
-Run that command from this repository root. It performs real OCaml proving and
-is substantially heavier than reading or verifying the committed fixture.
+It performs real OCaml proving and is substantially heavier than reading or
+verifying the committed fixture.

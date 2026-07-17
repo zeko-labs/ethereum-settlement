@@ -1,8 +1,8 @@
 # Bridge web application
 
 `bridge-ui/` is a standalone React application for the native ETH bridge PoC.
-It is built and deployed independently from the Vue applications in
-`~/zeko-ui`. The app composes the pinned Zeko bridge SDK with the Ethereum
+It is built and deployed independently from the Vue applications in the
+companion Zeko UI repository. The app composes the pinned Zeko bridge SDK with the Ethereum
 wrapper SDK and uses only browser-safe APIs.
 
 ## User flows
@@ -95,6 +95,6 @@ pnpm test:e2e
 ```
 
 For local development, `pnpm dev` listens on `127.0.0.1:5174`. The vendored SDK
-archives are tied to the pinned `~/zeko-ui` source revision because the
+archives are tied to the pinned Zeko UI source revision because the
 published bridge SDK version does not expose the runtime entry points required
 by the Ethereum wrapper. Update and test the pair together.

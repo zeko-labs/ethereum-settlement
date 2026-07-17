@@ -5,12 +5,13 @@ Zeko repository. Build them with their own pinned environments.
 
 ## Checkouts and submodules
 
-Initialize both repositories recursively before building:
+From the parent directory containing the sibling repositories, initialize both
+repositories recursively before building:
 
 ```sh
-git -C ~/ethereum-settlement submodule update --init --recursive
-git -C ~/zeko submodule update --init --recursive
-git -C ~/zeko config --local submodule.recurse true
+git -C ethereum-settlement submodule update --init --recursive
+git -C zeko submodule update --init --recursive
+git -C zeko config --local submodule.recurse true
 ```
 
 Missing Mina/proof-system submodules often look like unrelated Dune, Kimchi, or
@@ -30,8 +31,11 @@ Required host support:
 Open the development shell with submodules included:
 
 ```sh
-cd ~/zeko
-nix develop "git+file://$PWD?submodules=1" --accept-flake-config
+cd zeko
+tmux new-session -d -s zeko-dev -c "$PWD" \
+  "exec nix develop 'git+file://$PWD?submodules=1' \
+  --accept-flake-config --max-jobs auto -c bash -li"
+tmux attach -t zeko-dev
 ```
 
 Inside the shell, build the relevant paths:

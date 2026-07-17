@@ -4,7 +4,7 @@
 
 - `../ethereum-zeko-bridge/`: approved bridge prototype, typography, tokens, contour motion, responsive behavior and copy tone.
 - `../../bridge-ui/src/styles.css`: production-ready Lexend, gold/grayscale and status treatment.
-- `/root/zeko/src/app/archive/create_schema.sql`: block, transaction, zkApp and account data available to the explorer.
+- `src/app/archive/create_schema.sql` in the companion Zeko repository: block, transaction, zkApp and account data available to the explorer.
 - `../../api/src/main.rs` and `../../contracts/src/`: authoritative settlement and bridge lifecycle semantics.
 
 ## Direction

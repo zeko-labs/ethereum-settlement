@@ -41,7 +41,7 @@ forge test --match-path test/NativeBridgePocE2E.t.sol -vv
 ## OCaml cross-language checks
 
 ```sh
-cd ~/zeko
+cd ../zeko
 nix develop "git+file://$PWD?submodules=1" --accept-flake-config \
   -c dune exec src/app/zeko/tests/ethereum_bridge_vectors.exe
 ```

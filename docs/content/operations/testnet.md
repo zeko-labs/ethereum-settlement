@@ -166,7 +166,7 @@ waits for a RabbitMQ consumer before the sequencer starts, avoiding
 initialization against an OCaml prover that is still compiling circuits.
 
 The Actions indexer and API intentionally run from the separately pinned,
-clean `~/zeko-ui` checkout. They use a dedicated database and expose only the
+clean Zeko UI checkout. They use a dedicated database and expose only the
 public witness-preparation surface required by the browser application.
 
 Build `bridge-ui/`, materialize its public `runtime-config.json`, and serve the

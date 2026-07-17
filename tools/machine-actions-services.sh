@@ -9,6 +9,7 @@ usage() {
 [[ $# -ge 1 && $# -le 2 ]] || usage
 COMMAND=$1
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/workspace.sh"
 DEPLOY_DIR=${2:-$ROOT/deploy/testnet}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 INDEXER_SESSION=zeko-actions-indexer
@@ -28,7 +29,7 @@ load_config() {
   source "$DEPLOY_DIR/.env"
   source "$DEPLOY_DIR/gateway.env"
   set +a
-  : "${ZEKO_UI_ROOT:?set ZEKO_UI_ROOT in deploy/testnet/.env}"
+  zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
   : "${ZEKO_UI_COMMIT:?set ZEKO_UI_COMMIT in deploy/testnet/.env}"
   : "${VIRTUAL_MINA_OUTER_PUBLIC_KEY:?materialize gateway.env first}"
   VIRTUAL_MINA_INNER_PUBLIC_KEY=${VIRTUAL_MINA_INNER_PUBLIC_KEY:-$(

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/workspace.sh"
 DEPLOY_DIR=${1:-$ROOT/deploy/testnet}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
 
@@ -34,6 +35,8 @@ set -a
 source "$DEPLOY_DIR/.env"
 source "$DEPLOY_DIR/gateway.env"
 set +a
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
+zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 
 for name in GATEWAY_IMAGE ZEKO_IMAGE ZEKO_DA_IMAGE POSTGRES_IMAGE RABBITMQ_IMAGE; do
   value=${!name:-}
@@ -272,7 +275,7 @@ assert_role_shape "$BRIDGE_CONTRACT_ADDRESS"
 [[ $(jq -r '.sourceRevisions.ethereumSettlement' "$manifest") == \
   $(git -C "$ROOT" rev-parse HEAD) ]]
 [[ $(jq -r '.sourceRevisions.zeko' "$manifest") == \
-  $(git -C /root/zeko rev-parse HEAD) ]]
+  $(git -C "$ZEKO_ROOT" rev-parse HEAD) ]]
 [[ $(jq -r '.sourceRevisions.zekoUi' "$manifest") == "$ZEKO_UI_COMMIT" ]]
 settlement_vkey=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'programVKey()(bytes32)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')

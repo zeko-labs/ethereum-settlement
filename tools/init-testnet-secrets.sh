@@ -8,7 +8,8 @@ usage() {
 
 [[ $# -ge 1 && $# -le 2 ]] || usage
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ZEKO_ROOT=${ZEKO_ROOT:-/root/zeko}
+source "$ROOT/tools/lib/workspace.sh"
+zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 TESTNET_DIR=${2:-$ROOT/deploy/testnet}
 ENV_TEMPLATE=$ROOT/deploy/testnet/.env.example
 BRIDGE_ADDRESS=$1
