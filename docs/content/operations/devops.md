@@ -188,9 +188,7 @@ Rollback means stopping new sequencer commits and bridge proof requests,
 preserving databases and manifests, and diagnosing the canonical state. Do not
 redeploy a proxy or change the circuit config to “fix” an identity mismatch.
 
-For DA-node replacement, start an empty node with
-`--restore-from-peer HOST:PORT`. If the peer retained competing tips, select
-one explicitly with `--restore-target-ledger-hash HASH`. This is a trusted-peer
-copy with chain-continuity checks, not an independent ledger-root
-recomputation. Follow the complete [recovery and rebuild](/operations/recovery)
-drill before testnet launch.
+DA nodes do not synchronize from peer DA nodes. Replace an empty node by having
+the sequencer replay its ordered diffs through the normal post-diff flow, or by
+restoring a tested node-volume snapshot. Follow the complete
+[recovery and rebuild](/operations/recovery) drill before testnet launch.

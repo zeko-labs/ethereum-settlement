@@ -246,23 +246,13 @@ services:
     depends_on:
       da1-signer: {condition: service_healthy}
     entrypoint: ["/bin/bash", "-ec"]
-    environment:
-      DA_RESTORE_FROM_PEER: ${DA1_RESTORE_FROM_PEER:-}
-      DA_RESTORE_TARGET_LEDGER_HASH: ${DA1_RESTORE_TARGET_LEDGER_HASH:-}
     command:
       - |
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da1-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
-        restore_args=()
-        if [[ -n "$${DA_RESTORE_FROM_PEER:-}" ]]; then
-          restore_args+=(--restore-from-peer "$${DA_RESTORE_FROM_PEER}")
-        fi
-        if [[ -n "$${DA_RESTORE_TARGET_LEDGER_HASH:-}" ]]; then
-          restore_args+=(--restore-target-ledger-hash "$${DA_RESTORE_TARGET_LEDGER_HASH}")
-        fi
         exec zeko-da run-node --port 8555 --healthcheck-port 8558 \
           --db-dir /data/db --signer da1-signer:9001 \
-          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet} "$${restore_args[@]}"
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da1:/data
       - ./secrets/da1-signer-token:/run/zeko-secrets/da1-signer-token:ro
@@ -278,23 +268,13 @@ services:
     depends_on:
       da2-signer: {condition: service_healthy}
     entrypoint: ["/bin/bash", "-ec"]
-    environment:
-      DA_RESTORE_FROM_PEER: ${DA2_RESTORE_FROM_PEER:-}
-      DA_RESTORE_TARGET_LEDGER_HASH: ${DA2_RESTORE_TARGET_LEDGER_HASH:-}
     command:
       - |
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da2-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
-        restore_args=()
-        if [[ -n "$${DA_RESTORE_FROM_PEER:-}" ]]; then
-          restore_args+=(--restore-from-peer "$${DA_RESTORE_FROM_PEER}")
-        fi
-        if [[ -n "$${DA_RESTORE_TARGET_LEDGER_HASH:-}" ]]; then
-          restore_args+=(--restore-target-ledger-hash "$${DA_RESTORE_TARGET_LEDGER_HASH}")
-        fi
         exec zeko-da run-node --port 8556 --healthcheck-port 8559 \
           --db-dir /data/db --signer da2-signer:9002 \
-          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet} "$${restore_args[@]}"
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da2:/data
       - ./secrets/da2-signer-token:/run/zeko-secrets/da2-signer-token:ro
@@ -310,23 +290,13 @@ services:
     depends_on:
       da3-signer: {condition: service_healthy}
     entrypoint: ["/bin/bash", "-ec"]
-    environment:
-      DA_RESTORE_FROM_PEER: ${DA3_RESTORE_FROM_PEER:-}
-      DA_RESTORE_TARGET_LEDGER_HASH: ${DA3_RESTORE_TARGET_LEDGER_HASH:-}
     command:
       - |
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/da3-signer-token)"
         export ZEKO_SIGNER_TLS_CA_FILE=/run/zeko-secrets/signer-tls.crt
-        restore_args=()
-        if [[ -n "$${DA_RESTORE_FROM_PEER:-}" ]]; then
-          restore_args+=(--restore-from-peer "$${DA_RESTORE_FROM_PEER}")
-        fi
-        if [[ -n "$${DA_RESTORE_TARGET_LEDGER_HASH:-}" ]]; then
-          restore_args+=(--restore-target-ledger-hash "$${DA_RESTORE_TARGET_LEDGER_HASH}")
-        fi
         exec zeko-da run-node --port 8557 --healthcheck-port 8560 \
           --db-dir /data/db --signer da3-signer:9003 \
-          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet} "$${restore_args[@]}"
+          --network-id ${MINA_SIGNING_NETWORK_ID:-testnet}
     volumes:
       - da3:/data
       - ./secrets/da3-signer-token:/run/zeko-secrets/da3-signer-token:ro

@@ -158,13 +158,10 @@ nodes. The sequencer starts only after bootstrap succeeds. On later restarts,
 the Zeko deploy helper checks that the same ledger already exists and exits
 without changing it.
 
-An empty replacement DA node can copy the retained chain from a trusted peer.
-Set, for example, `DA2_RESTORE_FROM_PEER=da1:5000` before starting DA2. If the
-peer has more than one uncommitted head, also set
-`DA2_RESTORE_TARGET_LEDGER_HASH=<decimal-ledger-hash>`. Restore is skipped when
-the local database already contains diffs. The node checks chain continuity but
-does not independently recompute ledger roots, so snapshots and peer selection
-remain operator trust decisions.
+DA nodes do not synchronize from one another. An empty replacement node must
+receive the ordered diffs from the sequencer through the normal post-diff flow,
+or start from a tested volume snapshot. Do not treat another DA node as an
+independent recovery source.
 
 `prover-ready` is also a bounded one-shot. It waits until RabbitMQ reports an
 OCaml prover consumer, which means the real circuit compilation has completed;

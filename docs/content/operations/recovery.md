@@ -9,7 +9,7 @@ of truth, but deleting all roots at once is not recoverable.
 | Root | Must survive | What it reconstructs |
 | --- | --- | --- |
 | Ethereum execution/consensus history from `ETHEREUM_INDEXER_START_BLOCK` | Contract state, receipts, logs, and accepted transaction calldata | Deposits, bridge transitions, settlements, claims, virtual outer actions/account state, and accepted inner roots. |
-| At least one trusted full DA node or tested DA snapshot | Ordered Zeko ledger diffs beyond genesis | Sequencer and replacement DA nodes. |
+| Sequencer DA-diff store or tested DA snapshot | Ordered Zeko ledger diffs beyond genesis | Replacement DA nodes. |
 | Canonical Zeko archive rebuilt from DA/sequencer data | Inner action fields and clear withdrawal preimages | Pending withdrawal activity and settled Merkle leaves. |
 | Immutable release identity | Contract addresses/deployment block, circuit config, bridge genesis ledger, virtual Mina genesis accounts, outer/inner/fee-payer keys, DA keys, VK/vkeys | Correct interpretation of all replayed data. |
 
@@ -27,8 +27,8 @@ chain from the gateway database.
 | Explorer UI / bridge UI | Static build plus runtime config and public APIs | Wallet authorization may still require the wallet extension to remain authorized. |
 | Archive | Sequencer/DA replay using the normal Zeko archive pipeline | Must preserve ordered blocks/commands and action preimages. |
 | Sequencer | Genesis/release identity plus surviving DA chain | In-flight mempool commands that never reached DA are not protocol-recoverable. |
-| One DA node | Trusted surviving DA peer with `--restore-from-peer`; choose a tip if required | Restore validates continuity but trusts the peer's diff/target association. |
-| All DA nodes | Tested snapshot or another recoverable full-data source | Ethereum checkpoints contain hashes, not the full L2 ledger/diffs. Without data or snapshot, recovery is impossible. |
+| One DA node | Sequencer replay through the normal ordered post-diff flow, or a tested node-volume snapshot | DA nodes do not synchronize from peers; replay must complete before the node counts toward quorum. |
+| All DA nodes | Sequencer DA-diff store or tested snapshots | Ethereum checkpoints contain hashes, not the full L2 ledger/diffs. Without the sequencer's ordered data or snapshots, recovery is impossible. |
 
 ## Gateway replay
 
@@ -68,7 +68,7 @@ then perform the following in a disposable environment:
 2. stop the gateway and delete only its PostgreSQL volume
 3. start a fresh database/gateway with the same immutable config and deployment block
 4. verify the recorded protocol state and leaf roots reappear without submitting or proving anything
-5. delete one DA-node volume, restart it with a trusted peer restore target, and compare its reported head/diff chain
+5. delete one DA-node volume, repopulate it from the sequencer's ordered diffs, and compare its reported diff chain
 6. rebuild Actions services from the archive and compare action indices/account-update IDs
 7. test a service restart and an Ethereum reorg separately; do not combine root deletion with the reorg test
 
