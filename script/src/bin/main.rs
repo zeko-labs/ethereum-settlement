@@ -124,6 +124,8 @@ fn load_verifiable(fixture_dir: &Path) -> VerifiableProof {
     let wrap_vk = parse_wrap_vk(&vk_json).expect("parse vk.serde.json");
     let wrap_proof = parse_wrap_proof(&proof_json).expect("parse proof.serde.json");
     let ocaml = OcamlProof::parse(&skeleton_json).expect("parse public_input_skeleton.json");
+    // TODO: Derive the application statement from the transaction inside the
+    // guest instead of accepting host-prepared statement fields.
     let app_stmt = parse_app_statement_fields(&app_stmt_json).expect("parse app_statement.json");
 
     ocaml
