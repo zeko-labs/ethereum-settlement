@@ -43,4 +43,25 @@ if zeko_resolve_companion_repo "$SETTLEMENT_ROOT" ZEKO_ROOT zeko src/app/zeko \
 fi
 grep -q 'set ZEKO_ROOT or ZEKO_WORKSPACE_ROOT' "$TMP_DIR/missing.log"
 
+CLEAN_REPO=$TMP_DIR/clean-repo
+CLEAN_WORKTREE=$TMP_DIR/clean-worktree
+git init -q "$CLEAN_REPO"
+git -C "$CLEAN_REPO" config user.email test@example.invalid
+git -C "$CLEAN_REPO" config user.name 'Workspace test'
+touch "$CLEAN_REPO/tracked"
+git -C "$CLEAN_REPO" add tracked
+git -C "$CLEAN_REPO" commit -qm initial
+git -C "$CLEAN_REPO" worktree add -q --detach "$CLEAN_WORKTREE"
+zeko_is_clean_checkout "$CLEAN_REPO"
+zeko_is_clean_checkout "$CLEAN_WORKTREE"
+touch "$CLEAN_WORKTREE/untracked"
+if zeko_is_clean_checkout "$CLEAN_WORKTREE"; then
+  echo "Dirty linked worktree unexpectedly passed the clean-check" >&2
+  exit 1
+fi
+if zeko_is_clean_checkout ''; then
+  echo "Empty checkout path unexpectedly passed the clean-check" >&2
+  exit 1
+fi
+
 echo "Workspace path resolution passed."

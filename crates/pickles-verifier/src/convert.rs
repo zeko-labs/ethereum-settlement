@@ -162,10 +162,11 @@ impl OcamlProof {
     ///     `old_bulletproof_challenges`,
     ///   * recompute the two message digests (the wire erases them).
     ///
-    /// The kimchi wrap proof + VK come from the sibling `proof.serde.json` /
-    /// `vk.serde.json`. `app_state` is the application statement's field
-    /// encoding (OCaml `Statement_value.to_field_elements`); for the
-    /// single-field fixture statements it is `[statement]`.
+    /// The Kimchi wrap proof + VK have already been reconstructed from either
+    /// the versioned Zeko wire or legacy serde fixtures. `app_state` is the
+    /// application statement's field encoding (OCaml
+    /// `Statement_value.to_field_elements`); for single-field fixture
+    /// statements it is `[statement]`.
     pub fn into_verifiable(
         self,
         wrap_proof: WrapProof,

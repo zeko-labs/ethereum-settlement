@@ -84,14 +84,19 @@ inside SP1 using the o1 `o1js-to-zkvm` verifier design.
 
 At a high level it:
 
-1. Builds a verifier blob at compile time from
+1. Builds a verifier blob at compile time from the verification key at
    `proofs/mainnet-blockchain-snark/vk.serde.json` or `SETTLEMENT_VK_JSON`.
-2. Host code reads an o1 fixture directory containing:
+   Both the versioned compact Zeko wire and legacy Kimchi-serde format are
+   accepted.
+2. Host code reads a Zeko proof bundle, or a legacy o1 fixture directory
+   containing:
    - `vk.serde.json`
    - `proof.serde.json`
    - `public_input_skeleton.json`
    - `app_statement.json`
-3. Host code converts those OCaml/o1 files into a `VerifiableProof`.
+3. Host code reconstructs native Kimchi proof/VK values from Zeko's
+   OCaml-owned wire, or directly reads the legacy serde fixtures, then builds a
+   `VerifiableProof`.
 4. The SP1 guest verifies:
    - Pickles accumulator / challenge polynomial commitment
    - deferred value reconstruction

@@ -59,13 +59,16 @@ images_manifest="$DEPLOY_DIR/artifacts/images.json"
   echo "ZEKO_SLOT_DURATION_SECONDS must be a positive integer" >&2
   exit 1
 }
-[[ ${ZEKO_UI_COMMIT:-} =~ ^[0-9a-f]{40}$ && -d ${ZEKO_UI_ROOT:-}/.git ]] || {
+[[ ${ZEKO_UI_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || {
   echo "ZEKO_UI_ROOT and an exact ZEKO_UI_COMMIT are required" >&2
   exit 1
 }
-[[ $(git -C "$ZEKO_UI_ROOT" rev-parse HEAD) == "$ZEKO_UI_COMMIT" && \
-   -z $(git -C "$ZEKO_UI_ROOT" status --porcelain) ]] || {
-  echo "Zeko UI checkout must be clean and at ZEKO_UI_COMMIT" >&2
+zeko_is_clean_checkout "${ZEKO_UI_ROOT:-}" || {
+  echo "Zeko UI checkout must exist and be clean" >&2
+  exit 1
+}
+[[ $(git -C "$ZEKO_UI_ROOT" rev-parse HEAD) == "$ZEKO_UI_COMMIT" ]] || {
+  echo "Zeko UI checkout must be at ZEKO_UI_COMMIT" >&2
   exit 1
 }
 [[ ${API_REQUIRE_PROOF_APPROVAL,,} == true ]]

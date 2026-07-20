@@ -23,6 +23,10 @@ The current settlement PoC uses the o1 `o1js-to-zkvm` Pickles verifier path:
 - `vendor/proof-systems` is the o1 SP1-compatible proof-systems branch.
 - `program/settlement/build.rs` builds a verifier blob from
   `proofs/mainnet-blockchain-snark/vk.serde.json`.
+- `crates/pickles-verifier/src/wire.rs` accepts both the legacy Kimchi-serde
+  proof/VK files and Zeko's versioned compact OCaml wire. It reconstructs the
+  native Kimchi values before verification; keep strict curve, length, and
+  domain checks at this boundary.
 - `program/settlement/src/main.rs` decodes the verifier blob, reads a
   `VerifiableProof`, calls `pickles_verifier::verify`, asserts the proof is
   valid, and commits `ZkappPublicValues`.
@@ -34,6 +38,9 @@ The current settlement PoC uses the o1 `o1js-to-zkvm` Pickles verifier path:
 Do not reintroduce the old hand-written Mina-Rust/Kimchi-only settlement path.
 It was incomplete for Pickles because Pickles requires the recursive/deferred
 checks and accumulator verification in addition to outer Kimchi verification.
+Do not add settlement-only serialization FFI to Zeko's `proof-systems`
+submodule. The portable format is owned by Zeko's OCaml/Pickles layer, while
+this repository owns conversion to the verifier's native Rust types.
 
 ## Known Working Command
 

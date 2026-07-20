@@ -150,16 +150,16 @@ start_services() {
       exit 1
     }
   done
-  [[ -x $NIX && -d $ZEKO_UI_ROOT/.git ]] || {
-    echo "Missing Nix or Zeko UI checkout" >&2
+  [[ -x $NIX ]] || {
+    echo "Missing Nix: $NIX" >&2
+    exit 1
+  }
+  zeko_is_clean_checkout "$ZEKO_UI_ROOT" || {
+    echo "Zeko UI checkout must exist and be clean" >&2
     exit 1
   }
   [[ $(git -C "$ZEKO_UI_ROOT" rev-parse HEAD) == "$ZEKO_UI_COMMIT" ]] || {
     echo "Zeko UI checkout is not at pinned commit $ZEKO_UI_COMMIT" >&2
-    exit 1
-  }
-  [[ -z $(git -C "$ZEKO_UI_ROOT" status --porcelain) ]] || {
-    echo "Zeko UI checkout must be clean before starting retained services" >&2
     exit 1
   }
   for secret in postgres-gateway-password actions-indexer-token; do

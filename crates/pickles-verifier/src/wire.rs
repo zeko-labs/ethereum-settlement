@@ -1,14 +1,17 @@
-//! Wire types: the serde-deserializable form of the four OCaml-serialized
-//! fixture files a `dump_*_fixtures` tool emits.
+//! Host wire decoding for Pickles proofs and verification keys.
 //!
-//!   * `vk.serde.json` — kimchi `VerifierIndex` (Rust serde)
-//!   * `proof.serde.json` — kimchi wrap `ProverProof` (Rust serde)
+//! Current Zeko exports versioned, OCaml-owned JSON containing the side-loaded
+//! proof, its padded recursion accumulators, and the compact side-loaded VK.
+//! This module reconstructs native Kimchi [`WrapProof`] / [`WrapVerifierIndex`]
+//! values from that wire. During migration it also accepts the legacy files:
+//!
+//!   * `vk.serde.json` — Kimchi `VerifierIndex` Rust serde
+//!   * `proof.serde.json` — Kimchi wrap `ProverProof` Rust serde
 //!   * `public_input_skeleton.json` — the Pickles `{statement; prev_evals}` skeleton ([`OcamlProof`])
 //!   * `app_statement.json` — the application statement (BE-hex field)
 //!
-//! The kimchi VK + proof reuse the upstream serde impls directly (same crate
-//! that produced the JSON). The Pickles skeleton uses the bespoke OCaml-yojson
-//! decode in [`OcamlProof::parse`]. Field/curve mapping:
+//! The Pickles values use the bespoke OCaml-yojson decode in this module.
+//! Field/curve mapping:
 //!
 //!   * `StepField` = Tick = `Fp` (Vesta scalar / Pallas base)
 //!   * `WrapField` = Tock = `Fq` (Pallas scalar / Vesta base)
@@ -17,12 +20,16 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use ark_ff::PrimeField;
+use ark_ff::{PrimeField, Zero};
+use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use kimchi::circuits::constraints::FeatureFlags;
 use kimchi::circuits::lookup::lookups::{LookupFeatures, LookupPatterns};
-use kimchi::proof::PointEvaluations;
+use kimchi::circuits::polynomials::permutation;
+use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverCommitments, RecursionChallenge};
 use mina_curves::pasta::{Pallas, Vesta};
 use o1_utils::FieldHelpers;
+use poly_commitment::commitment::PolyComm;
+use poly_commitment::ipa::OpeningProof;
 use serde_json::Value;
 
 use crate::types::{
@@ -30,14 +37,32 @@ use crate::types::{
     STEP_IPA_ROUNDS, WRAP_IPA_ROUNDS,
 };
 
-/// Parse `vk.serde.json` into the kimchi verifier index (SRS still empty).
-pub fn parse_wrap_vk(json: &str) -> serde_json::Result<WrapVerifierIndex> {
-    serde_json::from_str(json)
+/// Parse either the legacy Kimchi-serde VK or Zeko's versioned compact VK wire.
+/// The returned verifier index has an empty SRS; [`crate::types::Verifier::new`]
+/// attaches the real one and reconstructs the other serde-skipped fields.
+pub fn parse_wrap_vk(json: &str) -> Result<WrapVerifierIndex, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if value.get("schemaVersion").is_some() {
+        parse_ocaml_wrap_vk(&value)
+    } else {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
 }
 
-/// Parse `proof.serde.json` into the kimchi wrap proof.
-pub fn parse_wrap_proof(json: &str) -> serde_json::Result<WrapProof> {
-    serde_json::from_str(json)
+/// Parse either the legacy Kimchi-serde proof or Zeko's versioned Pickles wire.
+pub fn parse_wrap_proof(json: &str) -> Result<WrapProof, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    if value.get("schemaVersion").is_some() {
+        parse_ocaml_wrap_proof(&value)
+    } else {
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+}
+
+/// Canonical native form used to compare VKs independently of the incoming
+/// JSON whitespace and wire format.
+pub fn canonical_wrap_vk_json(vk: &WrapVerifierIndex) -> Result<String, String> {
+    serde_json::to_string(vk).map_err(|e| e.to_string())
 }
 
 /// Little-endian bytes (zero-padded to the field byte size) → field, via the
@@ -163,6 +188,281 @@ fn affine<C, F: PrimeField>(v: &Value, mk: impl Fn(F, F) -> C) -> Result<C, Stri
         return Err(alloc::format!("affine: expected [x, y], got {}", a.len()));
     }
     Ok(mk(be_hex(&a[0])?, be_hex(&a[1])?))
+}
+
+fn pallas(v: &Value) -> Result<Pallas, String> {
+    let point = affine::<Pallas, StepField>(v, Pallas::new_unchecked)?;
+    if !point.is_on_curve() || !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err("Pallas point is not in the prime-order subgroup".to_string());
+    }
+    Ok(point)
+}
+
+fn integer(v: &Value, name: &str) -> Result<usize, String> {
+    v.as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| alloc::format!("{name}: expected a non-negative integer"))
+}
+
+fn schema_v1(v: &Value, name: &str) -> Result<(), String> {
+    let version = integer(field(v, "schemaVersion")?, "schemaVersion")?;
+    if version != 1 {
+        return Err(alloc::format!(
+            "{name}: unsupported schemaVersion {version}"
+        ));
+    }
+    Ok(())
+}
+
+fn fixed_map<T, const N: usize>(
+    v: &Value,
+    name: &str,
+    parse: impl Fn(&Value) -> Result<T, String>,
+) -> Result<[T; N], String> {
+    let values = as_vec(v)?;
+    if values.len() != N {
+        return Err(alloc::format!(
+            "{name}: expected {N} entries, got {}",
+            values.len()
+        ));
+    }
+    values
+        .iter()
+        .map(parse)
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| alloc::format!("{name}: length invariant"))
+}
+
+fn pallas_comm(v: &Value) -> Result<PolyComm<Pallas>, String> {
+    Ok(PolyComm {
+        chunks: alloc::vec![pallas(v)?],
+    })
+}
+
+fn wrap_point_eval(v: &Value) -> Result<PointEvaluations<Vec<WrapField>>, String> {
+    let values = as_vec(v)?;
+    if values.len() != 2 {
+        return Err(alloc::format!(
+            "wrap evaluation: expected [zeta, zeta_omega], got {} entries",
+            values.len()
+        ));
+    }
+    Ok(PointEvaluations {
+        zeta: alloc::vec![be_hex(&values[0])?],
+        zeta_omega: alloc::vec![be_hex(&values[1])?],
+    })
+}
+
+fn parse_ocaml_wrap_proof(wire: &Value) -> Result<WrapProof, String> {
+    schema_v1(wire, "Pickles proof wire")?;
+    let proof = field(wire, "proof")?;
+
+    let commitments = field(proof, "commitments")?;
+    let w_comm = fixed_map::<_, 15>(field(commitments, "w_comm")?, "w_comm", pallas_comm)?;
+    let z_comm = pallas_comm(field(commitments, "z_comm")?)?;
+    let t_comm = PolyComm {
+        chunks: as_vec(field(commitments, "t_comm")?)?
+            .iter()
+            .map(pallas)
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    if t_comm.chunks.len() != 7 {
+        return Err(alloc::format!(
+            "t_comm: expected 7 chunks, got {}",
+            t_comm.chunks.len()
+        ));
+    }
+
+    let evaluations = field(proof, "evaluations")?;
+    let w = fixed_map::<_, 15>(field(evaluations, "w")?, "w evaluations", wrap_point_eval)?;
+    let coefficients = fixed_map::<_, 15>(
+        field(evaluations, "coefficients")?,
+        "coefficient evaluations",
+        wrap_point_eval,
+    )?;
+    let s = fixed_map::<_, 6>(field(evaluations, "s")?, "s evaluations", wrap_point_eval)?;
+    let evals = ProofEvaluations {
+        public: None,
+        w,
+        z: wrap_point_eval(field(evaluations, "z")?)?,
+        s,
+        coefficients,
+        generic_selector: wrap_point_eval(field(evaluations, "generic_selector")?)?,
+        poseidon_selector: wrap_point_eval(field(evaluations, "poseidon_selector")?)?,
+        complete_add_selector: wrap_point_eval(field(evaluations, "complete_add_selector")?)?,
+        mul_selector: wrap_point_eval(field(evaluations, "mul_selector")?)?,
+        emul_selector: wrap_point_eval(field(evaluations, "emul_selector")?)?,
+        endomul_scalar_selector: wrap_point_eval(field(evaluations, "endomul_scalar_selector")?)?,
+        range_check0_selector: None,
+        range_check1_selector: None,
+        foreign_field_add_selector: None,
+        foreign_field_mul_selector: None,
+        xor_selector: None,
+        rot_selector: None,
+        lookup_aggregation: None,
+        lookup_table: None,
+        lookup_sorted: [None, None, None, None, None],
+        runtime_lookup_table: None,
+        runtime_lookup_table_selector: None,
+        xor_lookup_selector: None,
+        lookup_gate_lookup_selector: None,
+        range_check_lookup_selector: None,
+        foreign_field_mul_lookup_selector: None,
+    };
+
+    let bulletproof = field(proof, "bulletproof")?;
+    let lr = as_vec(field(bulletproof, "lr")?)?
+        .iter()
+        .map(|pair| {
+            let pair = as_vec(pair)?;
+            if pair.len() != 2 {
+                return Err("bulletproof lr: expected [left, right]".to_string());
+            }
+            Ok((pallas(&pair[0])?, pallas(&pair[1])?))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if lr.len() != WRAP_IPA_ROUNDS {
+        return Err(alloc::format!(
+            "bulletproof lr: expected {WRAP_IPA_ROUNDS} rounds, got {}",
+            lr.len()
+        ));
+    }
+    let opening = OpeningProof {
+        lr,
+        delta: pallas(field(bulletproof, "delta")?)?,
+        z1: be_hex(field(bulletproof, "z_1")?)?,
+        z2: be_hex(field(bulletproof, "z_2")?)?,
+        sg: pallas(field(bulletproof, "challenge_polynomial_commitment")?)?,
+    };
+
+    let prev_challenges = as_vec(field(wire, "prevChallenges")?)?
+        .iter()
+        .map(|challenge| {
+            let chals = as_vec(field(challenge, "challenges")?)?
+                .iter()
+                .map(be_hex)
+                .collect::<Result<Vec<WrapField>, String>>()?;
+            if chals.len() != WRAP_IPA_ROUNDS {
+                return Err(alloc::format!(
+                    "previous challenge: expected {WRAP_IPA_ROUNDS} challenges, got {}",
+                    chals.len()
+                ));
+            }
+            Ok(RecursionChallenge {
+                chals,
+                comm: pallas_comm(field(challenge, "commitment")?)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if prev_challenges.len() != 2 {
+        return Err(alloc::format!(
+            "previous challenges: expected 2 padded accumulators, got {}",
+            prev_challenges.len()
+        ));
+    }
+
+    Ok(WrapProof {
+        commitments: ProverCommitments {
+            w_comm,
+            z_comm,
+            t_comm,
+            lookup: None,
+        },
+        proof: opening,
+        evals,
+        ft_eval1: be_hex(field(proof, "ft_eval1")?)?,
+        prev_challenges,
+    })
+}
+
+fn parse_ocaml_wrap_vk(wire: &Value) -> Result<WrapVerifierIndex, String> {
+    schema_v1(wire, "Pickles verification-key wire")?;
+    let max_proofs_verified = integer(field(wire, "maxProofsVerified")?, "maxProofsVerified")?;
+    let actual_wrap_domain_size =
+        integer(field(wire, "actualWrapDomainSize")?, "actualWrapDomainSize")?;
+    let wrap_domain_log2 = integer(field(wire, "wrapDomainLog2")?, "wrapDomainLog2")?;
+    if max_proofs_verified != 2 {
+        return Err(alloc::format!(
+            "verification key: expected maxProofsVerified 2, got {max_proofs_verified}"
+        ));
+    }
+    if actual_wrap_domain_size > 2 {
+        return Err("verification key: actualWrapDomainSize must be in 0..=2".to_string());
+    }
+    if wrap_domain_log2 != 13 + actual_wrap_domain_size {
+        return Err(alloc::format!(
+            "verification key: domain log2 {wrap_domain_log2} does not match actualWrapDomainSize {actual_wrap_domain_size}"
+        ));
+    }
+    let max_poly_size = integer(field(wire, "maxPolySize")?, "maxPolySize")?;
+    if max_poly_size != 1usize << WRAP_IPA_ROUNDS {
+        return Err(alloc::format!(
+            "verification key: expected maxPolySize {}, got {max_poly_size}",
+            1usize << WRAP_IPA_ROUNDS
+        ));
+    }
+    let public = integer(field(wire, "publicInputs")?, "publicInputs")?;
+    let prev_challenges = integer(field(wire, "prevChallenges")?, "prevChallenges")?;
+    if prev_challenges != 2 {
+        return Err(alloc::format!(
+            "verification key: expected 2 previous challenges, got {prev_challenges}"
+        ));
+    }
+    let zk_rows = integer(field(wire, "zkRows")?, "zkRows")? as u64;
+    if zk_rows != 3 {
+        return Err(alloc::format!(
+            "verification key: expected 3 zero-knowledge rows, got {zk_rows}"
+        ));
+    }
+
+    let commitments = field(wire, "commitments")?;
+    let sigma_comm = fixed_map::<_, 7>(
+        field(commitments, "sigmaComm")?,
+        "sigma commitments",
+        pallas_comm,
+    )?;
+    let coefficients_comm = fixed_map::<_, 15>(
+        field(commitments, "coefficientsComm")?,
+        "coefficient commitments",
+        pallas_comm,
+    )?;
+    let domain_size = 1usize
+        .checked_shl(wrap_domain_log2 as u32)
+        .ok_or_else(|| "verification key: domain size overflow".to_string())?;
+    let domain = Radix2EvaluationDomain::<WrapField>::new(domain_size)
+        .ok_or_else(|| "verification key: invalid radix-2 domain".to_string())?;
+    let shift = *permutation::Shifts::new(&domain).shifts();
+
+    Ok(WrapVerifierIndex {
+        domain,
+        max_poly_size,
+        zk_rows,
+        srs: Default::default(),
+        public,
+        prev_challenges,
+        sigma_comm,
+        coefficients_comm,
+        generic_comm: pallas_comm(field(commitments, "genericComm")?)?,
+        psm_comm: pallas_comm(field(commitments, "psmComm")?)?,
+        complete_add_comm: pallas_comm(field(commitments, "completeAddComm")?)?,
+        mul_comm: pallas_comm(field(commitments, "mulComm")?)?,
+        emul_comm: pallas_comm(field(commitments, "emulComm")?)?,
+        endomul_scalar_comm: pallas_comm(field(commitments, "endomulScalarComm")?)?,
+        range_check0_comm: None,
+        range_check1_comm: None,
+        foreign_field_add_comm: None,
+        foreign_field_mul_comm: None,
+        xor_comm: None,
+        rot_comm: None,
+        shift,
+        permutation_vanishing_polynomial_m: Default::default(),
+        w: Default::default(),
+        endo: WrapField::zero(),
+        lookup_index: None,
+        linearization: Default::default(),
+        powers_of_alpha: Default::default(),
+    })
 }
 
 /// `["N0"|"N1"|"N2"]` → the CONSTANT `to_bool_vec` mask.
@@ -457,11 +757,112 @@ impl OcamlProof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_ff::BigInteger;
 
     macro_rules! fixture {
         ($name:literal) => {
             include_str!(concat!("../../../fixtures/", $name))
         };
+    }
+
+    fn field_hex<F: PrimeField>(value: F) -> Value {
+        Value::String(alloc::format!(
+            "0x{}",
+            hex::encode(value.into_bigint().to_bytes_be())
+        ))
+    }
+
+    fn pallas_json(point: Pallas) -> Value {
+        serde_json::json!([field_hex(point.x), field_hex(point.y)])
+    }
+
+    fn pallas_comm_json(commitment: &PolyComm<Pallas>) -> Value {
+        assert_eq!(commitment.chunks.len(), 1);
+        pallas_json(commitment.chunks[0])
+    }
+
+    fn proof_wire(side_loaded_proof: Value, legacy: &WrapProof) -> Value {
+        let prev_challenges = legacy
+            .prev_challenges
+            .iter()
+            .map(|challenge| {
+                serde_json::json!({
+                    "challenges": challenge.chals.iter().copied().map(field_hex).collect::<Vec<_>>(),
+                    "commitment": pallas_comm_json(&challenge.comm),
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "schemaVersion": 1,
+            "proof": side_loaded_proof["proof"].clone(),
+            "prevChallenges": prev_challenges,
+        })
+    }
+
+    fn vk_wire(legacy: &WrapVerifierIndex) -> Value {
+        let domain_log2 = legacy.domain.size().ilog2() as usize;
+        let commitments =
+            |values: &[PolyComm<Pallas>]| values.iter().map(pallas_comm_json).collect::<Vec<_>>();
+        serde_json::json!({
+            "schemaVersion": 1,
+            "maxProofsVerified": 2,
+            "actualWrapDomainSize": domain_log2 - 13,
+            "wrapDomainLog2": domain_log2,
+            "maxPolySize": legacy.max_poly_size,
+            "publicInputs": legacy.public,
+            "prevChallenges": legacy.prev_challenges,
+            "zkRows": legacy.zk_rows,
+            "commitments": {
+                "sigmaComm": commitments(&legacy.sigma_comm),
+                "coefficientsComm": commitments(&legacy.coefficients_comm),
+                "genericComm": pallas_comm_json(&legacy.generic_comm),
+                "psmComm": pallas_comm_json(&legacy.psm_comm),
+                "completeAddComm": pallas_comm_json(&legacy.complete_add_comm),
+                "mulComm": pallas_comm_json(&legacy.mul_comm),
+                "emulComm": pallas_comm_json(&legacy.emul_comm),
+                "endomulScalarComm": pallas_comm_json(&legacy.endomul_scalar_comm),
+            },
+        })
+    }
+
+    #[test]
+    fn zeko_ocaml_wire_matches_legacy_kimchi_serde() {
+        let gateway: Value =
+            serde_json::from_str(fixture!("zeko-local-e2e/settlement.json")).unwrap();
+        let bundle = &gateway["proof"];
+
+        let legacy_proof = parse_wrap_proof(bundle["proofJson"].as_str().unwrap()).unwrap();
+        let side_loaded: Value =
+            serde_json::from_str(bundle["publicInputSkeletonJson"].as_str().unwrap()).unwrap();
+        let parsed_proof = parse_wrap_proof(&proof_wire(side_loaded, &legacy_proof).to_string())
+            .expect("OCaml proof wire");
+        assert_eq!(parsed_proof, legacy_proof);
+
+        let legacy_vk_json = bundle["vkJson"].as_str().unwrap();
+        let legacy_vk = parse_wrap_vk(legacy_vk_json).unwrap();
+        assert_eq!(
+            canonical_wrap_vk_json(&legacy_vk).unwrap(),
+            legacy_vk_json,
+            "canonicalization must preserve the deployed legacy VK identifier"
+        );
+        let parsed_vk = parse_wrap_vk(&vk_wire(&legacy_vk).to_string()).expect("OCaml VK wire");
+        assert_eq!(
+            canonical_wrap_vk_json(&parsed_vk).unwrap(),
+            canonical_wrap_vk_json(&legacy_vk).unwrap()
+        );
+    }
+
+    #[test]
+    fn zeko_ocaml_wire_rejects_invalid_curve_point() {
+        let gateway: Value =
+            serde_json::from_str(fixture!("zeko-local-e2e/settlement.json")).unwrap();
+        let bundle = &gateway["proof"];
+        let legacy = parse_wrap_proof(bundle["proofJson"].as_str().unwrap()).unwrap();
+        let side_loaded: Value =
+            serde_json::from_str(bundle["publicInputSkeletonJson"].as_str().unwrap()).unwrap();
+        let mut wire = proof_wire(side_loaded, &legacy);
+        wire["proof"]["commitments"]["z_comm"] = serde_json::json!(["0x01", "0x01"]);
+        assert!(parse_wrap_proof(&wire.to_string()).is_err());
     }
 
     #[test]

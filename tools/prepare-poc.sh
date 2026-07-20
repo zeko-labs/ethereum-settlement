@@ -130,7 +130,7 @@ export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
 )
 
 for repo in "$ROOT" "$ZEKO_ROOT" "$ZEKO_UI_ROOT"; do
-  [[ -d $repo/.git && -z $(git -C "$repo" status --porcelain) ]] || {
+  zeko_is_clean_checkout "$repo" || {
     echo "Source checkout must exist and be clean before manifest generation: $repo" >&2
     exit 1
   }

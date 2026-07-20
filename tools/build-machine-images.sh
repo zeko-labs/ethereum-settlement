@@ -33,7 +33,7 @@ for command in docker git jq; do
   }
 done
 for repo in "$ROOT" "$ZEKO_ROOT"; do
-  [[ -d $repo/.git && -z $(git -C "$repo" status --porcelain) ]] || {
+  zeko_is_clean_checkout "$repo" || {
     echo "Source checkout must be clean before building images: $repo" >&2
     exit 1
   }

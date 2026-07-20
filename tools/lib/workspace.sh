@@ -27,3 +27,15 @@ zeko_resolve_companion_repo() {
 
   printf -v "$variable" '%s' "$repo_path"
 }
+
+zeko_is_clean_checkout() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: zeko_is_clean_checkout <repo>" >&2
+    return 2
+  fi
+
+  local repo=$1
+  [[ -n $repo && -d $repo ]] || return 1
+  [[ $(git -C "$repo" rev-parse --is-inside-work-tree 2>/dev/null) == true && \
+     -z $(git -C "$repo" status --porcelain) ]]
+}

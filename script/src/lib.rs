@@ -3,7 +3,7 @@ use pickles_verifier::serialize::decode_verifier_blob;
 use pickles_verifier::types::{VerifiableProof, Verifier};
 use pickles_verifier::verify;
 use pickles_verifier::wire::{
-    parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk, OcamlProof,
+    canonical_wrap_vk_json, parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk, OcamlProof,
 };
 use serde::{Deserialize, Serialize};
 use sp1_core_executor::Program;
@@ -31,7 +31,7 @@ static NATIVE_SETTLEMENT_VK_HASH: &[u8; 32] =
 static NATIVE_SETTLEMENT_VK_JSON: &str =
     include_str!(concat!(env!("OUT_DIR"), "/native_settlement_vk.json"));
 static NATIVE_SETTLEMENT_VERIFIER: OnceLock<Verifier> = OnceLock::new();
-static NATIVE_SETTLEMENT_VK_VALUE: OnceLock<serde_json::Value> = OnceLock::new();
+static NATIVE_SETTLEMENT_VK_CANONICAL: OnceLock<String> = OnceLock::new();
 
 /// Execute without proving using the low-memory runner. SP1 SDK 6.1's execute
 /// wrapper can fail while extracting the public-value digest for this very
@@ -94,14 +94,17 @@ pub fn native_settlement_preflight(bundle: &SettlementProofBundle) -> Result<Vec
 }
 
 fn native_verify_settlement(bundle: &SettlementProofBundle) -> Result<VerifiableProof> {
-    let supplied_vk: serde_json::Value =
-        serde_json::from_str(&bundle.vk_json).context("parse settlement VK JSON")?;
-    let pinned_vk = NATIVE_SETTLEMENT_VK_VALUE.get_or_init(|| {
-        serde_json::from_str(NATIVE_SETTLEMENT_VK_JSON)
-            .expect("build-generated settlement VK JSON must parse")
+    let supplied_vk = parse_wrap_vk(&bundle.vk_json)
+        .map_err(anyhow::Error::msg)
+        .context("parse settlement VK JSON")?;
+    let supplied_vk = canonical_wrap_vk_json(&supplied_vk).map_err(anyhow::Error::msg)?;
+    let pinned_vk = NATIVE_SETTLEMENT_VK_CANONICAL.get_or_init(|| {
+        let vk = parse_wrap_vk(NATIVE_SETTLEMENT_VK_JSON)
+            .expect("build-generated settlement VK JSON must parse");
+        canonical_wrap_vk_json(&vk).expect("build-generated settlement VK must canonicalize")
     });
     anyhow::ensure!(
-        &supplied_vk == pinned_vk,
+        supplied_vk == *pinned_vk,
         "settlement VK does not match the pinned verifier"
     );
     let verifiable = load_verifiable_bundle(bundle)?;
@@ -159,8 +162,12 @@ fn load_verifiable(fixture_dir: &Path) -> Result<VerifiableProof> {
 }
 
 pub fn load_verifiable_bundle(bundle: &SettlementProofBundle) -> Result<VerifiableProof> {
-    let wrap_vk = parse_wrap_vk(&bundle.vk_json).context("parse vk JSON")?;
-    let wrap_proof = parse_wrap_proof(&bundle.proof_json).context("parse proof JSON")?;
+    let wrap_vk = parse_wrap_vk(&bundle.vk_json)
+        .map_err(anyhow::Error::msg)
+        .context("parse vk JSON")?;
+    let wrap_proof = parse_wrap_proof(&bundle.proof_json)
+        .map_err(anyhow::Error::msg)
+        .context("parse proof JSON")?;
     let ocaml = OcamlProof::parse(&bundle.public_input_skeleton_json)
         .map_err(anyhow::Error::msg)
         .context("parse public input skeleton JSON")?;

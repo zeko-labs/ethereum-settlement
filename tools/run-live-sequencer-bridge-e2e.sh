@@ -92,6 +92,11 @@ fi
 set -a
 source "$ENV_FILE"
 set +a
+# The testing ledger and the remote signer must hash zkApp commands in the
+# same Mina signature domain. Deployment environments already pin the signer
+# domain; carry it into both local clients unless the caller overrides either.
+export ZEKO_TEST_L1_NETWORK_ID=${ZEKO_TEST_L1_NETWORK_ID:-$MINA_SIGNING_NETWORK_ID}
+export ZEKO_TEST_L2_NETWORK_ID=${ZEKO_TEST_L2_NETWORK_ID:-$MINA_SIGNING_NETWORK_ID}
 
 rm -rf "$OUTPUT_DIR" "$LIVE_DIR"
 mkdir -p "$OUTPUT_DIR" "$LIVE_DIR"
@@ -229,6 +234,8 @@ jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
   cd "$ZEKO_UI_ROOT"
   LIVE_SEQUENCER_READY_FILE="$READY_FILE" \
     MINA_PRIVATE_KEY="$ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY" \
+    L1_NETWORK="$ZEKO_TEST_L1_NETWORK_ID" \
+    L2_NETWORK="$ZEKO_TEST_L2_NETWORK_ID" \
     ACTIONS_API_URL="http://127.0.0.1:$ACTIONS_API_PORT/graphql" \
     BRIDGE_ADDRESS="$BRIDGE_CONTRACT_ADDRESS" \
     DEPOSIT_AMOUNT_ZEKO="$(jq -er '.depositAmountZeko' "$OUTPUT_DIR/bridge-scenario.json")" \

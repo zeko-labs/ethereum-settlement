@@ -185,7 +185,20 @@ for _ in $(seq 1 30); do
 done
 docker exec "$POSTGRES_CONTAINER" pg_isready -U postgres -d zeko_proofs \
   >/dev/null
-docker exec "$POSTGRES_CONTAINER" createdb -U postgres actions
+for _ in $(seq 1 30); do
+  if docker exec "$POSTGRES_CONTAINER" createdb -U postgres actions \
+      >/dev/null 2>&1; then
+    break
+  fi
+  if docker exec "$POSTGRES_CONTAINER" psql -U postgres -d zeko_proofs \
+      -Atqc "SELECT 1 FROM pg_database WHERE datname = 'actions'" \
+      2>/dev/null | grep -qx 1; then
+    break
+  fi
+  sleep 1
+done
+docker exec "$POSTGRES_CONTAINER" psql -U postgres -d zeko_proofs \
+  -Atqc "SELECT 1 FROM pg_database WHERE datname = 'actions'" | grep -qx 1
 
 outer_public_key=$(jq -r '.outerAccountPublicKey' \
   "$FIXTURE_ROOT/deposit-sync/settlement.json")
