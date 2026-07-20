@@ -46,9 +46,10 @@ POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
 ```
 
 The fixture environment sets the 2400-slot validity period used with 12-second
-Sepolia slots and pins both circuits and signers to the exact Mina `testnet`
-domain required by Auro in this PoC. The export records the public keys and
-exact genesis ledger.
+Sepolia slots. The runtime profile also passes that 12-second duration to the
+sequencer so its computed commit range tracks the settlement contract. It pins
+both circuits and signers to the exact Mina `testnet` domain required by Auro
+in this PoC. The export records the public keys and exact genesis ledger.
 
 Populate `config/` as described in [config/README.md](config/README.md). The
 virtual Mina accounts file must include the outer account and settlement fee

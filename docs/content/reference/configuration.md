@@ -70,7 +70,9 @@ ZEKO_SIGNATURE_KIND=testnet
 
 and command-line values for gateway L1/archive URIs, three DA nodes/keys,
 quorum two, `--inner-sync-period 30`, and the proof-bound commit validity
-period.
+period. Set `--slot-duration` to the settlement contract's virtual slot
+duration; the Sepolia reference profile reads `ZEKO_SLOT_DURATION_SECONDS` and
+uses 12 seconds. Mina deployments retain the 180-second CLI default.
 
 The Ethereum reference profile sets `--commitment-period` from
 `ZEKO_COMMITMENT_PERIOD_SECONDS`, defaulting to 900 seconds. This changes only

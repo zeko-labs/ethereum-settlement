@@ -55,6 +55,10 @@ images_manifest="$DEPLOY_DIR/artifacts/images.json"
   echo "MINA_SIGNING_NETWORK_ID must be exactly testnet for the Auro PoC" >&2
   exit 1
 }
+[[ ${ZEKO_SLOT_DURATION_SECONDS:-} =~ ^[1-9][0-9]*$ ]] || {
+  echo "ZEKO_SLOT_DURATION_SECONDS must be a positive integer" >&2
+  exit 1
+}
 [[ ${ZEKO_UI_COMMIT:-} =~ ^[0-9a-f]{40}$ && -d ${ZEKO_UI_ROOT:-}/.git ]] || {
   echo "ZEKO_UI_ROOT and an exact ZEKO_UI_COMMIT are required" >&2
   exit 1
@@ -286,8 +290,13 @@ withdraw_vkey=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
 [[ $settlement_vkey == $(jq -r '.settlementProgramVkey | ascii_downcase' "$manifest") ]]
 [[ $bridge_vkey == $(jq -r '.bridgeProgramVkey | ascii_downcase' "$manifest") ]]
 [[ $withdraw_vkey == $(jq -r '.withdrawProgramVkey | ascii_downcase' "$manifest") ]]
-[[ $("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
-  'slotDuration()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}') == 12 ]]
+settlement_slot_duration=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
+  'slotDuration()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}')
+[[ $settlement_slot_duration == "$ZEKO_SLOT_DURATION_SECONDS" ]] || {
+  echo "Sequencer slot duration $ZEKO_SLOT_DURATION_SECONDS does not match" \
+    "settlement slot duration $settlement_slot_duration" >&2
+  exit 1
+}
 [[ $("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'withdrawalDelaySlots()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}') == 5 ]]
 

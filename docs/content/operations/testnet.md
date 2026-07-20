@@ -65,9 +65,10 @@ That retained environment fixes both OCaml chains and the external signer to
 Mina's exact `testnet` signing domain for Auro compatibility.
 
 The testnet scenario uses a 2400-slot commit validity period with 12-second
-Sepolia slots. It must export two chained settlements under one VK, three
-distinct DA keys, a synchronized native deposit, and one bound native
-withdrawal preimage.
+Sepolia slots. `ZEKO_SLOT_DURATION_SECONDS=12` keeps the sequencer's current
+slot calculation aligned with `ZekoSettlement.slotDuration`. It must export two
+chained settlements under one VK, three distinct DA keys, a synchronized native
+deposit, and one bound native withdrawal preimage.
 
 ## 4. Prepare and build immutable images
 

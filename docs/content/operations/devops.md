@@ -62,6 +62,7 @@ Mina values:
 | `--da-keys` | Exactly the three retained public keys |
 | `--da-quorum` | `2` |
 | `--commitment-period` | `${ZEKO_COMMITMENT_PERIOD_SECONDS:-900}` in the Ethereum reference profile; Mina defaults are unchanged |
+| `--slot-duration` | `${ZEKO_SLOT_DURATION_SECONDS:-12}` seconds; must match `ZekoSettlement.slotDuration` |
 | `--commit-validity-period` | `2400` slots |
 | circuit config | Exact file built with the final bridge proxy address |
 

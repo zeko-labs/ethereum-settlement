@@ -434,7 +434,9 @@ services:
           --mq-host rabbitmq:5672 --db-dir /data/db \
           --checkpoints-dir /data/checkpoints --postgres-uri "$$POSTGRES_URI" \
           --deposit-delay-blocks 0 --fee-modifier 1.0 --minimum-fee 0.01 \
-          --slot-acceptance 60 --commit-validity-period 2400 \
+          --slot-acceptance 60 \
+          --slot-duration ${ZEKO_SLOT_DURATION_SECONDS:-12} \
+          --commit-validity-period 2400 \
           --commit-fee 1 --bridge-txn-fee 0.1
     volumes:
       - sequencer:/data
