@@ -1,3 +1,3 @@
 [toolchain]
-channel = "stable"
-components = ["llvm-tools", "rustc-dev"]
+channel = "1.92"
+components = ["llvm-tools", "rustc-dev", "rustfmt", "clippy", "rust-analyzer"]

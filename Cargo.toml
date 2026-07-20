@@ -1,14 +1,37 @@
 [workspace]
 members = [
     "api",
+    "crates/pickles-verifier",
     "lib",
     "program/settlement",
     "program/bridge",
     "program/withdraw",
-    "script",
-    "tools/generate-srs"
+    "script"
+]
+exclude = [
+    "vendor/algebra/ec",
+    "vendor/algebra/ff",
+    "vendor/algebra/ff-asm",
+    "vendor/algebra/ff-macros",
+    "vendor/algebra/poly",
+    "vendor/algebra/serialize",
+    "vendor/algebra/serialize-derive",
+    "vendor/proof-systems/curves",
+    "vendor/proof-systems/groupmap",
+    "vendor/proof-systems/hasher",
+    "vendor/proof-systems/internal-tracing",
+    "vendor/proof-systems/kimchi",
+    "vendor/proof-systems/msm",
+    "vendor/proof-systems/poly-commitment",
+    "vendor/proof-systems/poseidon",
+    "vendor/proof-systems/utils",
 ]
 resolver = "2"
+
+[profile.release]
+lto            = "thin"
+codegen-units  = 1
+opt-level      = 3
 
 [workspace.dependencies]
 # ark
@@ -17,47 +40,46 @@ ark-ff          = { version = "0.5.0", features = ["std"] }
 ark-serialize   = { version = "0.5.0", features = ["std"] }
 ark-poly        = { version = "0.5.0", features = ["std"] }
 
-# proof-systems — zeko fork, branch sp1
-kimchi          = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-curves     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-hasher     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-poseidon   = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-signer     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-o1-utils        = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-poly-commitment = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-
-# mina-rust — zeko fork, branch sp1-msm
-mina-p2p-messages = { git = "https://github.com/zeko-labs/mina-rust", branch = "sp1-msm", default-features = false }
-mina-core         = { git = "https://github.com/zeko-labs/mina-rust", branch = "sp1-msm", default-features = false }
-mina-node-native  = { git = "https://github.com/zeko-labs/mina-rust", branch = "sp1-msm" }
-ledger            = { git = "https://github.com/zeko-labs/mina-rust", branch = "sp1-msm", package = "mina-tree", default-features = false }
+# proof-systems — local SP1 PoC patches
+kimchi          = { path = "vendor/proof-systems/kimchi" }
+mina-curves     = { path = "vendor/proof-systems/curves" }
+mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
+o1-utils        = { path = "vendor/proof-systems/utils" }
+poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
+groupmap        = { path = "vendor/proof-systems/groupmap" }
 
 # misc
 alloy-sol-types = "1.0"
 anyhow          = "1.0.81"
-base64          = "0.22"
 bincode         = "1.3.3"
 bytemuck        = "1"
 hex             = "0.4.3"
-juniper         = "0.17"
-rkyv            = { version = "0.8", features = ["alloc"] }
-rsexp           = "0.2.3"
 serde           = { version = "1", features = ["derive", "rc"] }
 serde_json      = "1.0.107"
 
 [patch."https://github.com/o1-labs/proof-systems"]
-kimchi          = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-curves     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-hasher     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-poseidon   = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-mina-signer     = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-o1-utils        = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
-poly-commitment = { git = "https://github.com/zeko-labs/proof-systems", branch = "sp1-msm" }
+kimchi          = { path = "vendor/proof-systems/kimchi" }
+mina-curves     = { path = "vendor/proof-systems/curves" }
+mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
+o1-utils        = { path = "vendor/proof-systems/utils" }
+poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
+
+[patch."https://github.com/zeko-labs/proof-systems"]
+kimchi          = { path = "vendor/proof-systems/kimchi" }
+mina-curves     = { path = "vendor/proof-systems/curves" }
+mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
+o1-utils        = { path = "vendor/proof-systems/utils" }
+poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
+
+[patch."https://github.com/zeko-labs/algebra"]
+ark-ff        = { path = "vendor/algebra/ff" }
+ark-ec        = { path = "vendor/algebra/ec" }
+ark-serialize = { path = "vendor/algebra/serialize" }
+ark-poly      = { path = "vendor/algebra/poly" }
 
 [patch.crates-io]
-core2 = { git = "https://github.com/bbqsrc/core2", rev = "545e84bcb0f235b12e21351e0c69767958efe2a7" }
 crypto-bigint = { git = "https://github.com/sp1-patches/RustCrypto-bigint", tag = "patch-0.5.5-sp1-6.0.0" }
-ark-ff        = { git = "https://github.com/zeko-labs/algebra", branch = "sp1-msm" }
-ark-ec        = { git = "https://github.com/zeko-labs/algebra", branch = "sp1-msm" }
-ark-serialize = { git = "https://github.com/zeko-labs/algebra", branch = "sp1-msm" }
-ark-poly      = { git = "https://github.com/zeko-labs/algebra", branch = "sp1-msm" }
+ark-ff        = { path = "vendor/algebra/ff" }
+ark-ec        = { path = "vendor/algebra/ec" }
+ark-serialize = { path = "vendor/algebra/serialize" }
+ark-poly      = { path = "vendor/algebra/poly" }

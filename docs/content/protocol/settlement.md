@@ -1,77 +1,107 @@
 # Settlement
 
-Settlement proves that a specific Zeko/o1 zkApp proof is valid and exposes the
-state transition encoded by its first account update.
+A settlement proves one genuine OCaml Zeko outer commit. The sequencer sends
+the same zkApp command shape it used against Mina, plus an Ethereum settlement
+export, to the gateway's Mina-compatible `sendZkapp` mutation.
 
-## Host preparation
+## 1. OCaml produces the authoritative transition
 
-The settlement host binary reads:
+The normal Zeko committer sequences the batch, writes it to 2-of-3 multisig
+DA, obtains the Pickles proof from the OCaml prover, and exports:
 
-- a base64-encoded Zeko verification key from `proofs/vk.txt`
-- a GraphQL zkApp command and proof from `proofs/graphql.txt`
+- wrap verifier-index JSON and proof JSON
+- complete Pickles public-input skeleton and two-field zkApp statement
+- canonical account-update body random-oracle input
+- the single eight-field outer `Commit` action
+- all eight source outer-state fields
+- the Mina tracking transaction hash and virtual account metadata
+- for V2, the exact ordered inner actions and available native-withdrawal
+  preimages
 
-The host derives the zkApp statement, computes deferred proof values, builds
-the verifier index, and serializes all required inputs for the SP1 guest.
+The gateway adds only live Ethereum context: chain ID, settlement address, next
+batch sequence, Mina tracking hash, and current outer action-state length. It
+does not supply a trusted next Zeko state.
 
-## Guest verification
+## 2. SP1 verifies and derives
 
-`program/settlement` performs the following work inside SP1:
+The settlement guest is built against the exact exported verifier index. It:
 
-1. Deserializes the verification key, o1 proof, zkApp statement, deferred
-   values, zkApp command, and verifier index.
-2. Binds the statement to the first account update by checking the
-   account-update digest and calls hash.
-3. Loads the embedded Pasta SRS from `srs_rkyv.bin`.
-4. Restores omitted verifier-index fields, including linearization data,
-   powers of alpha, and the endomorphism constant.
-5. Checks selected verifier-index commitments against the Zeko verification key.
-6. Reconstructs the Kimchi public inputs and verifies the o1 proof.
-7. Extracts app-state preconditions, app-state updates, and the action-state precondition.
-8. Commits the result as SP1 public values.
+1. verifies the Pickles accumulator and challenge-polynomial commitment
+2. reconstructs and checks deferred values
+3. reconstructs the wrap public input
+4. verifies the outer Kimchi proof
+5. recomputes the account-update body digest and compares it with the verified
+   application statement
+6. recomputes the action hash and decodes the proof-bound outer commit
+7. derives the next eight-field outer state, action states and lengths, synchronized
+   checkpoint, and slot range
+8. for V2, replays the exact inner actions to the proof-bound state and creates
+   the Keccak claim tree
 
-The guest aborts if Kimchi verification fails. A successfully verified SP1
-proof therefore always contains `proof_valid = true`.
+Mutating the application statement, deferred values, bulletproof challenges,
+accumulator point, feature flags, previous evaluations, body, or actions causes
+verification to fail.
 
-## Public values
+## 3. Versioned public values
 
-`ZkappPublicValues` is serialized in this order:
+The byte layouts are fixed and use big-endian integers.
 
-| Field | Meaning |
-| --- | --- |
-| `proof_valid` | Whether the Kimchi proof verified. |
-| `vk_hash` | Hash of the supplied Zeko verification key. |
-| `state_before[8]` | Checked app-state preconditions. Ignored slots become zero. |
-| `state_after[8]` | Explicit app-state updates. Kept slots become zero. |
-| `action_state_before` | Checked action-state precondition. An ignored precondition becomes zero. |
+| Receipt | Length | Contents |
+| --- | ---: | --- |
+| V1 (`ZKST`, version 1) | 768 bytes | Multisig DA mode, Ethereum domain, batch/VK/statement identifiers, state before/after, outer and synchronized action checkpoints, and slot bounds. |
+| V2 (`ZKST`, version 2) | 828 bytes | The V1 fields plus bridge address, depth-16 inner-action root, global start index, and action count. |
 
-::: warning Root slot semantics
-Only app-state slot `3` is interpreted as the rollup root by the Ethereum
-contract. The transition must explicitly constrain `state_before[3]` and set
-`state_after[3]`.
-:::
+The eight outer-state fields are the OCaml `Rollup_state.Outer_state` layout:
 
-## Ethereum checks
+| Index | Meaning |
+| ---: | --- |
+| 0 | Pause key |
+| 1 | Status / paused-emergency flags |
+| 2 | Ledger hash |
+| 3 | Inner action state |
+| 4 | Inner action-state length |
+| 5 | Sequencer key |
+| 6 | DA key or multisig identity |
+| 7 | Account-set commitment |
 
-`ZekoSettlement.sol` first asks the configured SP1 verifier to verify the proof
-under `programVKey`. It then checks:
+The PoC `vkHash` is SHA-256 of the exact verifier-index JSON embedded in the
+guest. This is an artifact-identity check, not the production canonical Mina
+verification-key hash.
 
-```text
-publicValues.proof_valid           == true
-publicValues.vk_hash               == vkHash
-publicValues.action_state_before   == actionState
-publicValues.state_before[3]       == currentRoot
-```
+## 4. Ethereum acceptance
 
-If all checks pass:
+`ZekoSettlement.verifyAndUpdateRoot` first verifies the SP1 proof under the
+configured program vkey. It then requires:
 
-```text
-currentRoot = publicValues.state_after[3]
-```
+- multisig DA mode, current chain ID, and its own proxy address
+- exactly the next batch sequence and configured Pickles VK identifier
+- exact equality of all eight stored source-state fields
+- exact outer action state and length continuity
+- one new outer commit action
+- a known synchronized outer checkpoint whose length does not exceed the
+  available outer action length
+- a valid slot interval containing the contract's virtual Mina slot
 
-The contract also records the accepted `action_state_before` as an indexed L2
-action-state checkpoint. Withdrawal transitions use these checkpoints.
+On success it stores the complete next outer state, records the new outer and
+inner checkpoints, and emits `SettlementAccepted`.
 
-::: info Action state administration
-Settlement does not derive or advance `actionState` from the proof. An account
-with `ADMIN_ROLE` updates it through `setActionState`.
-:::
+For V2 it additionally checks the configured bridge address and that the inner
+action count equals the proof-bound length delta. The root is stored under the
+accepted settlement sequence and cannot be installed independently from that
+settlement.
+
+## 5. Gateway lifecycle
+
+Every testnet settlement is first verified natively against the same baked
+Pickles verifier used by the guest, and its receipt is produced by the shared
+derivation code. In approval mode it pauses at `awaiting_approval`; only an
+operator-approved digest and per-job cost caps may proceed to the Succinct
+Network. With the required PGU cap, the network request skips redundant zkVM
+simulation. The resulting Groth16 proof is submitted and held in `submitted`
+until its receipt block reaches Ethereum consensus finality.
+
+Confirmed state updates the gateway's virtual Mina account, action, pending
+pool, and best-chain views. A reorg restores their prior snapshots and reuses
+the existing proof request.
+
+See [proof jobs and approval](/gateway/proving) for the paid boundary.

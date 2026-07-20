@@ -1,55 +1,64 @@
 # Overview
 
-Zeko Ethereum L2 uses SP1 proofs to connect Zeko state transitions with
-Ethereum contracts.
+This repository is the Ethereum settlement and bridge glue for Zeko. It does
+not reimplement Zeko in Rust or Solidity. The OCaml Zeko repository remains the
+source of ledger, transaction, proving, action-state, bridge, and rollup
+state-transition semantics.
 
-The project contains three independent SP1 programs:
+The current milestone is a **Sepolia proof of concept with the existing 2-of-3
+multisig DA path**. EIP-4844 blobs are intentionally deferred. A production
+Ethereum design is expected to replace the committee DA path with blob-backed
+batch data.
 
-| Program | Direction | Purpose |
-| --- | --- | --- |
-| `program/settlement` | Zeko to Ethereum | Verifies a Zeko/o1 zkApp proof and exposes the rollup root transition. |
-| `program/bridge` | Ethereum to Zeko | Replays an ordered batch of Ethereum deposits and computes the matching Zeko action-state transition. |
-| `program/withdraw` | Zeko to Ethereum | Replays an ordered batch of Zeko withdrawal actions and computes the matching Ethereum withdrawal accumulator. |
+## What runs where
 
-The SP1 programs perform expensive proof verification and hashing off-chain.
-The Ethereum contracts verify succinct SP1 proofs and enforce continuity
-against state already stored on Ethereum.
+| Layer | Responsibility |
+| --- | --- |
+| OCaml Zeko | Sequences transactions, stores batches through multisig DA, produces Pickles proofs, and exports proof-bound settlement/bridge data. |
+| Gateway | Implements the Mina GraphQL subset used by the sequencer, natively verifies settlement Pickles proofs, executes the smaller guests locally, obtains approved network proofs, submits Ethereum transactions, and indexes canonical Ethereum state. |
+| SP1 settlement guest | Verifies the full Pickles proof and derives the Zeko outer-state receipt and optional inner-action claim tree. |
+| SP1 bridge guest | Replays finalized native ETH deposits into exact Zeko outer Witness actions and Poseidon checkpoints. |
+| Ethereum contracts | Hold ETH, verify SP1 proofs, enforce state continuity and slot bounds, record checkpoints, and release delayed Merkle claims. |
+| Succinct Network | Produces EVM-compatible Groth16 proofs after explicit operator approval. |
 
-## Repository layout
+## End-to-end paths
+
+Normal settlement:
+
+```text
+transaction -> sequencer -> 2-of-3 DA -> OCaml prover -> Pickles commit
+  -> gateway GraphQL -> pinned native verification -> operator approval
+  -> Succinct proof -> ZekoSettlement -> confirmed virtual Mina state
+```
+
+Native bridge:
+
+```text
+Ethereum deposit -> finalized BridgeDeposit log -> bridge SP1 proof
+  -> exact outer Witness action -> later OCaml settlement synchronizes deposit
+
+OCaml inner withdrawal action -> settlement SP1 Keccak tree
+  -> accepted settlement -> gateway Merkle path -> delayed ETH claim
+```
+
+The user does not generate a SNARK for withdrawal. The expensive binding is
+performed once by the settlement prover; the user submits a fixed-depth
+Keccak Merkle path to Ethereum.
+
+## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `program/settlement` | Settlement SP1 guest program. |
-| `program/bridge` | Deposit bridge SP1 guest program. |
-| `program/withdraw` | Withdrawal SP1 guest program. |
-| `lib` | Shared Rust input and output types. |
-| `script` | Host-side execution and proof-generation binaries. |
-| `contracts/src/ZekoSettlement.sol` | Ethereum settlement verifier and action-state checkpoint registry. |
-| `contracts/src/EthereumZekoBridge.sol` | Ethereum deposit, transition-verification, and withdrawal contract. |
+| `program/settlement` | SP1 guest for Pickles verification and settlement receipts. |
+| `program/bridge` | SP1 guest for canonical native-deposit batches. |
+| `program/withdraw` | Legacy compatibility guest; disabled in the current native PoC. |
+| `crates/pickles-verifier` | o1 `o1js-to-zkvm` Pickles verifier adapted to SP1. |
+| `lib` | Shared, versioned host/guest public-value and witness types. |
+| `api` | Gateway, Mina GraphQL façade, proof worker, and Ethereum indexer. |
+| `contracts` | Upgradeable settlement and bridge contracts plus deployment scripts. |
+| `deploy/testnet` | Persistent, pinned Compose reference profile for Sepolia. |
+| `tools` | Artifact preparation, OCaml export, preflight, and local E2E scripts. |
 
-## Verification paths
-
-### Settlement
-
-The settlement path verifies a Zeko/o1 Kimchi proof inside SP1. Ethereum then
-checks that the extracted verification-key hash, action-state precondition, and
-root transition match its stored state.
-
-[Read the settlement flow →](/protocol/settlement)
-
-### Deposit bridge
-
-The deposit path replays an ordered range of Ethereum deposits, updates the
-deposit accumulator, and computes the Zeko actions that represent those
-deposits.
-
-[Read the deposit bridge flow →](/protocol/deposit-bridge)
-
-### Withdrawals
-
-The withdrawal path replays Zeko withdrawal actions, computes an Ethereum
-withdrawal accumulator and fixed-depth Merkle root, and permits compact Merkle
-claims only after the transition is linked to consecutive settlement-recorded
-action checkpoints.
-
-[Read the withdrawal flow →](/protocol/withdrawals)
+Start with [current status](/status) before using the deployment runbook. The
+PoC has a complete local path, but a retained release identity and live
+Sepolia proof run are still operational launch work.

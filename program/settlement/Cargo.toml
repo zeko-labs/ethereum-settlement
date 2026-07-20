@@ -4,28 +4,18 @@ name = "settlement-program"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm          = "6.1.0"
-
-ark-serialize     = { workspace = true }
-ledger            = { workspace = true, default-features = false }
-mina-core         = { workspace = true, default-features = false }
-mina-curves       = { workspace = true, default-features = false  }
-mina-p2p-messages = { workspace = true, default-features = false }
-ark-ff            = { workspace = true }
-serde             = { workspace = true }
-zeko_sp1_lib      = { path = "../../lib" }
-kimchi            = { workspace = true, features =[] }
-mina-poseidon     = { workspace = true, features =[] }
-poly-commitment   = { workspace = true }
-bincode = { workspace = true }
-rkyv = { workspace = true }
-bytemuck = { workspace = true }
-
-[profile.release]
-lto            = "thin"
-codegen-units  = 1
-opt-level      = 3
+sp1-zkvm = "6.1.0"
+pickles-verifier = { path = "../../crates/pickles-verifier", default-features = false }
+zeko_sp1_lib = { path = "../../lib" }
+ark-ff = { workspace = true }
+mina-poseidon = { workspace = true }
+alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
-sp1-lib  = "6.1.0"
-bytemuck = "1"
+sp1-lib = "6.1.0"
+
+[build-dependencies]
+mina-curves = { workspace = true }
+pickles-verifier = { path = "../../crates/pickles-verifier" }
+poly-commitment = { workspace = true }
+sha2 = "0.10"

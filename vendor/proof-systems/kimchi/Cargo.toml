@@ -1,0 +1,98 @@
+[package]
+name = "kimchi"
+description = "The kimchi proof system"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+bench = false       # needed for criterion (https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options)
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
+
+[dependencies]
+ark-bn254 = { workspace = true, optional = true }
+ark-ec.workspace = true
+ark-ff.workspace = true
+ark-poly.workspace = true
+ark-serialize.workspace = true
+blake2.workspace = true
+hex.workspace = true
+itertools.workspace = true
+log.workspace = true
+num-bigint.workspace = true
+num-integer.workspace = true
+once_cell.workspace = true
+rand = { workspace = true, features = ["std_rng"] }
+rand_core.workspace = true
+rayon.workspace = true
+rmp-serde.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+strum.workspace = true
+strum_macros.workspace = true
+thiserror.workspace = true
+
+ocaml = { workspace = true, optional = true }
+ocaml-gen = { workspace = true, optional = true }
+
+wasm-bindgen = { workspace = true, optional = true }
+
+internal-tracing.workspace = true
+
+# Internal dependencies
+groupmap.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+o1-utils.workspace = true
+poly-commitment.workspace = true
+
+
+[dev-dependencies]
+proptest.workspace = true
+proptest-derive.workspace = true
+serde_json.workspace = true
+num-bigint.workspace = true
+secp256k1.workspace = true
+
+# benchmarks
+criterion.workspace = true
+iai.workspace = true
+
+[[bench]]
+name = "proof_criterion"
+harness = false
+
+[[bench]]
+name = "proof_criterion_mina"
+harness = false
+
+[[bench]]
+name = "proof_iai"
+harness = false
+
+[[bench]]
+name = "amortization"
+harness = false
+
+[features]
+default = []
+internal_tracing = ["internal-tracing/enabled"]
+ocaml_types = [
+  "ocaml",
+  "ocaml-gen",
+  "poly-commitment/ocaml_types",
+  "mina-poseidon/ocaml_types",
+  "internal-tracing/ocaml_types",
+]
+bn254 = ["ark-bn254"]
+wasm_types = ["wasm-bindgen"]
+check_feature_flags = []
+diagnostics = ["tikv-jemalloc-ctl", "tikv-jemallocator"]

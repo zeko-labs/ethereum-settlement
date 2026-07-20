@@ -1,0 +1,27 @@
+[package]
+name = "kimchi-visu"
+description = "A tool to visualize circuits in HTML"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ark-ec.workspace = true
+ark-ff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+tinytemplate.workspace = true
+
+kimchi.workspace = true
+mina-curves.workspace = true
+mina-poseidon.workspace = true
+o1-utils.workspace = true
+poly-commitment.workspace = true

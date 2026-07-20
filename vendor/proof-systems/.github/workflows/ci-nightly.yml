@@ -1,0 +1,91 @@
+#
+# This workflow is triggered by scheduler or on-demand to run all the tests with
+# the code coverage enabled and using the self-hosted GitHub runner.
+# Test coverage report is attached to the current job execution results in a
+# form of Zip archive.
+#
+
+name: Nightly tests with the code coverage
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # every day at midnight
+  workflow_dispatch: {}
+
+env:
+  # https://doc.rust-lang.org/cargo/reference/profiles.html#release
+  RUSTFLAGS: -Coverflow-checks=y -Cdebug-assertions=y
+  # https://doc.rust-lang.org/cargo/reference/profiles.html#incremental
+  CARGO_INCREMENTAL: 1
+  # https://nexte.st/book/pre-built-binaries.html#using-nextest-in-github-actions
+  CARGO_TERM_COLOR: always
+  # 30 MB of stack for Keccak tests
+  RUST_MIN_STACK: 31457280
+
+jobs:
+  run_tests:
+    name: Run all tests with the code coverage
+    runs-on: hetzner-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Load versions
+        id: versions
+        uses: ./.github/actions/load-versions
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ steps.versions.outputs.rust-msrv }}
+
+      # FIXME: currently not available for 5.0.0.
+      # It might be related to boxroot dependency, and we would need
+      # to bump up the ocaml-rs dependency
+      - name: Use shared OCaml setting up steps
+        uses: ./.github/actions/ocaml-shared
+        with:
+          ocaml_version: ${{ steps.versions.outputs.ocaml-version }}
+
+      - name: Install test dependencies
+        run: |
+          make install-test-deps
+
+      - name: Build the MIPS binaries
+        uses: ./.github/actions/build-mips
+
+      - name: Run all tests with the code coverage
+        run: |
+          eval $(opam env)
+          make nextest-all-with-coverage
+          make test-doc-with-coverage
+          make generate-test-coverage-report
+
+      - name: Use shared code coverage summary
+        uses: ./.github/actions/coverage-summary-shared
+
+      - name: Upload the HTML test coverage report
+        uses: actions/upload-artifact@v6
+        continue-on-error: true
+        if: always()
+        with:
+          if-no-files-found: ignore
+          name: test-coverage-html-report
+          path: target/coverage/
+          retention-days: 30
+
+      - name: Post a message in slack channel if failing
+        if: ${{ failure() }}
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Nightly tests failed:\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "Nightly tests failed:\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

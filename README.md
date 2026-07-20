@@ -48,13 +48,16 @@ other branches create preview deployments.
 
 | Path | Purpose |
 | --- | --- |
-| `program/settlement` | SP1 guest program that verifies a Zeko/o1 proof and extracts canonical settlement public values. |
+| `program/settlement` | SP1 guest program that verifies a Pickles proof using the o1 `pickles-verifier` path and emits settlement public values. |
 | `program/bridge` | SP1 guest program that verifies bridge deposits and computes Ethereum/Zeko deposit accumulator transitions. |
 | `program/withdraw` | SP1 guest program that verifies bridge withdrawals and computes Ethereum/Zeko withdrawal-state transitions. |
 | `lib` | Shared Rust input/output types used by guests and host scripts. |
 | `script` | Host-side proof generation and execution binaries. |
+| `crates/pickles-verifier` | o1 reference Pickles verifier adapted for this workspace. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side bridge contract that records deposits and accepts withdraw states. |
+| `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
+| `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
 | `proofs/bridge-input.json` | Example bridge input fixture. |
 | `proofs/bridge-input-200.json` | Bridge input fixture with 200 deposits. |
@@ -76,30 +79,57 @@ The initializer grants all four roles to the initial admin. Proof submission is 
 
 ## Settlement Circuit
 
-The settlement program in `program/settlement` verifies a Zeko/o1 proof inside SP1.
+The settlement program in `program/settlement` verifies a Mina/Pickles proof
+inside SP1 using the o1 `o1js-to-zkvm` verifier design.
 
 At a high level it:
 
-1. Reads the Zeko verification key, o1 proof, zkApp statement, zkApp command, deferred values, and verifier index.
-2. Rebuilds the verifier index with the embedded SRS.
-3. Checks that the zkApp command is bound to the statement being verified.
-4. Runs Kimchi verification for the supplied proof.
-5. Extracts public values from the first account update:
-   - proof validity flag
-   - verification-key hash
-   - zkApp state before
-   - zkApp state after
-   - action state before
-6. Commits those public values as SP1 public output.
+1. Builds a verifier blob at compile time from the verification key at
+   `proofs/mainnet-blockchain-snark/vk.serde.json` or `SETTLEMENT_VK_JSON`.
+   Both the versioned compact Zeko wire and legacy Kimchi-serde format are
+   accepted.
+2. Host code reads a Zeko proof bundle, or a legacy o1 fixture directory
+   containing:
+   - `vk.serde.json`
+   - `proof.serde.json`
+   - `public_input_skeleton.json`
+   - `app_statement.json`
+3. Host code reconstructs native Kimchi proof/VK values from Zeko's
+   OCaml-owned wire, or directly reads the legacy serde fixtures, then builds a
+   `VerifiableProof`.
+4. The SP1 guest verifies:
+   - Pickles accumulator / challenge polynomial commitment
+   - deferred value reconstruction
+   - wrap public input reconstruction
+   - outer Kimchi proof
+5. For a real Zeko export, the guest recomputes the account-update body digest,
+   checks it against the verified two-field zkApp statement, recomputes the
+   action hash, and decodes the fixed eight-field outer `Commit` action.
+6. The guest derives and emits the versioned 768-byte settlement receipt. A
+   fixture-only compatibility mode still emits the old 577-byte output so the
+   copied o1 fixtures can be executed without pretending they are Zeko commits.
 
-On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the public output matches the verifier contract's tracked state:
+The V1 receipt contains the complete eight-field outer state, current and
+synchronized outer action states and lengths, inner action state and length,
+slot range, Ethereum domain, batch sequence, and Mina transaction tracking
+hash. The Ethereum domain values are supplied by the gateway and checked by
+Solidity; the state transition is derived from data committed by Pickles.
 
-- `vkHash` must match the expected Zeko verification key hash.
-- `actionStateBefore` must match the verifier's stored action state.
-- `stateBefore[3]` must match the verifier's current root.
-- `stateAfter[3]` becomes the new root.
+The PoC VK identifier remains SHA-256 over the exact verifier-index JSON baked
+into the guest. A production deployment must switch this to the canonical
+OCaml/Mina verification-key hash.
 
-This contract currently updates the settlement root. It stores action state as a guard input but does not derive a new action state from the settlement proof output.
+On Ethereum, `ZekoSettlement.sol` verifies the SP1 proof and checks that the
+public output matches the verifier contract's tracked state:
+
+- chain ID, settlement address, batch sequence and VK hash must match L1;
+- all eight source state fields and the outer action state/length must match;
+- the action length must increment exactly once and the synchronized length may
+  not exceed the committed outer length;
+- the virtual Mina slot must be inside the proved commit range.
+
+On acceptance it stores the complete next outer state and records the accepted
+inner action state for bridge consumers.
 
 ## Bridge Circuit
 
@@ -134,27 +164,66 @@ keccak256(
 )
 ```
 
-5. Computes the Zeko deposit action:
+5. Computes the native Ethereum deposit aux value:
 
 ```text
-Poseidon.hashWithPrefix("Deposit_params - qFB3jXP*)", [
-  Field(0),
-  holderAccountL1,
+Poseidon.hashWithPrefix("Ethereum deposit V1", [
+  emptyCallForest,
+  bridgeAddress.x,
+  false,
   zekoAmount,
   recipient.x,
   recipient.isOdd,
-  timeout
+  UInt32.max
 ])
 ```
 
-6. Adds that action to the Zeko action-state sequence using the same Poseidon update semantics as o1js.
+6. Emits the exact five-field outer Witness action
+   `[1, aux, 0, 0, UInt32.max]`, then adds it to the Zeko action-state sequence
+   using Mina Poseidon semantics.
 
 The bridge public output includes:
 
 - Ethereum deposit state before/after
 - Ethereum nonce before/after
 - Zeko action state before/after
-- deposit count
+- Zeko action-state length before/after
+- every exact five-field action and its intermediate action-state checkpoint
+
+The native path accepts ETH only, requires 1 gwei granularity, fixes the timeout
+to `UInt32.max`, and rejects an empty batch. Arbitrary-timeout and ERC20 deposit
+entry points are disabled by default because the current OCaml PoC cannot safely
+consume or cancel them.
+
+## Native Bridge PoC
+
+Settlement public values V2 bind the exact ordered inner actions to the
+proof-verified inner action-state transition. SP1 emits a depth-16 Keccak root,
+the global start index, count, bridge address, and the normal settlement
+receipt. Solidity records that root only while accepting the corresponding
+settlement transition. A native withdrawal claim supplies an ordinary Merkle
+proof, amount, recipient, and action-fields hash; it does not require the user
+to generate a SNARK.
+
+The OCaml Ethereum deposit rule recognizes one additional synthetic holder key:
+`x = uint160(EthereumZekoBridge)` and `is_odd = false`. Its circuit configuration
+must contain the exact final bridge proxy address before the OCaml bridge VK and
+SP1 ELF are built. Use a predetermined deployment address (for example CREATE2)
+or deploy the proxy first, then build the circuit artifacts against it.
+
+Run the contract/glue checkpoint locally:
+
+```sh
+cd contracts
+forge test --match-path test/NativeBridgePocE2E.t.sol -vv
+```
+
+This locks native ETH, imports the deposit as an exact outer Witness action,
+accepts a later settlement that synchronizes that checkpoint and binds an inner
+withdrawal tree, enforces the configured delay, and releases ETH with a Merkle
+claim. The test uses a mock SP1 verifier at the contract boundary; Rust guest
+tests and OCaml cross-language vectors cover the two proof-side encodings
+without generating an SP1 proof.
 
 ## Withdraw Circuit
 
@@ -210,10 +279,10 @@ The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatch
 
 ## Testing
 
-Run the settlement unit tests (BE endianness of field encoding, state slot extraction):
+Run the native o1 Pickles verifier tests over the copied fixture matrix:
 
 ```sh
-cargo test --manifest-path program/settlement/Cargo.toml
+cargo test -p pickles-verifier
 ```
 
 Run the bridge unit tests (includes real on-chain data replay against testnet state):
@@ -228,20 +297,23 @@ Run the withdraw unit tests (same real L2 inner-action data):
 cargo test --manifest-path program/withdraw/Cargo.toml
 ```
 
-Run a specific test:
+Run the settlement receipt binding tests:
 
 ```sh
-cargo test --manifest-path program/settlement/Cargo.toml fq_to_bytes
+cargo test -p settlement-program
+```
+
+Run specific bridge/withdraw tests:
+
+```sh
 cargo test --manifest-path program/bridge/Cargo.toml real_l1_outer_witness
 cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
 cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
 ```
 
-The real-data tests replay on-chain state transitions from:
+The real-data bridge tests replay on-chain state transitions from:
 - L2 inner actions (withdrawals): `https://testnet.zeko.io/graphql` — contract `B62qjDedeP9617oTUeN8JGhdiqWg4t64NtQkHaoZB9wyvgSjAyupPU1`
 - L1 outer witness actions (deposits): `https://testnet.api.actions.zeko.io/graphql` — contract `B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2`
-
-See [`proofs/queries.md`](proofs/queries.md) for the exact GraphQL queries and the full state-transition tables.
 
 ## Running Circuits Without Proving
 
@@ -249,6 +321,12 @@ Execute the settlement program without proving:
 
 ```sh
 cargo run --release --bin zkapp -- --execute
+```
+
+Use a different o1 fixture directory:
+
+```sh
+cargo run --release --bin zkapp -- --execute --fixture-dir fixtures/nrr
 ```
 
 Execute the bridge program without proving:
@@ -296,11 +374,16 @@ deposit_count     : 3
 
 The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
 checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
-Network, simulates contract submission, and broadcasts valid transactions.
+Network, simulates contract submission, and broadcasts valid transactions. Its
+native deposit endpoint derives proof input from canonical finalized Ethereum
+logs, and its public withdrawal endpoint serves settlement-bound Keccak paths.
 
 It can run with Docker Compose using a read-only environment-file mount and a
 persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and
 [`.env.api.example`](.env.api.example).
+
+For the multisig-DA testnet architecture and deployment order, see
+[`TESTNET_POC.md`](TESTNET_POC.md).
 
 ## Generating Proofs
 
@@ -316,20 +399,30 @@ Generate a PLONK proof:
 cargo run --release --bin evm -- --system plonk
 ```
 
+Use a different settlement fixture:
+
+```sh
+cargo run --release --bin evm -- --system groth16 --fixture-dir fixtures/nrr
+```
+
 Retrieve the settlement program verification key:
 
 ```sh
 cargo run --release --bin vkey
 ```
 
-To use the [Succinct Prover Network](https://docs.succinct.xyz/docs/network/introduction) instead of local proving:
+To read the current network fee parameters and calculate a maximum-cost bound
+without registering a program or requesting a proof:
 
 ```sh
-cp .env.example .env
-# set SP1_PROVER=network and NETWORK_PRIVATE_KEY in .env
-SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release --bin evm
+cargo run --release --bin network_quote -- --proof-system groth16
+# After SP1 simulation reports a PGU value:
+cargo run --release --bin network_quote -- --proof-system groth16 --pgu <pgu>
 ```
 
-A Groth16 proof for a Zeko rollup command takes under 5 minutes on the prover network (~1.1 PROVE tokens as of May 2025).
-
-[Example request](https://explorer.succinct.xyz/request/0x67eecb92c7ed781f06271e661bcf49543eb2f555a98f80745e266e23d79b0b8a)
+The optional total is an upper bound (`base fee + PGU × current maximum
+price`). Raw executor cycles are not a substitute for network PGU; use the
+value returned by SP1 simulation or a proof request. Actual auction cost can be
+lower. No static PROVE estimate is kept in the repository because the market
+price changes. The command only reads auction parameters and never requests a
+proof.

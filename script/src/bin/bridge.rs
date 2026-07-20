@@ -16,7 +16,7 @@ use sp1_sdk::{
     include_elf, Elf, HashableKey, ProvingKey, SP1Stdin,
 };
 use std::time::Instant;
-use zeko_sp1_lib::{BridgeTransitionInput, BridgeTransitionPublicValues};
+use zeko_sp1_lib::{BridgeTransitionInput, BridgeTransitionPublicValuesV2};
 
 pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
 
@@ -58,8 +58,8 @@ fn main() {
             .run()
             .expect("execution failed");
 
-        let public_values: BridgeTransitionPublicValues =
-            bincode::deserialize(output.as_slice()).expect("decode public values");
+        let public_values = BridgeTransitionPublicValuesV2::decode(output.as_slice())
+            .expect("decode public values");
 
         println!("✓ Bridge program executed successfully");
         println!("  cycles   : {}", report.total_instruction_count());
@@ -88,7 +88,7 @@ fn main() {
             "  nonce_after          : {}",
             public_values.ethereum_nonce_after
         );
-        println!("  deposit_count        : {}", public_values.deposit_count);
+        println!("  deposit_count        : {}", public_values.deposit_count());
     } else {
         let pk = client.setup(BRIDGE_ELF).expect("failed to setup ELF");
 
@@ -102,8 +102,8 @@ fn main() {
             .verify(&proof, pk.verifying_key(), None)
             .expect("verify failed");
 
-        let public_values: BridgeTransitionPublicValues =
-            bincode::deserialize(proof.public_values.as_slice()).expect("decode public values");
+        let public_values = BridgeTransitionPublicValuesV2::decode(proof.public_values.as_slice())
+            .expect("decode public values");
 
         println!("Program Verification Key: {}", pk.verifying_key().bytes32());
         println!(

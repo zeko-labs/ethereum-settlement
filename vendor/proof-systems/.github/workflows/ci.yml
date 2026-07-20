@@ -1,0 +1,328 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  # Trigger after nightly runs to rebuild the cache
+  workflow_run:
+    workflows: [Nightly tests with the code coverage]
+    types: [completed]
+  pull_request:
+  merge_group:
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # https://doc.rust-lang.org/cargo/reference/profiles.html#release
+  RUSTFLAGS: -Coverflow-checks=y -Cdebug-assertions=y
+  # https://doc.rust-lang.org/cargo/reference/profiles.html#incremental
+  CARGO_INCREMENTAL: 1
+  # https://nexte.st/book/pre-built-binaries.html#using-nextest-in-github-actions
+  CARGO_TERM_COLOR: always
+  # 30 MB of stack for Keccak tests
+  RUST_MIN_STACK: 31457280
+  CARGO_EXTRA_ARGS: '--workspace'
+
+jobs:
+  define-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      rust_msrv: ${{ steps.versions.outputs.rust-msrv }}
+      rust_stable: ${{ steps.versions.outputs.rust-stable }}
+      ocaml_version: '["${{ steps.versions.outputs.ocaml-version }}"]'
+      node: '["${{ steps.versions.outputs.node-version }}"]'
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github
+
+      - name: Load versions
+        id: versions
+        uses: ./.github/actions/load-versions
+
+      - id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          RUST_MSRV: ${{ steps.versions.outputs.rust-msrv }}
+          RUST_STABLE: ${{ steps.versions.outputs.rust-stable }}
+          RUST_BETA: ${{ steps.versions.outputs.rust-beta }}
+        run: |
+          # Build matrix: msrv/stable/beta for Ubuntu,
+          # stable/beta for macOS.
+          # Skip macOS on PRs to improve CI velocity (macOS
+          # runners are limited). macOS runs on master pushes
+          # only.
+          if [[ "$EVENT_NAME" == "push" \
+                && "$REF" == "refs/heads/master" ]]; then
+            VALUE=$(jq -nc \
+              --arg msrv "$RUST_MSRV" \
+              --arg stable "$RUST_STABLE" \
+              --arg beta "$RUST_BETA" \
+              '{include: [
+                {rust_toolchain_version: $msrv,
+                 os: "ubuntu-latest"},
+                {rust_toolchain_version: $stable,
+                 os: "ubuntu-latest"},
+                {rust_toolchain_version: $beta,
+                 os: "ubuntu-latest"},
+                {rust_toolchain_version: $msrv,
+                 os: "macos-latest"},
+                {rust_toolchain_version: $stable,
+                 os: "macos-latest"},
+                {rust_toolchain_version: $beta,
+                 os: "macos-latest"}
+              ]}')
+          else
+            VALUE=$(jq -nc \
+              --arg msrv "$RUST_MSRV" \
+              --arg stable "$RUST_STABLE" \
+              --arg beta "$RUST_BETA" \
+              '{include: [
+                {rust_toolchain_version: $msrv,
+                 os: "ubuntu-latest"},
+                {rust_toolchain_version: $stable,
+                 os: "ubuntu-latest"},
+                {rust_toolchain_version: $beta,
+                 os: "ubuntu-latest"}
+              ]}')
+          fi
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+
+  refresh-cache:
+    needs: ['define-matrix']
+    strategy:
+      matrix: ${{ fromJSON(needs.define-matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      # if 'workflow_run'
+
+      - uses: actions/checkout@v6
+        if: ${{ github.event_name == 'workflow_run' }}
+      - uses: ./.github/actions/toolchain-shared
+        if: ${{ github.event_name == 'workflow_run' }}
+        with:
+          rust_toolchain_version: ${{ matrix.rust_and_os.rust_toolchain_version }}
+      - name: start-fresh
+        if: ${{ github.event_name == 'workflow_run' }}
+        shell: bash
+        run: cargo clean
+
+      # else
+
+      - name: skip-refresh
+        if: ${{ github.event_name != 'workflow_run' }}
+        shell: bash
+        run: echo 'no need to refresh'
+
+  doc-and-spec:
+    needs: ['define-matrix', 'refresh-cache']
+    strategy:
+      matrix:
+        rust_and_os: ${{ fromJSON(needs.define-matrix.outputs.matrix).include }}
+        ocaml_version: ${{ fromJSON(needs.define-matrix.outputs.ocaml_version) }}
+        node: ${{ fromJSON(needs.define-matrix.outputs.node) }}
+    runs-on: ${{ matrix.rust_and_os.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up NodeJS
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ matrix.rust_and_os.rust_toolchain_version }}
+
+      - name: Use shared OCaml setting up steps
+        uses: ./.github/actions/ocaml-shared
+        with:
+          ocaml_version: ${{ matrix.ocaml_version }}
+
+      #
+      # Doc & Spec
+      #
+
+      - name: Doc tests
+        run: |
+          eval $(opam env)
+          make test-doc
+
+      - name: Generate docs
+        run: |
+          eval $(opam env)
+          make generate-doc
+
+      #
+      # Docusaurus Book
+      #
+
+      - name: Build the book
+        run: |
+          cd book
+          make deps
+          make build
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: ['define-matrix', 'doc-and-spec']
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up NodeJS
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ fromJSON(needs.define-matrix.outputs.node)[0] }}
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ needs.define-matrix.outputs.rust_msrv }}
+
+      - name: Use shared OCaml setting up steps
+        uses: ./.github/actions/ocaml-shared
+        with:
+          ocaml_version: ${{ fromJSON(needs.define-matrix.outputs.ocaml_version)[0] }}
+
+      - name: Generate rustdoc
+        run: |
+          eval $(opam env)
+          make generate-doc
+
+      - name: Build the book
+        run: |
+          cd book
+          make deps
+          make build
+
+      - name: Copy rustdoc into book directory
+        run: cp -r ./target/doc ./book/build/rustdoc
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./book/build
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Tracking issue: https://github.com/o1-labs/mina-rust/issues/1984
+  no-std-check:
+    name: "no_std: ${{ matrix.crate.name }}"
+    needs: ['define-matrix', 'refresh-cache']
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          # Crates with no-std feature
+          - { name: "groupmap", path: "groupmap" }
+          - { name: "mina-hasher", path: "hasher" } # https://github.com/o1-labs/mina-rust/issues/1994
+          - { name: "mina-poseidon", path: "poseidon" } # https://github.com/o1-labs/mina-rust/issues/1996
+          - { name: "mina-signer", path: "signer" } # https://github.com/o1-labs/mina-rust/issues/1995
+          - { name: "mina-tx-type", path: "mina-tx-type" }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ needs.define-matrix.outputs.rust_stable }}
+
+      - name: Check ${{ matrix.crate.name }} (no_std)
+        run: |
+          cd ${{ matrix.crate.path }}
+          cargo check --no-default-features
+
+  build:
+    needs: ['define-matrix', 'refresh-cache', 'no-std-check']
+    strategy:
+      matrix:
+        rust_and_os: ${{ fromJSON(needs.define-matrix.outputs.matrix).include }}
+        ocaml_version: ${{ fromJSON(needs.define-matrix.outputs.ocaml_version) }}
+        node: ${{ fromJSON(needs.define-matrix.outputs.node) }}
+    runs-on: ${{ matrix.rust_and_os.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ matrix.rust_and_os.rust_toolchain_version }}
+
+      - name: Use shared OCaml setting up steps
+        uses: ./.github/actions/ocaml-shared
+        with:
+          ocaml_version: ${{ matrix.ocaml_version }}
+      #
+      # Build
+      #
+
+      - name: Ensure that everything builds
+        run: |
+          eval $(opam env)
+          make
+
+      - name: Ensure that kimchi-stubs can be built with xtask
+        run: |
+          eval $(opam env)
+          cargo run -p xtask -- build-kimchi-stubs
+
+  tests:
+    needs: ['define-matrix', 'refresh-cache']
+    strategy:
+      matrix:
+        rust_and_os: ${{ fromJSON(needs.define-matrix.outputs.matrix).include }}
+        ocaml_version: ${{ fromJSON(needs.define-matrix.outputs.ocaml_version) }}
+        node: ${{ fromJSON(needs.define-matrix.outputs.node) }}
+    runs-on: ${{ matrix.rust_and_os.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Use shared Rust toolchain setting up steps
+        uses: ./.github/actions/toolchain-shared
+        with:
+          rust_toolchain_version: ${{ matrix.rust_and_os.rust_toolchain_version }}
+          components: llvm-tools-preview
+
+      - name: Use shared OCaml setting up steps
+        uses: ./.github/actions/ocaml-shared
+        with:
+          ocaml_version: ${{ matrix.ocaml_version }}
+      #
+      # Tests
+      #
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.67, grcov@0.8.13
+
+      - name: Run non-heavy tests without the code coverage
+        run: |
+          eval $(opam env)
+          make nextest

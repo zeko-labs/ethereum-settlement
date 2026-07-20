@@ -1,61 +1,80 @@
-# SP1 Project Template Contracts
-
-This is a template for writing a contract that uses verification of [SP1](https://github.com/succinctlabs/sp1) PlonK proofs onchain using the [SP1VerifierGateway](https://github.com/succinctlabs/sp1-contracts/blob/main/contracts/src/SP1VerifierGateway.sol).
+# Zeko Ethereum Contracts
 
 ## Requirements
 
-- [Foundry](https://book.getfoundry.sh/getting-started/installation)
-
-## Test
+- Foundry nightly/current.
+- Initialized submodules:
 
 ```sh
-forge test -v
+git submodule update --init --recursive
 ```
 
-## Deployment
+Old Foundry builds can fail while reading the OpenZeppelin submodule config.
+Use `foundryup` before running local tests.
 
-#### Step 1: Set the `VERIFIER` environment variable
-
-Find the address of the `verifier` to use from the [deployments](https://github.com/succinctlabs/sp1-contracts/tree/main/contracts/deployments) list for the chain you are deploying to. Set it to the `VERIFIER` environment variable, for example:
+## Tests
 
 ```sh
-VERIFIER=0x3B6041173B80E77f038f3F2C0f9744f04837185e
+forge build --sizes
+forge test -vv
 ```
 
-Note: you can use either the [SP1VerifierGateway](https://github.com/succinctlabs/sp1-contracts/blob/main/contracts/src/SP1VerifierGateway.sol) or a specific version, but it is highly recommended to use the gateway as this will allow you to use different versions of SP1.
+## Contracts
 
-#### Step 2: Set the `PROGRAM_VKEY` environment variable
+- `src/ZekoSettlement.sol` verifies SP1 settlement proofs and tracks the current
+  PoC settlement root/action-state checkpoint.
+- `src/EthereumZekoBridge.sol` handles Ethereum asset custody, deposit
+  accumulation, withdrawal-state acceptance, and withdrawal claims.
+- `src/ZekoAddress.sol` validates packed Mina/Pasta public-key encodings.
+- `src/PocDeterministicFactory.sol` deploys implementations and atomically
+  initialized ERC-1967 proxies at CREATE2 addresses shared by local and testnet
+  environments.
 
-Find your program verification key by going into the `../script` directory and running `RUST_LOG=info cargo run --package fibonacci-script --bin vkey --release`, which will print an output like:
+## Deployment Inputs
 
-> Program Verification Key: 0x00620892344c310c32a74bf0807a5c043964264e4f37c96a10ad12b5c9214e0e
+Deployments need:
 
-Then set the `PROGRAM_VKEY` environment variable to the output of that command, for example:
+- SP1 verifier/gateway address.
+- SP1 program verification key.
+- Expected Zeko Pickles verification-key hash.
+- Initial Zeko settlement checkpoint values.
+
+## Deterministic PoC deployment
+
+From the repository root, prepare all public deployment artifacts against a
+running Ethereum RPC:
 
 ```sh
-PROGRAM_VKEY=0x00620892344c310c32a74bf0807a5c043964264e4f37c96a10ad12b5c9214e0e
+FORGE=$HOME/.foundry/bin/forge tools/prepare-poc.sh \
+  http://127.0.0.1:8545 0x<admin>
 ```
 
-#### Step 3: Deploy the contract
+This builds the gateway and settlement ELF against the selected fixture VK,
+computes the settlement, bridge, and withdrawal SP1 program vkeys without
+proving, predicts all CREATE2 addresses, writes `build/poc/manifest.json` and
+`build/poc/deployment.env`, and sets `ZEKO_ETHEREUM_BRIDGE_ADDRESS` to the
+predicted bridge proxy for the OCaml circuit config. It also derives `FORK_SLOT`
+from the selected fixture's proof-bound slot range. The same admin and bytecode
+produce the same proxy addresses on Anvil and Sepolia.
 
-Fill out the rest of the details needed for deployment:
-
-```sh
-RPC_URL=...
-```
-
-```sh
-PRIVATE_KEY=...
-```
-
-Then deploy the contract to the chain:
-
-```sh
-forge create src/Fibonacci.sol:Fibonacci --rpc-url $RPC_URL --private-key $PRIVATE_KEY --constructor-args $VERIFIER $PROGRAM_VKEY
-```
-
-It can also be a good idea to verify the contract when you deploy, in which case you would also need to set `ETHERSCAN_API_KEY`:
+Deploy only after reviewing the manifest. `SP1_VERIFIER_ADDRESS` must be a real
+SP1 verifier on testnet. For local contract-transition tests, set
+`LOCAL_MOCK_VERIFIER=true`; the factory deploys `LocalSP1Verifier` at the
+manifest's predicted address. Local mock deployments default their genesis
+timestamp one day into the future so long execute-only checks remain at
+`FORK_SLOT`; set `GENESIS_TIMESTAMP` to override it:
 
 ```sh
-forge create src/Fibonacci.sol:Fibonacci --rpc-url $RPC_URL --private-key $PRIVATE_KEY --constructor-args $VERIFIER $PROGRAM_VKEY --verify --verifier etherscan --etherscan-api-key $ETHERSCAN_API_KEY
+set -a
+source build/poc/deployment.env
+set +a
+export PRIVATE_KEY=0x<admin-private-key>
+export LOCAL_MOCK_VERIFIER=true
+
+# Testnet alternative:
+# export SP1_VERIFIER_ADDRESS=0x<real-sp1-verifier>
+
+cd contracts
+forge script script/DeployPoc.s.sol:DeployPoc \
+  --rpc-url "$RPC_URL" --broadcast
 ```

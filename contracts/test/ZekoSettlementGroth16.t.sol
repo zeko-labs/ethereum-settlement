@@ -1,127 +1,185 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
-import {Test, console2} from "forge-std/Test.sol";
-import {stdJson} from "forge-std/StdJson.sol";
+import {Test} from "forge-std/Test.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {
-    ERC1967Proxy
-} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {ZekoSettlement} from "../src/ZekoSettlement.sol";
-import {ISP1Verifier} from "../src/ZekoSettlement.sol";
+import {ISP1Verifier, ZekoSettlement} from "../src/ZekoSettlement.sol";
 
-contract ZekoSettlementGroth16Test is Test {
-    using stdJson for string;
+contract SettlementMockSP1Verifier is ISP1Verifier {
+    bool public shouldRevert;
 
-    uint256 private constant PUBLIC_VALUES_LENGTH = 577;
+    function setShouldRevert(bool value) external {
+        shouldRevert = value;
+    }
+
+    function verifyProof(
+        bytes32,
+        bytes calldata,
+        bytes calldata
+    ) external view {
+        if (shouldRevert) revert("invalid proof");
+    }
+}
+
+contract ZekoSettlementV1Test is Test {
+    uint256 private constant PUBLIC_VALUES_LENGTH = 768;
     uint256 private constant STATE_ARRAY_LENGTH = 8;
 
-    address private constant SP1_GATEWAY =
-        0x397A5f7f3dBd538f23DE225B51f532c34448dA9B;
+    address private owner = address(this);
+    address private alice = address(0xA11CE);
+    bytes32 private programVKey = keccak256("settlement program vkey");
+    bytes32 private vkHash = keccak256("zeko vk");
+    bytes32 private initialActionState = keccak256("outer action before");
+    bytes32[8] private initialState;
 
-    // Current Zeko state — these live inside the SP1 public values, not the SP1 vkey.
-    //
-    // vk_hash          = Hash of the current Zeko verification key
-    // state_before[3]  = current account tree root
-    // action_state     = current action state hash
-    bytes32 private constant VK_HASH =
-        bytes32(
-            uint256(
-                28938888072174442574591380326671967812369207887553320784822775940404701845190
-            )
-        );
-    bytes32 private constant CURRENT_ROOT =
-        bytes32(
-            uint256(
-                11066481997049907237147074214507440714257448164444404179272910777489391657254
-            )
-        );
-    bytes32 private constant ACTION_STATE =
-        bytes32(
-            uint256(
-                24329566355992902769881875375733216652114605558452463596572110463644683476021
-            )
-        );
-
-    address public owner = address(this);
-    address public alice = address(0xA11CE);
-    address public bob = address(0xB0B);
-
-    ISP1Verifier public gateway;
-    ZekoSettlement public zeko;
-
-    // SP1 program vkey — only needed for the real proof test.
-    // Loaded from the fixture file which must be regenerated when the Zeko VK changes.
-    bytes32 public fixtureVkey;
-    bytes public fixturePublicValues;
-    bytes public fixtureProof;
-
-    // -------------------------------------------------------------------------
-    // Setup
-    // -------------------------------------------------------------------------
+    SettlementMockSP1Verifier private sp1;
+    ZekoSettlement private settlement;
 
     function setUp() public {
-        vm.createSelectFork("mainnet");
-        gateway = ISP1Verifier(SP1_GATEWAY);
+        vm.warp(1_000_000);
+        for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
+            initialState[i] = keccak256(abi.encode("state", i));
+        }
+        initialState[4] = bytes32(uint256(3));
+        sp1 = new SettlementMockSP1Verifier();
+        settlement = _deploy();
+    }
 
-        // Load the SP1 program vkey from the fixture.
-        // publicValues and proof are only used in test_ValidGroth16ProofUpdatesRoot.
-        string memory json = vm.readFile(
-            string.concat(
-                vm.projectRoot(),
-                "/src/fixtures/groth16-fixture.json"
+    function test_InitializeStoresCompleteState() public view {
+        assertEq(address(settlement.verifier()), address(sp1));
+        assertEq(settlement.programVKey(), programVKey);
+        assertEq(settlement.vkHash(), vkHash);
+        assertEq(settlement.actionState(), initialActionState);
+        assertEq(settlement.currentRoot(), initialState[2]);
+        assertEq(settlement.outerActionStateLength(), 5);
+        assertEq(settlement.batchSequence(), 0);
+        assertEq(settlement.currentVirtualSlot(), 10);
+        _assertStateEq(settlement.outerState(), initialState);
+        assertTrue(settlement.isActionStateValid(initialActionState));
+
+        (uint64 index, uint64 acceptedAt, uint32 length, bool valid) = settlement
+            .acceptedInnerActionState(initialState[3]);
+        assertEq(index, 0);
+        assertEq(acceptedAt, block.timestamp);
+        assertEq(length, 3);
+        assertTrue(valid);
+    }
+
+    function test_DecodePublicValuesV1() public view {
+        bytes32[8] memory afterState = _afterState();
+        bytes memory values = _buildPublicValues(afterState);
+        ZekoSettlement.DecodedPublicValues memory decoded = settlement
+            .getDecodedPublicValues(values);
+
+        assertEq(decoded.daMode, 1);
+        assertEq(decoded.chainId, block.chainid);
+        assertEq(decoded.settlementContract, address(settlement));
+        assertEq(decoded.batchSequence, 1);
+        assertEq(decoded.vkHash, vkHash);
+        _assertStateEq(decoded.stateBefore, initialState);
+        _assertStateEq(decoded.stateAfter, afterState);
+        assertEq(decoded.outerActionStateBefore, initialActionState);
+        assertEq(decoded.outerActionStateLengthBefore, 5);
+        assertEq(decoded.outerActionStateLengthAfter, 6);
+        assertEq(decoded.slotLower, 9);
+        assertEq(decoded.slotUpper, 11);
+    }
+
+    function test_VerifyAndUpdateStoresCompleteTransition() public {
+        bytes32[8] memory afterState = _afterState();
+        bytes32 afterAction = keccak256("outer action after");
+        bytes memory values = _buildPublicValues(afterState);
+
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+
+        _assertStateEq(settlement.outerState(), afterState);
+        assertEq(settlement.currentRoot(), afterState[2]);
+        assertEq(settlement.actionState(), afterAction);
+        assertEq(settlement.outerActionStateLength(), 6);
+        assertEq(settlement.batchSequence(), 1);
+        assertTrue(settlement.isActionStateValid(afterAction));
+        (uint64 actionIndex, bool actionValid) = settlement
+            .l2ActionStateInfo(afterAction);
+        assertEq(actionIndex, 1);
+        assertTrue(actionValid);
+
+        (uint64 index, uint64 acceptedAt, uint32 length, bool valid) = settlement
+            .acceptedInnerActionState(afterState[3]);
+        assertEq(index, 1);
+        assertEq(acceptedAt, block.timestamp);
+        assertEq(length, 4);
+        assertTrue(valid);
+    }
+
+    function test_V2StoresSettlementBoundInnerActionBatch() public {
+        address bridgeAddress = address(0xB12D63);
+        settlement.setBridgeContract(bridgeAddress);
+        bytes32 root = keccak256("inner action root");
+        bytes memory values = _buildPublicValuesV2(
+            _afterState(),
+            bridgeAddress,
+            root,
+            3,
+            1
+        );
+
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+
+        (
+            bytes32 minaBefore,
+            bytes32 minaAfter,
+            bytes32 storedRoot,
+            uint32 startIndex,
+            uint32 count,
+            uint32 commitSlotUpper,
+            bool valid
+        ) = settlement.innerActionBatch(1);
+        assertEq(minaBefore, initialState[3]);
+        assertEq(minaAfter, _afterState()[3]);
+        assertEq(storedRoot, root);
+        assertEq(startIndex, 3);
+        assertEq(count, 1);
+        assertEq(commitSlotUpper, 11);
+        assertTrue(valid);
+    }
+
+    function test_AppendOuterWitnessBatchRecordsExactCheckpoint() public {
+        settlement.setBridgeContract(alice);
+        bytes32 afterState = keccak256("witness action state");
+        vm.prank(alice);
+        settlement.appendOuterWitnessBatch(
+            initialActionState,
+            afterState,
+            2
+        );
+
+        assertEq(settlement.actionState(), afterState);
+        assertEq(settlement.outerActionStateLength(), 7);
+        (uint32 length, bool valid) = settlement.outerActionStateInfo(
+            afterState
+        );
+        assertEq(length, 7);
+        assertTrue(valid);
+    }
+
+    function test_RevertOnUnknownSynchronizedCheckpoint() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        bytes32 unknown = keccak256("unknown synchronized state");
+        _writeBytes32(values, 724, unknown);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZekoSettlement.UnknownSynchronizedActionState.selector,
+                unknown,
+                uint32(5)
             )
         );
-        fixtureVkey = json.readBytes32(".vkey");
-        fixturePublicValues = json.readBytes(".publicValues");
-        fixtureProof = json.readBytes(".proof");
-
-        zeko = _deploySettlement(
-            address(gateway),
-            fixtureVkey,
-            VK_HASH,
-            ACTION_STATE,
-            CURRENT_ROOT
-        );
+        settlement.verifyAndUpdateRoot(values, hex"01");
     }
 
-    function test_SetUp() public view {
-        assertEq(address(zeko.verifier()), SP1_GATEWAY);
-        assertEq(zeko.programVKey(), fixtureVkey);
-        assertTrue(zeko.hasRole(zeko.DEFAULT_ADMIN_ROLE(), owner));
-        assertTrue(zeko.hasRole(zeko.ADMIN_ROLE(), owner));
-        assertTrue(zeko.hasRole(zeko.PROVER_ROLE(), owner));
-        assertTrue(zeko.hasRole(zeko.UPGRADER_ROLE(), owner));
-        assertEq(zeko.vkHash(), VK_HASH);
-        assertEq(zeko.actionState(), ACTION_STATE);
-        assertEq(zeko.currentRoot(), CURRENT_ROOT);
-        assertTrue(zeko.validActionState(ACTION_STATE));
-        assertTrue(zeko.isActionStateValid(ACTION_STATE));
-    }
-
-    function test_DecodePublicValues() public view {
-        bytes32 newRoot = bytes32(uint256(0xdeadbeef));
-        bytes memory pv = _buildPublicValues(
-            true,
-            VK_HASH,
-            CURRENT_ROOT,
-            newRoot,
-            ACTION_STATE
-        );
-
-        ZekoSettlement.DecodedPublicValues memory d = zeko
-            .getDecodedPublicValues(pv);
-
-        assertTrue(d.proofValid);
-        assertEq(d.vkHash, VK_HASH);
-        assertEq(d.actionStateBefore, ACTION_STATE);
-        assertEq(d.stateBefore[3], CURRENT_ROOT);
-        assertEq(d.stateAfter[3], newRoot);
-    }
-
-    function test_RevertOnInvalidPublicValuesLength() public {
-        bytes memory invalid = new bytes(16);
+    function test_RevertOnWrongLength() public {
+        bytes memory invalid = new bytes(12);
         vm.expectRevert(
             abi.encodeWithSelector(
                 ZekoSettlement.InvalidPublicValuesLength.selector,
@@ -129,230 +187,118 @@ contract ZekoSettlementGroth16Test is Test {
                 invalid.length
             )
         );
-        zeko.getDecodedPublicValues(invalid);
+        settlement.getDecodedPublicValues(invalid);
     }
 
-    function test_RevertOnInvalidBool() public {
-        bytes memory pv = _buildPublicValues(
-            true,
-            VK_HASH,
-            CURRENT_ROOT,
-            bytes32(0),
-            ACTION_STATE
-        );
-        pv[0] = bytes1(uint8(2));
+    function test_RevertOnWrongMagic() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        values[0] = 0;
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoSettlement.InvalidBool.selector,
-                uint8(2)
+                ZekoSettlement.InvalidPublicValuesMagic.selector,
+                bytes4(0x004b5354)
             )
         );
-        zeko.getDecodedPublicValues(pv);
+        settlement.getDecodedPublicValues(values);
     }
 
-    function test_Upgrade_RevertsWhenNotUpgrader() public {
-        ZekoSettlement newImplementation = new ZekoSettlement();
-        bytes32 upgraderRole = zeko.UPGRADER_ROLE();
-
+    function test_RevertOnWrongDomain() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        _writeUint64(values, 8, uint64(block.chainid + 1));
         vm.expectRevert(
             abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                alice,
-                upgraderRole
+                ZekoSettlement.InvalidChainId.selector,
+                uint64(block.chainid),
+                uint64(block.chainid + 1)
             )
         );
-        vm.prank(alice);
-        zeko.upgradeToAndCall(address(newImplementation), "");
+        settlement.verifyAndUpdateRoot(values, hex"01");
     }
 
-    function test_Upgrade_AllowsUpgrader() public {
-        ZekoSettlement newImplementation = new ZekoSettlement();
-
-        zeko.upgradeToAndCall(address(newImplementation), "");
-
-        assertEq(zeko.currentRoot(), CURRENT_ROOT);
-    }
-
-    function test_VerifyAndUpdateRoot_RevertsWhenNotProver() public {
-        bytes32 proverRole = zeko.PROVER_ROLE();
-
+    function test_RevertOnStaleOuterState() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        bytes32 wrongRoot = keccak256("wrong root");
+        _writeBytes32(values, 140 + 2 * 32, wrongRoot);
         vm.expectRevert(
             abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                alice,
-                proverRole
+                ZekoSettlement.InvalidOuterState.selector,
+                uint256(2),
+                initialState[2],
+                wrongRoot
             )
         );
-        vm.prank(alice);
-        zeko.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
+        settlement.verifyAndUpdateRoot(values, hex"01");
     }
 
-    function test_ValidGroth16ProofUpdatesRoot() public {
-        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
-            fixturePublicValues
-        );
-
-        uint256 gasBefore = gasleft();
-        zeko.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
-        uint256 gasUsed = gasBefore - gasleft();
-
-        console2.log("=== GROTH16 MAINNET FORK ===");
-        console2.log("root before:");
-        console2.logBytes32(decoded.stateBefore[3]);
-        console2.log("root after:");
-        console2.logBytes32(decoded.stateAfter[3]);
-        console2.log("gas:", gasUsed);
-
-        assertEq(zeko.currentRoot(), decoded.stateAfter[3]);
-    }
-
-    function test_RevertOnInvalidGroth16Proof() public {
-        bytes memory fakeProof = new bytes(fixtureProof.length);
-        vm.expectRevert();
-        zeko.verifyAndUpdateRoot(fixturePublicValues, fakeProof);
-    }
-
-    function test_RevertOnInvalidVkHash() public {
-        // Re-deploy with the fixture's actual vkHash so the SP1 proof passes,
-        // then set a bad vkHash so ZekoSettlement rejects it.
-        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
-            fixturePublicValues
-        );
-
-        ZekoSettlement target = _deploySettlement(
-            address(gateway),
-            fixtureVkey,
-            decoded.vkHash,
-            decoded.actionStateBefore,
-            decoded.stateBefore[3]
-        );
-
-        bytes32 badVkHash = keccak256("bad vk hash");
-        target.setVkHash(badVkHash);
-
+    function test_RevertOnActionLengthGap() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        _writeUint32(values, 720, 7);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoSettlement.InvalidVkHash.selector,
-                badVkHash,
-                decoded.vkHash
+                ZekoSettlement.InvalidActionStateTransition.selector,
+                uint32(5),
+                uint32(7)
             )
         );
-        target.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
+        settlement.verifyAndUpdateRoot(values, hex"01");
     }
 
-    function test_RevertOnInvalidActionState() public {
-        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
-            fixturePublicValues
-        );
-
-        ZekoSettlement target = _deploySettlement(
-            address(gateway),
-            fixtureVkey,
-            decoded.vkHash,
-            decoded.actionStateBefore,
-            decoded.stateBefore[3]
-        );
-
-        bytes32 badActionState = keccak256("bad action state");
-        target.setActionState(badActionState);
-
+    function test_RevertOutsideSlotRange() public {
+        bytes memory values = _buildPublicValues(_afterState());
+        _writeUint32(values, 760, 11);
+        _writeUint32(values, 764, 12);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ZekoSettlement.InvalidActionState.selector,
-                badActionState,
-                decoded.actionStateBefore
+                ZekoSettlement.OutsideSlotRange.selector,
+                uint64(10),
+                uint32(11),
+                uint32(12)
             )
         );
-        target.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
+        settlement.verifyAndUpdateRoot(values, hex"01");
     }
 
-    function test_RevertOnInvalidCurrentRoot() public {
-        ZekoSettlement.DecodedPublicValues memory decoded = _decodePublicValues(
-            fixturePublicValues
-        );
-
-        bytes32 badRoot = keccak256("bad root");
-
-        ZekoSettlement target = _deploySettlement(
-            address(gateway),
-            fixtureVkey,
-            decoded.vkHash,
-            decoded.actionStateBefore,
-            badRoot
-        );
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ZekoSettlement.InvalidCurrentRoot.selector,
-                badRoot,
-                decoded.stateBefore[3]
-            )
-        );
-        target.verifyAndUpdateRoot(fixturePublicValues, fixtureProof);
-    }
-
-    function test_SetVkHashOnlyAdmin() public {
-        zeko.setVkHash(keccak256("new vk hash"));
-        assertEq(zeko.vkHash(), keccak256("new vk hash"));
-    }
-
-    function test_RevertSetVkHashWhenNotAdmin() public {
+    function test_RevertWhenNotProver() public {
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 alice,
-                zeko.ADMIN_ROLE()
+                settlement.PROVER_ROLE()
             )
         );
         vm.prank(alice);
-        zeko.setVkHash(keccak256("new vk hash"));
+        settlement.verifyAndUpdateRoot(
+            _buildPublicValues(_afterState()),
+            hex"01"
+        );
     }
 
-    function test_SetActionStateOnlyAdmin() public {
-        bytes32 newActionState = keccak256("new action state");
-        zeko.setActionState(newActionState);
-        assertEq(zeko.actionState(), newActionState);
-        assertTrue(zeko.validActionState(newActionState));
-        assertTrue(zeko.isActionStateValid(newActionState));
+    function test_InvalidSp1ProofStopsBeforeStateChecks() public {
+        sp1.setShouldRevert(true);
+        vm.expectRevert("invalid proof");
+        settlement.verifyAndUpdateRoot(
+            _buildPublicValues(_afterState()),
+            hex"01"
+        );
     }
 
-    function test_RevertSetActionStateWhenNotAdmin() public {
+    function test_UpgradeRole() public {
+        ZekoSettlement next = new ZekoSettlement();
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector,
                 alice,
-                zeko.ADMIN_ROLE()
+                settlement.UPGRADER_ROLE()
             )
         );
         vm.prank(alice);
-        zeko.setActionState(keccak256("new action state"));
+        settlement.upgradeToAndCall(address(next), "");
+
+        settlement.upgradeToAndCall(address(next), "");
+        assertEq(settlement.currentRoot(), initialState[2]);
     }
 
-    function test_DefaultAdminCanGrantRoles() public {
-        zeko.grantRole(zeko.ADMIN_ROLE(), alice);
-        assertTrue(zeko.hasRole(zeko.ADMIN_ROLE(), alice));
-    }
-
-    function test_RevertGrantRoleWhenNotDefaultAdmin() public {
-        bytes32 proverRole = zeko.PROVER_ROLE();
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector,
-                alice,
-                zeko.DEFAULT_ADMIN_ROLE()
-            )
-        );
-        vm.prank(alice);
-        zeko.grantRole(proverRole, bob);
-    }
-
-    function _deploySettlement(
-        address verifier,
-        bytes32 programVKey,
-        bytes32 initialVkHash,
-        bytes32 initialActionState,
-        bytes32 initialRoot
-    ) private returns (ZekoSettlement target) {
+    function _deploy() private returns (ZekoSettlement target) {
         ZekoSettlement implementation = new ZekoSettlement();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
@@ -360,87 +306,147 @@ contract ZekoSettlementGroth16Test is Test {
                 ZekoSettlement.initialize,
                 (
                     owner,
-                    verifier,
+                    address(sp1),
                     programVKey,
-                    initialVkHash,
+                    vkHash,
+                    initialState,
                     initialActionState,
-                    initialRoot
+                    5,
+                    uint64(block.timestamp - 100),
+                    10,
+                    0
                 )
             )
         );
-        target = ZekoSettlement(address(proxy));
+        return ZekoSettlement(address(proxy));
+    }
+
+    function _afterState() private view returns (bytes32[8] memory state) {
+        state = initialState;
+        state[2] = keccak256("ledger after");
+        state[3] = keccak256("inner action after");
+        state[4] = bytes32(uint256(4));
+        state[7] = keccak256("account set after");
+    }
+
+    function _assertStateEq(
+        bytes32[8] memory actual,
+        bytes32[8] memory expected
+    ) private pure {
+        for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
+            assertEq(actual[i], expected[i]);
+        }
     }
 
     function _buildPublicValues(
-        bool proofValid,
-        bytes32 vkHash,
-        bytes32 stateBefore3,
-        bytes32 stateAfter3,
-        bytes32 actionStateBefore
-    ) internal pure returns (bytes memory pv) {
-        pv = new bytes(PUBLIC_VALUES_LENGTH);
-        uint256 cursor = 0;
+        bytes32[8] memory afterState
+    ) private view returns (bytes memory values) {
+        values = new bytes(PUBLIC_VALUES_LENGTH);
+        values[0] = 0x5a;
+        values[1] = 0x4b;
+        values[2] = 0x53;
+        values[3] = 0x54;
+        _writeUint16(values, 4, 1);
+        values[6] = 0x01;
+        values[7] = 0;
+        _writeUint64(values, 8, uint64(block.chainid));
+        _writeAddress(values, 16, address(settlement));
+        _writeUint64(values, 36, 1);
+        _writeBytes32(values, 44, vkHash);
+        _writeBytes32(values, 76, keccak256("app statement"));
+        _writeBytes32(values, 108, keccak256("mina tx"));
 
-        pv[cursor] = proofValid ? bytes1(uint8(1)) : bytes1(uint8(0));
-        cursor += 1;
-
-        _wb32(pv, cursor, vkHash);
-        cursor += 32;
-
+        uint256 cursor = 140;
         for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
-            _wb32(pv, cursor, i == 3 ? stateBefore3 : bytes32(0));
+            _writeBytes32(values, cursor, initialState[i]);
             cursor += 32;
         }
         for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
-            _wb32(pv, cursor, i == 3 ? stateAfter3 : bytes32(0));
+            _writeBytes32(values, cursor, afterState[i]);
             cursor += 32;
         }
-
-        _wb32(pv, cursor, actionStateBefore);
+        _writeBytes32(values, cursor, initialActionState);
         cursor += 32;
-        assert(cursor == PUBLIC_VALUES_LENGTH);
+        _writeBytes32(values, cursor, keccak256("outer action after"));
+        cursor += 32;
+        _writeUint32(values, cursor, 5);
+        cursor += 4;
+        _writeUint32(values, cursor, 6);
+        cursor += 4;
+        _writeBytes32(values, cursor, initialActionState);
+        cursor += 32;
+        _writeUint32(values, cursor, 5);
+        cursor += 4;
+        _writeUint32(values, cursor, 9);
+        cursor += 4;
+        _writeUint32(values, cursor, 11);
+        cursor += 4;
+        assertEq(cursor, PUBLIC_VALUES_LENGTH);
     }
 
-    function _wb32(bytes memory buf, uint256 offset, bytes32 v) private pure {
+    function _buildPublicValuesV2(
+        bytes32[8] memory afterState,
+        address bridgeAddress,
+        bytes32 root,
+        uint32 startIndex,
+        uint32 count
+    ) private view returns (bytes memory values) {
+        bytes memory v1 = _buildPublicValues(afterState);
+        values = new bytes(828);
+        for (uint256 i = 0; i < v1.length; i++) values[i] = v1[i];
+        _writeUint16(values, 4, 2);
+        _writeAddress(values, 768, bridgeAddress);
+        _writeBytes32(values, 788, root);
+        _writeUint32(values, 820, startIndex);
+        _writeUint32(values, 824, count);
+    }
+
+    function _writeAddress(
+        bytes memory output,
+        uint256 offset,
+        address value
+    ) private pure {
+        for (uint256 i = 0; i < 20; i++) {
+            output[offset + i] = bytes20(value)[i];
+        }
+    }
+
+    function _writeBytes32(
+        bytes memory output,
+        uint256 offset,
+        bytes32 value
+    ) private pure {
         assembly {
-            mstore(add(add(buf, 0x20), offset), v)
+            mstore(add(add(output, 0x20), offset), value)
         }
     }
 
-    function _decodePublicValues(
-        bytes memory pv
-    ) private pure returns (ZekoSettlement.DecodedPublicValues memory d) {
-        require(pv.length == PUBLIC_VALUES_LENGTH, "invalid length");
-        uint256 cursor = 0;
-
-        uint8 raw = uint8(pv[cursor]);
-        require(raw <= 1, "invalid bool");
-        d.proofValid = raw == 1;
-        cursor += 1;
-
-        d.vkHash = _rb32(pv, cursor);
-        cursor += 32;
-
-        for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
-            d.stateBefore[i] = _rb32(pv, cursor);
-            cursor += 32;
-        }
-        for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
-            d.stateAfter[i] = _rb32(pv, cursor);
-            cursor += 32;
-        }
-
-        d.actionStateBefore = _rb32(pv, cursor);
-        cursor += 32;
-        assert(cursor == PUBLIC_VALUES_LENGTH);
+    function _writeUint16(
+        bytes memory output,
+        uint256 offset,
+        uint16 value
+    ) private pure {
+        output[offset] = bytes1(uint8(value >> 8));
+        output[offset + 1] = bytes1(uint8(value));
     }
 
-    function _rb32(
-        bytes memory data,
-        uint256 offset
-    ) private pure returns (bytes32 v) {
-        assembly {
-            v := mload(add(add(data, 0x20), offset))
+    function _writeUint32(
+        bytes memory output,
+        uint256 offset,
+        uint32 value
+    ) private pure {
+        for (uint256 i = 0; i < 4; i++) {
+            output[offset + i] = bytes1(uint8(value >> ((3 - i) * 8)));
+        }
+    }
+
+    function _writeUint64(
+        bytes memory output,
+        uint256 offset,
+        uint64 value
+    ) private pure {
+        for (uint256 i = 0; i < 8; i++) {
+            output[offset + i] = bytes1(uint8(value >> ((7 - i) * 8)));
         }
     }
 }

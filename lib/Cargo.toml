@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-mina-p2p-messages = { workspace = true, default-features = false }
-mina-curves = { workspace = true, default-features = false }
-rkyv = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+serde_json = { workspace = true }

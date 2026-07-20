@@ -8,15 +8,10 @@ sp1-zkvm         = "6.1.0"
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 ark-ff           = { workspace = true }
 ark-serialize    = { workspace = true }
-mina-curves      = { workspace = true, default-features = false }
+mina-curves      = { workspace = true }
 mina-poseidon    = { workspace = true, features =[] }
 serde            = { workspace = true }
 zeko_sp1_lib     = { path = "../../lib" }
-
-[profile.release]
-lto            = "thin"
-codegen-units  = 1
-opt-level      = 3
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
 sp1-lib  = "6.1.0"

@@ -10,6 +10,7 @@ services:
     environment:
       - API_BIND=0.0.0.0:8080
       - API_EXECUTE_ONLY
+      - API_LOCAL_MOCK_SUBMIT
       - DATABASE_URL=postgres://postgres:postgres@db:5432/zeko_proofs
     ports:
       - "8080:8080"

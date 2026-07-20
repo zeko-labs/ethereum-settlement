@@ -10,8 +10,12 @@ use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use zeko_sp1_lib::{
-    Address, BridgeTransitionInput, BridgeTransitionPublicValues, Bytes32, ZekoAddress,
+    Address, BridgeOuterActionV2, BridgeTransitionInput, BridgeTransitionPublicValuesV2, Bytes32,
+    ZekoAddress,
 };
+
+const WEI_PER_ZEKO_UNIT: u64 = 1_000_000_000;
+const INFINITE_TIMEOUT: u64 = u32::MAX as u64;
 
 fn main() {
     let input: BridgeTransitionInput = sp1_zkvm::io::read();
@@ -20,27 +24,40 @@ fn main() {
         input.deposits.len() <= u32::MAX as usize,
         "too many deposits"
     );
+    assert!(!input.deposits.is_empty(), "empty deposit batch");
 
     let mut ethereum_state = input.ethereum.deposit_state;
     let mut zeko_action_state = fp_from_bytes(input.zeko.action_state);
     let mut next_nonce = input.ethereum.deposit_nonce;
+    let mut emitted_actions = Vec::with_capacity(input.deposits.len());
 
     let empty_action_list_hash = empty_hash_with_prefix("MinaZkappActionsEmpty");
 
     for deposit in &input.deposits {
         let (zeko_recipient_x, zeko_recipient_is_odd) = unpack_zeko_address(deposit.zeko_recipient);
 
-        let zeko_amount = u256_from_bytes(deposit.zeko_amount);
+        let ethereum_amount = u256_from_bytes(deposit.amount);
+        assert!(ethereum_amount > U256::ZERO, "zero deposit");
+        assert_eq!(
+            ethereum_amount % U256::from(WEI_PER_ZEKO_UNIT),
+            U256::ZERO,
+            "native deposit must have 1 gwei granularity"
+        );
+        let zeko_amount = ethereum_amount / U256::from(WEI_PER_ZEKO_UNIT);
+        assert!(
+            zeko_amount <= U256::from(u64::MAX),
+            "native deposit exceeds Mina amount"
+        );
 
         next_nonce += 1;
 
         let ethereum_deposit_leaf = compute_ethereum_deposit_leaf(
             input.ethereum.chain_id,
             input.ethereum.bridge_address,
-            deposit.token,
+            [0u8; 20],
             deposit.zeko_recipient,
             zeko_amount,
-            deposit.timeout,
+            INFINITE_TIMEOUT,
             next_nonce,
         );
 
@@ -52,24 +69,35 @@ fn main() {
             zeko_amount,
             zeko_recipient_x,
             zeko_recipient_is_odd,
-            deposit.timeout,
-            fp_from_bytes(deposit.children_digest),
-            deposit.slot_range_lower,
-            deposit.slot_range_upper,
+            INFINITE_TIMEOUT,
+            Fp::from(0u8),
+            0,
+            INFINITE_TIMEOUT,
         );
         let zeko_action_list_hash = action_list_add_fields(empty_action_list_hash, &action_fields);
         zeko_action_state = merkle_actions_add(zeko_action_state, zeko_action_list_hash);
+        emitted_actions.push(BridgeOuterActionV2 {
+            fields: action_fields.map(fp_to_bytes),
+            state_after: fp_to_bytes(zeko_action_state),
+        });
     }
 
-    sp1_zkvm::io::commit(&BridgeTransitionPublicValues {
+    let public_values = BridgeTransitionPublicValuesV2 {
         ethereum_state_before: input.ethereum.deposit_state,
         ethereum_state_after: ethereum_state,
         ethereum_nonce_before: input.ethereum.deposit_nonce,
         ethereum_nonce_after: next_nonce,
         zeko_action_state_before: fp_to_bytes(fp_from_bytes(input.zeko.action_state)),
         zeko_action_state_after: fp_to_bytes(zeko_action_state),
-        deposit_count: input.deposits.len() as u32,
-    });
+        zeko_action_state_length_before: input.zeko.action_state_length,
+        zeko_action_state_length_after: input
+            .zeko
+            .action_state_length
+            .checked_add(input.deposits.len() as u32)
+            .expect("outer action-state length overflow"),
+        actions: emitted_actions,
+    };
+    sp1_zkvm::io::commit_slice(&public_values.encode());
 }
 
 fn compute_ethereum_deposit_leaf(
@@ -111,12 +139,13 @@ fn compute_deposit_aux(
     let fields = [
         Fp::from(0u8), // children = Field(0) for empty call forest
         fp_from_address(holder_account_l1),
+        Fp::from(0u8), // synthetic holder compressed-key parity
         fp_from_u256(zeko_amount),
         fp_from_u256(zeko_recipient_x),
         Fp::from(zeko_recipient_is_odd as u8),
         Fp::from(timeout),
     ];
-    hash_with_prefix("Deposit_params - qFB3jXP*)", &fields)
+    hash_with_prefix("Ethereum deposit V1", &fields)
 }
 
 // Returns the 5 action fields for an L1 outer witness (deposit) action:
@@ -314,42 +343,74 @@ mod tests {
         let actions: &[(&str, [&str; 3], &str)] = &[
             (
                 "5338488511538591704321908497453393465896611676572626889890352515639793324972",
-                ["0", "13445954892259151401062147356414539397053929755454089729686468374072224770524", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "13445954892259151401062147356414539397053929755454089729686468374072224770524",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "20564005778679112305921383783621393576220961645269793062533625001478041817089",
             ),
             (
                 "20564005778679112305921383783621393576220961645269793062533625001478041817089",
-                ["0", "3418969254967426460902743142395488746910205347512382940433097464676038721351", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "3418969254967426460902743142395488746910205347512382940433097464676038721351",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "14088641427554771616107512497342397932082101784403114407990069911207727165132",
             ),
             (
                 "14088641427554771616107512497342397932082101784403114407990069911207727165132",
-                ["0", "3418969254967426460902743142395488746910205347512382940433097464676038721351", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "3418969254967426460902743142395488746910205347512382940433097464676038721351",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "5592644305669396735852728084598993836947101033485055082318992298663200236730",
             ),
             (
                 "5592644305669396735852728084598993836947101033485055082318992298663200236730",
-                ["0", "7290175672191916634614598157462226143709763480793909565940809202163511105802", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "7290175672191916634614598157462226143709763480793909565940809202163511105802",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "7230675077846107971049681873539601135350652909070232374148538403307839283596",
             ),
             (
                 "7230675077846107971049681873539601135350652909070232374148538403307839283596",
-                ["0", "23481682909396816666298220553789953254792289472463233634030406696841084292644", "7293853241236284976483542027714912722616630571844677510574672951635140291085"],
+                [
+                    "0",
+                    "23481682909396816666298220553789953254792289472463233634030406696841084292644",
+                    "7293853241236284976483542027714912722616630571844677510574672951635140291085",
+                ],
                 "23345261943210583986479677938738582339161417082508992471536919886924203109093",
             ),
             (
                 "23345261943210583986479677938738582339161417082508992471536919886924203109093",
-                ["0", "19783371664972363249023705802644483010603479698004347610850670392839625052708", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "19783371664972363249023705802644483010603479698004347610850670392839625052708",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "18067506367558727641677130278527360334316654990876259625674197924704612602695",
             ),
             (
                 "18067506367558727641677130278527360334316654990876259625674197924704612602695",
-                ["0", "19783371664972363249023705802644483010603479698004347610850670392839625052708", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "19783371664972363249023705802644483010603479698004347610850670392839625052708",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "2746959157610027380951551944033406547038529271116301057152331276522725315733",
             ),
             (
                 "2746959157610027380951551944033406547038529271116301057152331276522725315733",
-                ["0", "27834258681202107734246517626480949164201501965735911700310484065477580173610", "14544341622324407306183827793073118566432371121764582930297443254361206133838"],
+                [
+                    "0",
+                    "27834258681202107734246517626480949164201501965735911700310484065477580173610",
+                    "14544341622324407306183827793073118566432371121764582930297443254361206133838",
+                ],
                 "11066481997049907237147074214507440714257448164444404179272910777489391657254",
             ),
         ];
@@ -382,8 +443,10 @@ mod tests {
     /// The 5-field outer witness formula must reproduce the before→after transition.
     #[test]
     fn real_l1_outer_witness_matches_onchain_state() {
-        let before = "14869234878481883326787311116385242007710904539061722321273218971438489367544";
-        let expected_after = "20470932486817125004352886658008606971240848472715441072030772621176842217909";
+        let before =
+            "14869234878481883326787311116385242007710904539061722321273218971438489367544";
+        let expected_after =
+            "20470932486817125004352886658008606971240848472715441072030772621176842217909";
 
         // Raw fields from the indexer
         let fields: [&str; 5] = [
@@ -408,10 +471,8 @@ mod tests {
         );
     }
 
-    /// Legacy fixture test (simplified 1-field model from action-state.ts).
-    /// NOTE: this uses a simplified bridge contract that dispatches only `aux`
-    /// as a single Field, not the full 5-field outer witness structure.
-    /// Kept for reference — the real Zeko bridge uses real_l1_outer_witness_matches_onchain_state.
+    /// Cross-language Ethereum-native deposit vectors. The three aux values
+    /// are also asserted by Zeko's `ethereum_bridge_vectors` executable.
     #[test]
     fn fixture_deposit_matches_zeko_action_state() {
         let mut bridge_address = [0u8; 20];
@@ -421,17 +482,17 @@ mod tests {
             (
                 U256::from(1_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000001020304"),
-                hex32("08c18c1e345342a9376a5196008a3c2a47c9c544215e26594d3a7bf64a7c53b8"),
+                hex32("2e9d1b29cea8eaba8c1dfe6d8c78b21127ce44a8378b3c9d2ee9ba0ddbd7c849"),
             ),
             (
                 U256::from(2_000_000_000u64),
                 hex32("0000000000000000000000000000000000000000000000000000000005060708"),
-                hex32("2b27eaae27d23ace717a80ad95f889a5977f5c278f158e6a6adda717e6a870c7"),
+                hex32("1a03b5b4a38e241ee071764a843e5b7bf29aa0e455d7ccd53a83f729885bfb18"),
             ),
             (
                 U256::from(3_000_000_000u64),
                 hex32("80000000000000000000000000000000000000000000000000000000090a0b0c"),
-                hex32("2b8061d0b565f80c99acf967a3402618deecf886865394b67818fa988428f020"),
+                hex32("1adc48d4e3b4478369ec2d8ce4ca72c397c9e75f019b24c9d65c262ae9757fa9"),
             ),
         ];
 
@@ -445,7 +506,7 @@ mod tests {
                 zeko_amount,
                 zeko_recipient_x,
                 zeko_recipient_is_odd,
-                3600,
+                INFINITE_TIMEOUT,
             );
             assert_eq!(fp_to_bytes(aux), expected_aux);
 
@@ -460,7 +521,7 @@ mod tests {
 
         assert_eq!(
             action_state,
-            hex32("3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf")
+            hex32("2503022f5ba200b5b44d13741ad0d6e01b8cbdab340d25e637c22f3980be1abf")
         );
     }
 

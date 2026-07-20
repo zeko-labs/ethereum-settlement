@@ -6,7 +6,9 @@
 
 # Profile-guided optimization
 /tmp
+/build
 pgo-data.profdata
+logs/
 
 # MacOS nuisances
 .DS_Store

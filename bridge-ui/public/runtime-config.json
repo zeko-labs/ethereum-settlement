@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "gatewayUrl": "http://127.0.0.1:8080",
+  "sequencerGraphqlUrl": "http://127.0.0.1:1923/graphql",
+  "zekoArchiveGraphqlUrl": "http://127.0.0.1:8080/archive/graphql",
+  "actionsApiUrl": "http://127.0.0.1:9101/graphql",
+  "expectedEthereumChainId": 31337,
+  "minaSigningNetworkId": "testnet",
+  "auroNetworkName": "Zeko Local Ethereum PoC",
+  "zekoTransactionFeeNanomina": "100000000",
+  "ethereumExplorerUrl": "https://sepolia.etherscan.io",
+  "zekoExplorerUrl": "http://127.0.0.1:4175",
+  "pollIntervalMs": 5000
+}

@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "Ethereum Zeko Explorer": {
+      "versions": [
+        {
+          "path": "Ethereum Zeko Explorer.html",
+          "createdAt": "2026-07-15T15:14:30.380Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-07-15T15:14:30.383Z",
+  "updatedAt": "2026-07-15T15:14:30.383Z"
+}

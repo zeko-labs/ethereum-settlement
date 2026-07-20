@@ -1,71 +1,125 @@
-# Commands
+# Command reference
 
-## Execute programs
+All commands in the default sections avoid proof generation.
 
-Execute the programs without generating proofs:
+## Build and test
 
 ```sh
-cargo run --release --bin zkapp -- --execute   # settlement program
+cargo check --offline \
+  -p settlement-program -p zkapp-script -p zeko_sp1_lib -p zeko-proof-api
+cargo test --offline -p pickles-verifier
+cargo test --offline -p settlement-program -p bridge-program \
+  -p withdraw-program -p zeko_sp1_lib -p zeko-proof-api
+
+(cd contracts && forge build --sizes && forge test -vv)
+(cd docs && pnpm install --frozen-lockfile && pnpm build)
+
+cargo fmt --all -- --check
+git diff --check
+```
+
+## Execute guests without proving
+
+```sh
+cargo run --release --bin zkapp -- --execute
 cargo run --release --bin bridge -- --execute
 cargo run --release --bin withdraw -- --execute
 ```
 
-Use larger fixtures:
+Use a genuine settlement fixture:
 
 ```sh
-cargo run --release --bin bridge -- --execute --input proofs/bridge-input-200.json
-cargo run --release --bin withdraw -- --execute --input proofs/withdraw-input-200.json
+SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
+  cargo run --release --bin vkey
 ```
 
-## Generate proofs
-
-Generate a local proof without submitting to the network:
+## Local native bridge
 
 ```sh
-cargo run --release --bin bridge -- --prove
-cargo run --release --bin withdraw -- --prove
+tools/export-bridge-ocaml-fixtures.sh build/poc/bridge-fixtures
+tools/run-live-sequencer-bridge-e2e.sh
+tools/run-local-bridge-roundtrip.sh
 ```
 
-Generate EVM-compatible proofs (Groth16 or PLONK) for on-chain submission:
+The live-sequencer command uses real OCaml proving plus the Actions services and
+browser SDK, but performs no SP1 proving. The round-trip command adds local
+Ethereum custody, SP1 execution, settlement submission, and withdrawal claim.
+
+Run the standalone browser app:
 
 ```sh
-cargo run --release --bin evm -- --system groth16
-cargo run --release --bin evm -- --system plonk
+cd bridge-ui
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
-Retrieve the settlement program verification key:
+It listens on `127.0.0.1:5174` and reads `public/runtime-config.json`.
+
+Quick contract-only checkpoint:
 
 ```sh
-cargo run --release --bin vkey
+cd contracts
+forge test --match-path test/NativeBridgePocE2E.t.sol -vv
 ```
 
-To use the Succinct Prover Network instead of local proving:
+## Prepare deployment identity
+
+Create the retained identities once:
 
 ```sh
-SP1_PROVER=network NETWORK_PRIVATE_KEY=<key> cargo run --release --bin evm
+tools/init-machine-testnet-identity.sh deploy/testnet
 ```
-
-## Run tests
 
 ```sh
-cargo test -p bridge-program fixture_deposit_matches_zeko_action_state
-cargo test -p withdraw-program
-cd contracts && forge test --offline
+FORGE=$HOME/.foundry/bin/forge \
+  tools/prepare-poc.sh \
+    "$RPC_URL" "$ADMIN_ADDRESS" \
+    build/poc/testnet-bridge-fixtures/deposit-sync build/poc-sepolia
 ```
 
-## Run the o1js fixture
+This builds/derives program vkeys and writes the manifest. It does not prove.
+
+Build and pin the machine-local runtime images:
 
 ```sh
-cd tools/zeko-action-state
-npm install
-npm start
+tools/build-machine-images.sh \
+  build/poc/testnet-bridge-fixtures/deposit-sync/vk.serde.json deploy/testnet
 ```
 
-## Bridge fixture checkpoint
+## Read prover-network pricing
 
-`proofs/bridge-input.json` contains three deposits:
-
-```text
-before: 0x3772bc5435b957f81f86f752e93f2e29e886ac24580b3d1ec879c1dad26965f9
-after : 0x3d638b908c4241e7b417d1790a79d0fe3277a133a5a87e12a484cd756de795bf
+```sh
+cargo run --release --bin network_quote -- --proof-system groth16
+cargo run --release --bin network_quote -- \
+  --proof-system groth16 --pgu "$MAX_PGU"
 ```
+
+The command reads auction parameters and never creates a request. The current
+maximum quote is `baseFee + maxPricePerPgu * PGU`; obtain PGU from network
+simulation rather than substituting local executor cycles.
+
+## Testnet profile
+
+```sh
+tools/testnet-preflight.sh deploy/testnet
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml up -d
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml logs -f gateway sequencer prover
+
+tools/machine-actions-services.sh start deploy/testnet
+tools/machine-actions-services.sh status deploy/testnet
+```
+
+## Inspect and approve a job
+
+```sh
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID"
+
+curl -H "x-api-key: $PROOF_API_KEY" \
+  "$GATEWAY_URL/v1/proofs/$JOB_ID/quote?maxPgu=$MAX_PGU&maxPricePerPgu=$MAX_PRICE"
+```
+
+Approval is a paid-operation boundary. Use the reviewed command in [proof jobs
+and approval](/gateway/proving), not an ad hoc request.

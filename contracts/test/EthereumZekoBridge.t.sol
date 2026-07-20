@@ -35,6 +35,94 @@ contract TestERC20 is ERC20 {
 contract MockSettlementVerifier {
     mapping(bytes32 => bool) public validActionState;
     mapping(bytes32 => uint64) public l2ActionStateIndex;
+    bytes32 public actionState;
+    uint32 public outerActionStateLength;
+    uint32 public appendCalls;
+    uint64 public virtualSlot;
+
+    struct Batch {
+        bytes32 minaStateBefore;
+        bytes32 minaStateAfter;
+        bytes32 root;
+        uint32 startIndex;
+        uint32 count;
+        uint32 commitSlotUpper;
+        bool valid;
+    }
+
+    mapping(uint64 => Batch) private _batches;
+
+    function setCurrentActionState(bytes32 value) external {
+        actionState = value;
+    }
+
+    function setOuterActionStateLength(uint32 value) external {
+        outerActionStateLength = value;
+    }
+
+    function appendOuterWitnessBatch(
+        bytes32 stateBefore,
+        bytes32 stateAfter,
+        uint32 count
+    ) external {
+        require(stateBefore == actionState, "stale action state");
+        actionState = stateAfter;
+        outerActionStateLength += count;
+        appendCalls += 1;
+    }
+
+    function setVirtualSlot(uint64 value) external {
+        virtualSlot = value;
+    }
+
+    function currentVirtualSlot() external view returns (uint64) {
+        return virtualSlot;
+    }
+
+    function setInnerActionBatch(
+        uint64 sequence,
+        bytes32 root,
+        uint32 startIndex,
+        uint32 count,
+        uint32 commitSlotUpper
+    ) external {
+        _batches[sequence] = Batch({
+            minaStateBefore: keccak256("inner before"),
+            minaStateAfter: keccak256("inner after"),
+            root: root,
+            startIndex: startIndex,
+            count: count,
+            commitSlotUpper: commitSlotUpper,
+            valid: true
+        });
+    }
+
+    function innerActionBatch(
+        uint64 sequence
+    )
+        external
+        view
+        returns (
+            bytes32,
+            bytes32,
+            bytes32,
+            uint32,
+            uint32,
+            uint32,
+            bool
+        )
+    {
+        Batch memory batch = _batches[sequence];
+        return (
+            batch.minaStateBefore,
+            batch.minaStateAfter,
+            batch.root,
+            batch.startIndex,
+            batch.count,
+            batch.commitSlotUpper,
+            batch.valid
+        );
+    }
 
     function setActionStateValid(bytes32 actionState, bool valid) external {
         validActionState[actionState] = valid;
@@ -119,6 +207,8 @@ contract EthereumZekoBridgeTest is Test {
             )
         );
         bridge = EthereumZekoBridge(payable(address(proxy)));
+        bridge.setLegacyDepositEnabled(true);
+        bridge.setLegacyWithdrawEnabled(true);
         token18 = new TestERC20("Token18", "TK18", 18);
         token6 = new TestERC20("Token6", "TK6", 6);
 
@@ -138,6 +228,7 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(bridge.bridgeProgramVKey(), bridgeProgramVKey);
         assertEq(address(bridge.withdrawVerifier()), address(sp1Verifier));
         assertEq(bridge.withdrawProgramVKey(), withdrawProgramVKey);
+        assertTrue(bridge.legacyDepositEnabled());
         assertTrue(bridge.hasRole(bridge.DEFAULT_ADMIN_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.ADMIN_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.PROVER_ROLE(), owner));
@@ -337,6 +428,124 @@ contract EthereumZekoBridgeTest is Test {
         assertEq(address(bridge).balance, amount);
     }
 
+    function test_DepositETHCanonicalUsesInfiniteTimeoutAndTracksLiability()
+        public
+    {
+        ZekoAddress recipient = ZekoAddressLib.pack(0x1234, false);
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        (uint64 nonce, bytes32 leaf, ) = bridge.depositETH{value: 1 ether}(
+            recipient
+        );
+
+        assertEq(nonce, 1);
+        assertEq(
+            leaf,
+            bridge.computeDepositLeaf(
+                address(0),
+                recipient,
+                1_000_000_000,
+                type(uint32).max,
+                1
+            )
+        );
+        assertEq(bridge.nativeEscrowLiability(), 1 ether);
+    }
+
+    function test_LegacyDepositSwitchCannotBlockCanonicalNonceStream()
+        public
+    {
+        bridge.setLegacyDepositEnabled(false);
+        ZekoAddress recipient = ZekoAddressLib.pack(0x1234, false);
+
+        vm.expectRevert(
+            EthereumZekoBridge.LegacyDepositPathDisabled.selector
+        );
+        bridge.depositETH{value: 1 ether}(recipient, 10);
+
+        bridge.depositETH{value: 1 ether}(recipient);
+        assertEq(bridge.depositNonce(), 1);
+    }
+
+    function test_ClaimNativeWithdrawalUsesSettlementRootDelayAndCursor()
+        public
+    {
+        ZekoAddress zekoRecipient = ZekoAddressLib.pack(0x1234, false);
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        bridge.depositETH{value: 1 ether}(zekoRecipient);
+
+        bridge.setWithdrawalDelaySlots(5);
+        uint64 sequence = 3;
+        uint32 startIndex = 7;
+        uint64 amount = 1_000_000_000;
+        bytes32 actionFieldsHash = keccak256("bound action fields");
+        bytes32 leaf = bridge.computeNativeWithdrawalLeaf(
+            startIndex,
+            bob,
+            amount,
+            actionFieldsHash
+        );
+        (bytes32 root, bytes32[16] memory proof) = _singleInnerActionTree(
+            leaf
+        );
+        settlement.setInnerActionBatch(
+            sequence,
+            root,
+            startIndex,
+            1,
+            100
+        );
+
+        settlement.setVirtualSlot(104);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.WithdrawalNotYetClaimable.selector,
+                uint64(104),
+                uint64(105)
+            )
+        );
+        bridge.claimNativeWithdrawal(
+            sequence,
+            0,
+            bob,
+            amount,
+            actionFieldsHash,
+            proof
+        );
+
+        settlement.setVirtualSlot(105);
+        uint256 bobBefore = bob.balance;
+        bridge.claimNativeWithdrawal(
+            sequence,
+            0,
+            bob,
+            amount,
+            actionFieldsHash,
+            proof
+        );
+        assertEq(bob.balance - bobBefore, 1 ether);
+        assertEq(bridge.nextWithdrawalIndex(bob), 8);
+        assertEq(bridge.nativeEscrowLiability(), 0);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.WithdrawalIndexAlreadyProcessed.selector,
+                bob,
+                uint32(8),
+                uint32(7)
+            )
+        );
+        bridge.claimNativeWithdrawal(
+            sequence,
+            0,
+            bob,
+            amount,
+            actionFieldsHash,
+            proof
+        );
+    }
+
     function test_DepositETH_RevertsWhenPrecisionDoesNotFitZekoDecimals()
         public
     {
@@ -452,20 +661,80 @@ contract EthereumZekoBridgeTest is Test {
     {
         bytes32 oldActionState = keccak256("old deposit action state");
         bytes32 actionState = keccak256("deposit action state");
+        settlement.setCurrentActionState(oldActionState);
+        ZekoAddress recipient = ZekoAddressLib.pack(123, false);
+        bridge.depositETH{value: 1 ether}(recipient);
         bytes memory publicValues = _bridgePublicValues(
+            bridge.depositStateByNonce(0),
             bridge.currentDepositState(),
-            bridge.currentDepositState(),
-            bridge.depositNonce(),
+            0,
             bridge.depositNonce(),
             oldActionState,
             actionState,
-            0
+            1
         );
 
         bridge.submitBridgeTransition(publicValues, "");
 
         assertTrue(bridge.processedActionState(actionState));
+        assertEq(bridge.bridgedDepositNonce(), 1);
+        assertEq(settlement.actionState(), actionState);
         assertEq(bridge.currentWithdrawState(), bytes32(0));
+    }
+
+    function test_SubmitBridgeTransitionV2_RecordsEveryActionCheckpoint()
+        public
+    {
+        bytes32 oldActionState = keccak256("v2 old action state");
+        bytes32 intermediateActionState = keccak256("v2 intermediate state");
+        bytes32 finalActionState = keccak256("v2 final action state");
+        settlement.setCurrentActionState(oldActionState);
+        settlement.setOuterActionStateLength(7);
+
+        ZekoAddress recipient = ZekoAddressLib.pack(123, false);
+        bridge.depositETH{value: 1 ether}(recipient);
+        bridge.depositETH{value: 2 ether}(recipient);
+
+        bytes memory firstAction = abi.encodePacked(
+            bytes32(uint256(1)),
+            bytes32(uint256(2)),
+            bytes32(uint256(3)),
+            bytes32(uint256(4)),
+            bytes32(uint256(5)),
+            intermediateActionState
+        );
+        bytes memory secondAction = abi.encodePacked(
+            bytes32(uint256(6)),
+            bytes32(uint256(7)),
+            bytes32(uint256(8)),
+            bytes32(uint256(9)),
+            bytes32(uint256(10)),
+            finalActionState
+        );
+        bytes memory publicValues = abi.encodePacked(
+            bytes4(0x5a4b4252),
+            uint16(2),
+            uint16(0),
+            bridge.depositStateByNonce(0),
+            bridge.currentDepositState(),
+            uint64(0),
+            uint64(2),
+            oldActionState,
+            finalActionState,
+            uint32(7),
+            uint32(9),
+            uint32(2),
+            firstAction,
+            secondAction
+        );
+
+        bridge.submitBridgeTransition(publicValues, "");
+
+        assertEq(settlement.actionState(), finalActionState);
+        assertEq(settlement.outerActionStateLength(), 9);
+        assertEq(settlement.appendCalls(), 2);
+        assertEq(bridge.bridgedDepositNonce(), 2);
+        assertTrue(bridge.processedActionState(finalActionState));
     }
 
     function test_SubmitBridgeTransition_RevertsWhenNotProver() public {
@@ -1171,6 +1440,26 @@ contract EthereumZekoBridgeTest is Test {
             keccak256(
                 abi.encode(bridge.WITHDRAW_MERKLE_NODE_DOMAIN(), left, right)
             );
+    }
+
+    function _singleInnerActionTree(
+        bytes32 leaf
+    )
+        private
+        view
+        returns (bytes32 root, bytes32[16] memory proof)
+    {
+        root = leaf;
+        bytes32 zero;
+        for (uint256 level = 0; level < 16; level++) {
+            proof[level] = zero;
+            root = keccak256(
+                abi.encode(bridge.INNER_ACTION_NODE_V2_DOMAIN(), root, zero)
+            );
+            zero = keccak256(
+                abi.encode(bridge.INNER_ACTION_NODE_V2_DOMAIN(), zero, zero)
+            );
+        }
     }
 
     function _writeBytes32(

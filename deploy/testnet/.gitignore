@@ -1,0 +1,10 @@
+.env
+gateway.env
+secrets/
+config/circuits.json
+config/virtual-mina-accounts.json
+config/bridge-genesis-ledger.json
+config/bridge-scenario.json
+config/identity.json
+artifacts/
+logs/

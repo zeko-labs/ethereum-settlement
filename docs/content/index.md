@@ -2,34 +2,34 @@
 layout: home
 
 hero:
-  name: "Zeko Ethereum L2"
-  text: "Proof-powered settlement and bridging"
-  tagline: "Verify Zeko state transitions, bridge deposits, and withdrawals on Ethereum with SP1."
+  name: "Zeko on Ethereum"
+  text: "Multisig-DA settlement PoC"
+  tagline: "Real OCaml Zeko transitions, verified in SP1 and checkpointed on Ethereum through a Mina-compatible gateway."
   image:
     src: /logo.svg
     alt: Zeko
   actions:
     - theme: brand
-      text: Explore the architecture
-      link: /architecture
+      text: Understand the system
+      link: /overview
     - theme: alt
-      text: Settlement flow
-      link: /protocol/settlement
+      text: Deploy the testnet PoC
+      link: /operations/testnet
 
 features:
-  - title: Zeko Settlement
-    details: Verify Zeko and o1 Kimchi proofs inside SP1, then settle the resulting rollup root on Ethereum.
+  - title: Pickles settlement
+    details: SP1 verifies the proof exported by the real OCaml Zeko committer and emits a versioned Ethereum receipt.
     link: /protocol/settlement
 
-  - title: Ethereum to Zeko
-    details: Prove that ordered Ethereum deposits produce the expected Zeko action-state transition.
+  - title: Native ETH bridge
+    details: Finalized Ethereum deposits become exact outer Witness actions; settled inner actions become ordinary Merkle claims.
     link: /protocol/deposit-bridge
 
-  - title: Zeko to Ethereum
-    details: Prove withdrawal actions, accept settlement-backed checkpoints, and release locked assets.
-    link: /protocol/withdrawals
+  - title: Mina-compatible gateway
+    details: The sequencer keeps using the GraphQL subset it expects while the gateway owns pinned local validation, SP1 proving, submission, and indexing.
+    link: /gateway/api
 
-  - title: Succinct Ethereum Verification
-    details: Ethereum verifies compact SP1 proofs instead of executing Kimchi verification and action-state hashing on-chain.
-    link: /reference/security-model
+  - title: Operator-controlled cost
+    details: Every paid Succinct request pauses after local verification until an operator approves its exact digest and price caps.
+    link: /gateway/proving
 ---
