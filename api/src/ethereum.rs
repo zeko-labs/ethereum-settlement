@@ -60,9 +60,11 @@ sol! {
         function bridgedDepositNonce() external view returns (uint64);
         function withdrawalDelaySlots() external view returns (uint32);
         function nextWithdrawalIndex(address recipient) external view returns (uint32);
+        function nextTokenWithdrawalIndex(address token, address recipient) external view returns (uint32);
         function processedActionState(bytes32 actionState) external view returns (bool);
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
+        function assetIdByToken(address token) external view returns (bytes32);
         function submitBridgeTransition(bytes publicValues, bytes proofBytes) external;
         function submitWithdrawTransition(bytes publicValues, bytes proofBytes) external;
         event BridgeDeposit(
@@ -458,6 +460,12 @@ impl Ethereum {
             .collect()
     }
 
+    pub async fn erc20_asset_id(&self, token: Address) -> Result<B256> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
+        Ok(contract.assetIdByToken(token).call().await?)
+    }
+
     pub async fn settlement_accepted_logs(
         &self,
         from_block: u64,
@@ -677,6 +685,18 @@ impl Ethereum {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
             .nextWithdrawalIndex(recipient)
+            .call()
+            .await?)
+    }
+
+    pub async fn next_token_withdrawal_index(
+        &self,
+        token: Address,
+        recipient: Address,
+    ) -> Result<u32> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
+            .nextTokenWithdrawalIndex(token, recipient)
             .call()
             .await?)
     }

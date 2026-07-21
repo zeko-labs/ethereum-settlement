@@ -193,6 +193,22 @@ pub struct NativeWithdrawalV2 {
     pub amount: u64,
 }
 
+/// Clear ERC-20 withdrawal metadata plus the exact flattened OCaml parameter
+/// fields used to recompute the proof-bound action auxiliary hash.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenWithdrawalV3 {
+    #[serde(with = "serde_address")]
+    pub token: Address,
+    #[serde(with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    #[serde(with = "serde_address")]
+    pub recipient: Address,
+    pub amount: u64,
+    #[serde(with = "serde_vec_bytes32")]
+    pub params_fields: Vec<Bytes32>,
+}
+
 /// One exact OCaml `Rollup_state.Inner_action` action. `fields` is the raw
 /// three-field action emitted by Mina. Non-withdrawal actions intentionally
 /// omit `withdrawal` and become non-claimable leaves in the same ordered tree.
@@ -203,6 +219,8 @@ pub struct InnerActionWitnessV2 {
     pub fields: Vec<Bytes32>,
     #[serde(default)]
     pub withdrawal: Option<NativeWithdrawalV2>,
+    #[serde(default)]
+    pub token_withdrawal: Option<TokenWithdrawalV3>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -536,12 +554,28 @@ fn read_array<const N: usize>(input: &[u8], cursor: &mut usize) -> [u8; N] {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeDeposit {
-    /// Native ETH amount in 18-decimal wei. The guest requires 1 gwei
-    /// granularity and derives the 9-decimal Zeko amount itself.
+    /// Zero for native ETH; otherwise the registered ERC-20 address.
+    #[serde(default, with = "serde_address")]
+    pub token: Address,
+    /// Canonical registry identity. Native ETH uses zero for compatibility.
+    #[serde(default, with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    /// Raw Ethereum custody amount. Native ETH uses wei; canonical ERC-20s use
+    /// the identical base unit configured on the Mina fungible token.
     #[serde(with = "serde_bytes32")]
     pub amount: Bytes32,
+    /// Amount encoded into the Zeko action. Older native fixtures omit this and
+    /// let the guest derive the 9-decimal amount from wei.
+    #[serde(default)]
+    pub zeko_amount: Option<u64>,
     #[serde(with = "serde_bytes32")]
     pub zeko_recipient: ZekoAddress,
+    #[serde(default = "default_bridge_timeout")]
+    pub timeout: u64,
+}
+
+fn default_bridge_timeout() -> u64 {
+    u32::MAX as u64
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -611,9 +645,9 @@ pub struct BridgeOuterActionV2 {
     pub state_after: Bytes32,
 }
 
-/// Canonical native-deposit receipt. The variable tail contains every exact
-/// five-field outer Witness action, so the gateway can serve the same action
-/// bytes to the OCaml sequencer without reimplementing Poseidon hashing.
+/// Canonical native/ERC-20 deposit receipt. The variable tail contains every
+/// exact five-field outer Witness action, so the gateway can serve the same
+/// action bytes to the OCaml sequencer without reimplementing Poseidon hashing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeTransitionPublicValuesV2 {
     pub ethereum_state_before: Bytes32,

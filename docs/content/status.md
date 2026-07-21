@@ -83,6 +83,39 @@ count. `API_EXECUTE_ONLY=true` still reproduces the full audit. The local
 verifier accepted empty proof bytes only on Anvil chain ID 31337. No SP1 proof
 or network request was generated.
 
+## ERC-20 branch checkpoint
+
+The ERC-20 port now has the proof and custody seam needed to turn a canonical
+`submitDeposit` call into a Zeko witness action:
+
+- Solidity registers an immutable Ethereum-token/Mina-token asset identity,
+  takes exact ERC-20 custody, emits the canonical deposit fields, and protects
+  the locked liability from emergency withdrawal.
+- The gateway indexes finalized `BridgeDeposit` logs together with the
+  immutable asset ID. The bridge guest verifies the V2 ERC-20 deposit leaf and
+  converts those fields into the exact five-field outer Witness action using
+  the asset-bound `Ethereum ERC20 deposit V1` Poseidon preimage.
+- Zeko's hybrid Ethereum/custom-token circuit uses the same preimage and binds
+  both 128-bit asset-ID limbs before an accepted deposit can move a bounded,
+  pre-minted Mina Fungible Token inventory from the bridge vault to the user.
+- Withdrawal settlement binds the exact inner action, asset ID, ERC-20 token,
+  recipient, and UInt64 amount into a V3 leaf. Solidity releases only the
+  matching token after the settlement delay, with per-token replay cursors and
+  liabilities.
+- The gateway and `@zeko-labs/eth-bridge-sdk` expose ERC-20 deposit status and
+  delayed token-withdrawal claims. Solidity/Rust share the exact accumulator
+  leaf schema, SP1/OCaml share the exact Poseidon action vector, and the
+  mock-verifier contract test exercises the complete custody, checkpoint, and
+  delayed-release sequence without requesting an SP1 proof.
+
+This branch is not yet a deployable Mina Fungible Token product. The remaining
+runtime work is to instantiate the asset-specific circuit in the sequencer and
+prover protocol, deploy the unmodified standard token owner/admin plus the
+proof-controlled vault and bounded inventory, and compose the returned bridge
+proof with the standard owner's `approveBase` proof before submitting the L2
+transaction. Each registered ERC-20 currently requires its own circuit/VK and
+coordinated registry entry.
+
 ## Needed for the live PoC
 
 1. Build and record immutable machine-local images from the final committed
@@ -102,7 +135,8 @@ approval-gated external operations.
 
 - EIP-4844 blob DA, blob archival, and blob-to-Zeko data-root equivalence.
 - Deposit cancellation and refunds.
-- ERC20 deposit/withdrawal semantics.
+- Production ERC-20 token deployment, inventory governance, and standard-token
+  owner proof composition.
 - Bridge proof fees.
 - A canonical Mina verification-key hash; the PoC uses SHA-256 of the exact
   verifier-index JSON bytes.

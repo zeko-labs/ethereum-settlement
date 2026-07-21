@@ -7,7 +7,7 @@ use pickles_verifier::types::{StepField, VerifiableProof};
 use zeko_sp1_lib::{
     Address, Bytes32, InnerActionBatchWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2,
     OuterStateV1, SettlementDaMode, SettlementPublicValuesV1, SettlementPublicValuesV2,
-    SettlementWitnessV1,
+    SettlementWitnessV1, TokenWithdrawalV3,
 };
 
 const BODY_UPDATE_STATE_START: usize = 2;
@@ -21,6 +21,7 @@ const MAX_INNER_ACTIONS: usize = 1 << INNER_ACTION_TREE_DEPTH;
 
 const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
 const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
+const ERC20_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
 const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
 const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
 
@@ -98,8 +99,8 @@ fn derive_v2_receipt(
             .checked_add(u32::try_from(offset).expect("offset fits u32"))
             .expect("inner action index overflow");
         let action_fields_hash = hash_action_fields(&action.fields);
-        let leaf = match &action.withdrawal {
-            Some(withdrawal) => {
+        let leaf = match (&action.withdrawal, &action.token_withdrawal) {
+            (Some(withdrawal), None) => {
                 assert_native_withdrawal_preimage(&fields, withdrawal);
                 hash_native_withdrawal_leaf(
                     settlement.chain_id,
@@ -109,12 +110,23 @@ fn derive_v2_receipt(
                     action_fields_hash,
                 )
             }
-            None => hash_raw_inner_action_leaf(
+            (None, Some(withdrawal)) => {
+                assert_erc20_withdrawal_preimage(&fields, withdrawal);
+                hash_erc20_withdrawal_leaf(
+                    settlement.chain_id,
+                    batch.bridge_address,
+                    global_index,
+                    withdrawal,
+                    action_fields_hash,
+                )
+            }
+            (None, None) => hash_raw_inner_action_leaf(
                 settlement.chain_id,
                 batch.bridge_address,
                 global_index,
                 action_fields_hash,
             ),
+            (Some(_), Some(_)) => panic!("inner action has multiple withdrawal preimages"),
         };
         leaves.push(leaf);
     }
@@ -157,6 +169,69 @@ fn assert_native_withdrawal_preimage(fields: &[StepField], withdrawal: &NativeWi
     );
 }
 
+fn assert_erc20_withdrawal_preimage(fields: &[StepField], withdrawal: &TokenWithdrawalV3) {
+    assert_ne!(
+        withdrawal.token, [0u8; 20],
+        "ERC20 withdrawal token is zero"
+    );
+    assert_ne!(
+        withdrawal.asset_id, [0u8; 32],
+        "ERC20 withdrawal asset id is zero"
+    );
+    assert!(
+        withdrawal.amount > 0,
+        "ERC20 withdrawal amount must be non-zero"
+    );
+
+    let params = withdrawal
+        .params_fields
+        .iter()
+        .map(field_from_bytes)
+        .collect::<Vec<_>>();
+    assert!(
+        params.len() >= 6,
+        "ERC20 withdrawal parameter preimage is truncated"
+    );
+
+    let mut asset_high = [0u8; 32];
+    asset_high[16..].copy_from_slice(&withdrawal.asset_id[..16]);
+    let mut asset_low = [0u8; 32];
+    asset_low[16..].copy_from_slice(&withdrawal.asset_id[16..]);
+    assert_eq!(
+        params[0],
+        field_from_bytes(&asset_high),
+        "ERC20 withdrawal asset high limb mismatch"
+    );
+    assert_eq!(
+        params[1],
+        field_from_bytes(&asset_low),
+        "ERC20 withdrawal asset low limb mismatch"
+    );
+
+    let base = params.len() - 4;
+    assert_eq!(
+        params[base + 1],
+        StepField::from(withdrawal.amount),
+        "ERC20 withdrawal amount mismatch"
+    );
+    assert_eq!(
+        params[base + 2],
+        field_from_address(withdrawal.recipient),
+        "ERC20 withdrawal recipient mismatch"
+    );
+    assert_eq!(
+        params[base + 3],
+        StepField::from(0u8),
+        "ERC20 withdrawal recipient parity must be even"
+    );
+
+    let expected_aux = hash_with_prefix("Ethereum ERC20 withdrawal V1", &params);
+    assert_eq!(
+        fields[1], expected_aux,
+        "ERC20 withdrawal preimage does not match action aux"
+    );
+}
+
 fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
     let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
     encoded.extend_from_slice(&keccak256(ACTION_FIELDS_DOMAIN.as_bytes()).0);
@@ -181,6 +256,26 @@ fn hash_native_withdrawal_leaf(
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge_address));
     encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&address_word(withdrawal.recipient));
+    encoded.extend_from_slice(&u64_word(withdrawal.amount));
+    encoded.extend_from_slice(&action_fields_hash);
+    keccak256(encoded).0
+}
+
+fn hash_erc20_withdrawal_leaf(
+    chain_id: u64,
+    bridge_address: Address,
+    global_index: u32,
+    withdrawal: &TokenWithdrawalV3,
+    action_fields_hash: Bytes32,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(32 * 9);
+    encoded.extend_from_slice(&keccak256(ERC20_WITHDRAWAL_LEAF_DOMAIN.as_bytes()).0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge_address));
+    encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&address_word(withdrawal.token));
+    encoded.extend_from_slice(&withdrawal.asset_id);
     encoded.extend_from_slice(&address_word(withdrawal.recipient));
     encoded.extend_from_slice(&u64_word(withdrawal.amount));
     encoded.extend_from_slice(&action_fields_hash);
@@ -523,7 +618,7 @@ mod tests {
     use super::*;
     use zeko_sp1_lib::{
         ChunkedRandomOracleInputV1, InnerActionWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2,
-        SettlementBindingV1, SettlementContextV1,
+        SettlementBindingV1, SettlementContextV1, TokenWithdrawalV3,
     };
 
     fn field(value: u64) -> StepField {
@@ -670,6 +765,7 @@ mod tests {
             actions: vec![InnerActionWitnessV2 {
                 fields: fields.into_iter().map(field_to_bytes).collect(),
                 withdrawal: Some(withdrawal),
+                token_withdrawal: None,
             }],
         };
 
@@ -693,6 +789,61 @@ mod tests {
                 amount: 1,
             },
         );
+    }
+
+    #[test]
+    fn v2_erc20_withdrawal_preimage_binds_asset_recipient_and_amount() {
+        let mut asset_id = [0u8; 32];
+        asset_id[15] = 1;
+        asset_id[31] = 2;
+        let mut recipient = [0u8; 20];
+        recipient[16..].copy_from_slice(&[1, 2, 3, 4]);
+        let amount = 2_000_000u64;
+        let mut high = [0u8; 32];
+        high[16..].copy_from_slice(&asset_id[..16]);
+        let mut low = [0u8; 32];
+        low[16..].copy_from_slice(&asset_id[16..]);
+        let params = vec![
+            field_from_bytes(&high),
+            field_from_bytes(&low),
+            field(0),
+            field(1),
+            field(1),
+            field_from_bytes(&[
+                0x25, 0xbe, 0xa2, 0x29, 0x10, 0xdb, 0x1c, 0xd9, 0x18, 0xa4, 0xd3, 0x66, 0xe9, 0x72,
+                0x73, 0x13, 0xfe, 0xe3, 0x76, 0x01, 0x23, 0xcb, 0x90, 0x4f, 0x6f, 0x30, 0x71, 0x67,
+                0x98, 0x0a, 0x51, 0x98,
+            ]),
+            field(0),
+            field(0),
+            field(amount),
+            field_from_address(recipient),
+            field(0),
+        ];
+        let aux = hash_with_prefix("Ethereum ERC20 withdrawal V1", &params);
+        assert_eq!(
+            field_to_bytes(aux),
+            [
+                0x24, 0xc5, 0x50, 0xad, 0x1d, 0x37, 0xbd, 0x87, 0x11, 0x14, 0x8b, 0x1b, 0x4a, 0xd5,
+                0xf1, 0x72, 0x4c, 0x52, 0x1a, 0x62, 0xae, 0xc4, 0xb9, 0x78, 0xa1, 0xa1, 0x9a, 0x76,
+                0x29, 0xbd, 0x59, 0xcf,
+            ]
+        );
+        let fields = vec![field(0), aux, field(777)];
+        let withdrawal = TokenWithdrawalV3 {
+            token: [0x33; 20],
+            asset_id,
+            recipient,
+            amount,
+            params_fields: params.into_iter().map(field_to_bytes).collect(),
+        };
+
+        assert_erc20_withdrawal_preimage(&fields, &withdrawal);
+        let original = hash_erc20_withdrawal_leaf(31337, [0x44; 20], 5, &withdrawal, [0x55; 32]);
+        let mut other_asset = withdrawal.clone();
+        other_asset.asset_id = [0x12; 32];
+        let relabelled = hash_erc20_withdrawal_leaf(31337, [0x44; 20], 5, &other_asset, [0x55; 32]);
+        assert_ne!(original, relabelled);
     }
 
     #[test]

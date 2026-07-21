@@ -475,19 +475,31 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
+        let asset_id = if deposit.token.is_zero() {
+            None
+        } else {
+            let asset_id = ethereum.erc20_asset_id(deposit.token).await?;
+            anyhow::ensure!(
+                !asset_id.is_zero(),
+                "ERC20 deposit references an unregistered bridge asset"
+            );
+            Some(asset_id.to_string())
+        };
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
-                 token, sender, zeko_recipient, ethereum_amount, zeko_amount,
-                 timeout, ethereum_block_number, ethereum_block_hash,
-                 ethereum_tx_hash, ethereum_log_index, removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9::numeric,
-                     $10, $11, $12, $13, $14, FALSE)
+                 token, asset_id, sender, zeko_recipient, ethereum_amount,
+                 zeko_amount, timeout, ethereum_block_number,
+                 ethereum_block_hash, ethereum_tx_hash, ethereum_log_index,
+                 removed)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric,
+                     $10::numeric, $11, $12, $13, $14, $15, FALSE)
              ON CONFLICT (nonce) DO UPDATE SET
                  deposit_leaf = EXCLUDED.deposit_leaf,
                  old_deposit_state = EXCLUDED.old_deposit_state,
                  new_deposit_state = EXCLUDED.new_deposit_state,
                  token = EXCLUDED.token,
+                 asset_id = EXCLUDED.asset_id,
                  sender = EXCLUDED.sender,
                  zeko_recipient = EXCLUDED.zeko_recipient,
                  ethereum_amount = EXCLUDED.ethereum_amount,
@@ -504,6 +516,7 @@ async fn index_bridge_deposits(
         .bind(deposit.old_deposit_state.to_string())
         .bind(deposit.new_deposit_state.to_string())
         .bind(deposit.token.to_string())
+        .bind(asset_id)
         .bind(deposit.sender.to_string())
         .bind(deposit.zeko_recipient.to_string())
         .bind(deposit.amount.to_string())
@@ -1331,8 +1344,8 @@ async fn store_inner_action_leaves(
             .inner_action_start_index
             .checked_add(u32::try_from(offset)?)
             .context("inner action index overflow")?;
-        let leaf = match &action.withdrawal {
-            Some(withdrawal) => hash_native_withdrawal_leaf(
+        let leaf = match (&action.withdrawal, &action.token_withdrawal) {
+            (Some(withdrawal), None) => hash_native_withdrawal_leaf(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
@@ -1340,12 +1353,23 @@ async fn store_inner_action_leaves(
                 withdrawal.amount,
                 action_fields_hash,
             ),
-            None => hash_raw_inner_action_leaf(
+            (None, Some(withdrawal)) => hash_erc20_withdrawal_leaf(
+                receipt.settlement.chain_id,
+                batch.bridge_address,
+                global_index,
+                withdrawal.token,
+                withdrawal.asset_id,
+                withdrawal.recipient,
+                withdrawal.amount,
+                action_fields_hash,
+            ),
+            (None, None) => hash_raw_inner_action_leaf(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
                 action_fields_hash,
             ),
+            (Some(_), Some(_)) => anyhow::bail!("inner action has multiple withdrawal preimages"),
         };
         leaves.push(leaf);
         rows.push((offset, global_index, action, action_fields_hash, leaf));
@@ -1356,27 +1380,41 @@ async fn store_inner_action_leaves(
     );
 
     for (offset, global_index, action, action_fields_hash, leaf) in rows {
-        let (recipient, amount) = match &action.withdrawal {
-            Some(withdrawal) => (
-                Some(format!("0x{}", hex::encode(withdrawal.recipient))),
-                Some(withdrawal.amount.to_string()),
-            ),
-            None => (None, None),
-        };
+        let (token, asset_id, recipient, amount) =
+            match (&action.withdrawal, &action.token_withdrawal) {
+                (Some(withdrawal), None) => (
+                    None,
+                    None,
+                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                    Some(withdrawal.amount.to_string()),
+                ),
+                (None, Some(withdrawal)) => (
+                    Some(format!("0x{}", hex::encode(withdrawal.token))),
+                    Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                    Some(withdrawal.amount.to_string()),
+                ),
+                (None, None) => (None, None, None, None),
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("inner action has multiple withdrawal preimages")
+                }
+            };
         sqlx::query(
             "INSERT INTO gateway_inner_action_leaves
                 (settlement_sequence, action_offset, global_action_index,
-                 action_fields, action_fields_hash, leaf, recipient,
-                 zeko_amount, inner_action_root, commit_slot_upper,
+                 action_fields, action_fields_hash, leaf, token, asset_id,
+                 recipient, zeko_amount, inner_action_root, commit_slot_upper,
                  ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10, $11, $12,
-                     $13, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::numeric, $11,
+                     $12, $13, $14, $15, FALSE)
              ON CONFLICT (settlement_sequence, action_offset) DO UPDATE SET
                  global_action_index = EXCLUDED.global_action_index,
                  action_fields = EXCLUDED.action_fields,
                  action_fields_hash = EXCLUDED.action_fields_hash,
                  leaf = EXCLUDED.leaf,
+                 token = EXCLUDED.token,
+                 asset_id = EXCLUDED.asset_id,
                  recipient = EXCLUDED.recipient,
                  zeko_amount = EXCLUDED.zeko_amount,
                  inner_action_root = EXCLUDED.inner_action_root,
@@ -1392,6 +1430,8 @@ async fn store_inner_action_leaves(
         .bind(serde_json::to_value(&action.fields)?)
         .bind(format!("0x{}", hex::encode(action_fields_hash)))
         .bind(format!("0x{}", hex::encode(leaf)))
+        .bind(token)
+        .bind(asset_id)
         .bind(recipient)
         .bind(amount)
         .bind(format!("0x{}", hex::encode(receipt.inner_action_root)))
@@ -1428,6 +1468,29 @@ pub(crate) fn hash_native_withdrawal_leaf(
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge));
     encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&address_word(recipient));
+    encoded.extend_from_slice(&u64_word(amount));
+    encoded.extend_from_slice(&action_fields_hash);
+    keccak256(encoded).0
+}
+
+pub(crate) fn hash_erc20_withdrawal_leaf(
+    chain_id: u64,
+    bridge: Address,
+    global_index: u32,
+    token: Address,
+    asset_id: Bytes32,
+    recipient: Address,
+    amount: u64,
+    action_fields_hash: Bytes32,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(288);
+    encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3").0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge));
+    encoded.extend_from_slice(&u32_word(global_index));
+    encoded.extend_from_slice(&address_word(token));
+    encoded.extend_from_slice(&asset_id);
     encoded.extend_from_slice(&address_word(recipient));
     encoded.extend_from_slice(&u64_word(amount));
     encoded.extend_from_slice(&action_fields_hash);

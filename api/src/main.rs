@@ -113,9 +113,31 @@ struct NativeWithdrawalProof {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TokenWithdrawalProof {
+    settlement_sequence: u64,
+    offset: u32,
+    global_action_index: u32,
+    token: String,
+    asset_id: String,
+    recipient: String,
+    amount: String,
+    action_fields_hash: String,
+    siblings: Vec<String>,
+    inner_action_root: String,
+    commit_slot_upper: u32,
+    claimable_slot: u64,
+    current_virtual_slot: u64,
+    recipient_cursor: u32,
+    status: String,
+    next_action: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct NativeDepositStatus {
     nonce: u64,
     token: String,
+    asset_id: Option<String>,
     sender: String,
     zeko_recipient: String,
     ethereum_amount: String,
@@ -396,6 +418,10 @@ async fn main() -> Result<()> {
         .route(
             "/v1/bridge/withdrawals/:sequence/:offset",
             get(get_native_withdrawal_proof),
+        )
+        .route(
+            "/v1/bridge/token-withdrawals/:sequence/:offset",
+            get(get_token_withdrawal_proof),
         )
         .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
         .route(
@@ -791,7 +817,7 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     let historical = historical.context("missing bridged deposit checkpoint")?;
     let settlement = state.ethereum.settlement_state().await?;
     let rows = sqlx::query(
-        "SELECT nonce, old_deposit_state, new_deposit_state, token,
+        "SELECT nonce, old_deposit_state, new_deposit_state, token, asset_id,
                 zeko_recipient, ethereum_amount::text AS ethereum_amount,
                 zeko_amount::text AS zeko_amount, timeout
          FROM gateway_bridge_deposits deposits
@@ -836,10 +862,6 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
             .try_get::<String, _>("token")?
             .parse()
             .context("invalid indexed token")?;
-        anyhow::ensure!(
-            token.is_zero(),
-            "only canonical native deposits are batchable"
-        );
         let timeout = u64::try_from(row.try_get::<i64, _>("timeout")?)?;
         anyhow::ensure!(
             timeout == u64::from(u32::MAX),
@@ -848,17 +870,39 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
         let ethereum_amount =
             U256::from_str_radix(&row.try_get::<String, _>("ethereum_amount")?, 10)?;
         let zeko_amount = U256::from_str_radix(&row.try_get::<String, _>("zeko_amount")?, 10)?;
-        anyhow::ensure!(
-            ethereum_amount == zeko_amount * U256::from(1_000_000_000u64),
-            "indexed native amount normalization mismatch"
-        );
+        let (asset_id, zeko_amount_u64) = if token.is_zero() {
+            anyhow::ensure!(
+                ethereum_amount == zeko_amount * U256::from(1_000_000_000u64),
+                "indexed native amount normalization mismatch"
+            );
+            (B256::ZERO, u64::try_from(zeko_amount)?)
+        } else {
+            anyhow::ensure!(
+                ethereum_amount == zeko_amount,
+                "canonical ERC20 deposit must preserve base units"
+            );
+            let asset_id = row
+                .try_get::<Option<String>, _>("asset_id")?
+                .context("indexed ERC20 deposit is missing its asset id")?
+                .parse::<B256>()
+                .context("indexed ERC20 asset id is invalid")?;
+            anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
+            (asset_id, u64::try_from(zeko_amount)?)
+        };
         let recipient: alloy::primitives::B256 = row
             .try_get::<String, _>("zeko_recipient")?
             .parse()
             .context("invalid indexed Zeko recipient")?;
         deposits.push(BridgeDeposit {
+            token: token
+                .as_slice()
+                .try_into()
+                .expect("Ethereum address length"),
+            asset_id: asset_id.0,
             amount: ethereum_amount.to_be_bytes(),
+            zeko_amount: Some(zeko_amount_u64),
             zeko_recipient: recipient.0,
+            timeout,
         });
         expected_nonce += 1;
         expected_state = new_state;
@@ -899,9 +943,20 @@ async fn get_native_withdrawal_proof(
     }
 }
 
+async fn get_token_withdrawal_proof(
+    State(state): State<AppState>,
+    Path((sequence, offset)): Path<(u64, u32)>,
+) -> Response {
+    match load_token_withdrawal_proof(&state, sequence, offset).await {
+        Ok(proof) => Json(proof).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, &error.to_string()),
+    }
+}
+
 async fn get_native_deposit(State(state): State<AppState>, Path(nonce): Path<u64>) -> Response {
     let row = sqlx::query(
-        "SELECT deposits.nonce, deposits.token, deposits.sender,
+        "SELECT deposits.nonce, deposits.token, deposits.asset_id,
+                deposits.sender,
                 deposits.zeko_recipient,
                 deposits.ethereum_amount::text AS ethereum_amount,
                 deposits.zeko_amount::text AS zeko_amount, deposits.timeout,
@@ -960,7 +1015,8 @@ async fn list_native_deposits(
     };
     let limit = query.limit.unwrap_or(20).clamp(1, 100);
     let rows = sqlx::query(
-        "SELECT deposits.nonce, deposits.token, deposits.sender,
+        "SELECT deposits.nonce, deposits.token, deposits.asset_id,
+                deposits.sender,
                 deposits.zeko_recipient,
                 deposits.ethereum_amount::text AS ethereum_amount,
                 deposits.zeko_amount::text AS zeko_amount, deposits.timeout,
@@ -1024,6 +1080,7 @@ fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositSt
     Ok(NativeDepositStatus {
         nonce: u64::try_from(row.try_get::<i64, _>("nonce")?)?,
         token: row.try_get("token")?,
+        asset_id: row.try_get("asset_id")?,
         sender: row.try_get("sender")?,
         zeko_recipient: row.try_get("zeko_recipient")?,
         ethereum_amount: row.try_get("ethereum_amount")?,
@@ -1289,6 +1346,101 @@ async fn load_native_withdrawal_proof_at(
         settlement_sequence: sequence,
         offset,
         global_action_index,
+        recipient,
+        amount,
+        action_fields_hash: target.try_get("action_fields_hash")?,
+        siblings,
+        inner_action_root: target.try_get("inner_action_root")?,
+        commit_slot_upper,
+        claimable_slot,
+        current_virtual_slot: current_slot,
+        recipient_cursor,
+        status: status.to_owned(),
+        next_action: next_action.to_owned(),
+    })
+}
+
+async fn load_token_withdrawal_proof(
+    state: &AppState,
+    sequence: u64,
+    offset: u32,
+) -> Result<TokenWithdrawalProof> {
+    let current_slot = state.ethereum.current_virtual_slot().await?;
+    let delay = state.ethereum.withdrawal_delay_slots().await?;
+    let rows = sqlx::query(
+        "SELECT action_offset, global_action_index, action_fields_hash, leaf,
+                token, asset_id, recipient, zeko_amount::text AS zeko_amount,
+                inner_action_root, commit_slot_upper
+         FROM gateway_inner_action_leaves
+         WHERE settlement_sequence = $1 AND NOT removed
+         ORDER BY action_offset",
+    )
+    .bind(i64::try_from(sequence)?)
+    .fetch_all(&state.pool)
+    .await?;
+    anyhow::ensure!(!rows.is_empty(), "settlement inner-action batch not found");
+    let target = rows
+        .get(usize::try_from(offset)?)
+        .context("withdrawal offset is outside the batch")?;
+    anyhow::ensure!(
+        target.try_get::<i32, _>("action_offset")? == i32::try_from(offset)?,
+        "inner-action batch is not contiguous"
+    );
+    let token: String = target
+        .try_get::<Option<String>, _>("token")?
+        .context("inner action is not a claimable ERC20 withdrawal")?;
+    let asset_id: String = target
+        .try_get::<Option<String>, _>("asset_id")?
+        .context("ERC20 withdrawal asset id missing")?;
+    let recipient: String = target
+        .try_get::<Option<String>, _>("recipient")?
+        .context("ERC20 withdrawal recipient missing")?;
+    let amount = target
+        .try_get::<Option<String>, _>("zeko_amount")?
+        .context("ERC20 withdrawal amount missing")?;
+    amount
+        .parse::<u64>()
+        .context("withdrawal amount is outside the supported UInt64 range")?;
+
+    let leaves = rows
+        .iter()
+        .map(|row| -> Result<[u8; 32]> {
+            Ok(row
+                .try_get::<String, _>("leaf")?
+                .parse::<alloy::primitives::B256>()?
+                .0)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let siblings = inner_action_merkle_proof(&leaves, usize::try_from(offset)?)
+        .into_iter()
+        .map(|hash| format!("0x{}", hex::encode(hash)))
+        .collect();
+    let commit_slot_upper = u32::try_from(target.try_get::<i64, _>("commit_slot_upper")?)?;
+    let global_action_index = u32::try_from(target.try_get::<i64, _>("global_action_index")?)?;
+    let token_address = token
+        .parse::<Address>()
+        .context("indexed withdrawal token is invalid")?;
+    let recipient_address = recipient
+        .parse::<Address>()
+        .context("indexed withdrawal recipient is invalid")?;
+    let recipient_cursor = state
+        .ethereum
+        .next_token_withdrawal_index(token_address, recipient_address)
+        .await?;
+    let claimable_slot = u64::from(commit_slot_upper) + u64::from(delay);
+    let (status, next_action) = native_withdrawal_progress(
+        global_action_index,
+        recipient_cursor,
+        current_slot,
+        claimable_slot,
+    );
+
+    Ok(TokenWithdrawalProof {
+        settlement_sequence: sequence,
+        offset,
+        global_action_index,
+        token,
+        asset_id,
         recipient,
         amount,
         action_fields_hash: target.try_get("action_fields_hash")?,

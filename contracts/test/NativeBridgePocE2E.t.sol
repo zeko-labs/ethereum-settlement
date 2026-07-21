@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
 import {ZekoAddress, ZekoAddressLib} from "../src/ZekoAddress.sol";
@@ -14,6 +15,14 @@ contract NativeBridgePocMockVerifier is ISP1Verifier {
         bytes calldata,
         bytes calldata
     ) external pure {}
+}
+
+contract ERC20BridgePocToken is ERC20 {
+    constructor() ERC20("Bridge PoC Token", "BPT") {}
+
+    function mint(address recipient, uint256 amount) external {
+        _mint(recipient, amount);
+    }
 }
 
 /// @dev Contract/glue checkpoint. Pickles and SP1 execution are covered by
@@ -163,6 +172,94 @@ contract NativeBridgePocE2ETest is Test {
         assertEq(recipient.balance - beforeBalance, 1 ether);
         assertEq(bridge.nativeEscrowLiability(), 0);
         assertEq(bridge.nextWithdrawalIndex(recipient), 1);
+    }
+
+    function test_ERC20DepositWitnessToDelayedAssetWithdrawal() public {
+        ERC20BridgePocToken token = new ERC20BridgePocToken();
+        bytes32 tokenOwner = bytes32(uint256(0x123456));
+        bytes32 tokenId = keccak256("wrapped BPT token id");
+        bridge.registerToken(address(token), tokenOwner, tokenId, 18, 18);
+
+        uint64 amount = 2 ether;
+        token.mint(depositor, amount);
+        vm.startPrank(depositor);
+        token.approve(address(bridge), amount);
+        bridge.submitDeposit(
+            address(token),
+            amount,
+            ZekoAddressLib.pack(0x1234, false)
+        );
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(bridge)), amount);
+        assertEq(bridge.escrowLiabilityByToken(address(token)), amount);
+
+        bytes32 witnessActionState = bytes32(uint256(456));
+        bridge.submitBridgeTransition(
+            _bridgeReceipt(witnessActionState),
+            ""
+        );
+        assertEq(settlement.actionState(), witnessActionState);
+        assertEq(bridge.bridgedDepositNonce(), 1);
+
+        bytes32 actionFieldsHash = keccak256(
+            "real asset-bound inner action fields"
+        );
+        bytes32 withdrawalLeaf = bridge.computeERC20WithdrawalLeaf(
+            0,
+            address(token),
+            bridge.assetIdByToken(address(token)),
+            recipient,
+            amount,
+            actionFieldsHash
+        );
+        (
+            bytes32 innerActionRoot,
+            bytes32[16] memory withdrawalProof
+        ) = _singleLeafTree(withdrawalLeaf);
+        settlement.verifyAndUpdateRoot(
+            _settlementReceipt(
+                witnessActionState,
+                keccak256("commit action state"),
+                innerActionRoot
+            ),
+            ""
+        );
+
+        uint64 claimableSlot = settlement.currentVirtualSlot() + 20;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.WithdrawalNotYetClaimable.selector,
+                uint64(10),
+                claimableSlot
+            )
+        );
+        bridge.claimERC20Withdrawal(
+            1,
+            0,
+            address(token),
+            recipient,
+            amount,
+            actionFieldsHash,
+            withdrawalProof
+        );
+
+        vm.warp(block.timestamp + 200);
+        bridge.claimERC20Withdrawal(
+            1,
+            0,
+            address(token),
+            recipient,
+            amount,
+            actionFieldsHash,
+            withdrawalProof
+        );
+        assertEq(token.balanceOf(recipient), amount);
+        assertEq(bridge.escrowLiabilityByToken(address(token)), 0);
+        assertEq(
+            bridge.nextTokenWithdrawalIndex(address(token), recipient),
+            1
+        );
     }
 
     function _bridgeReceipt(
