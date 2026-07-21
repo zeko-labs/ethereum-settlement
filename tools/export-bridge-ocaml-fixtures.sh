@@ -8,6 +8,15 @@ OUTPUT_DIR=${1:-$ROOT/build/poc/bridge-fixtures}
 ENV_FILE=${POC_ENV_FILE:-$ROOT/build/poc/deployment.env}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
+BRIDGE_ASSET=${BRIDGE_ASSET:-native}
+
+case "$BRIDGE_ASSET" in
+native | erc20) ;;
+*)
+  echo "Unsupported BRIDGE_ASSET: $BRIDGE_ASSET" >&2
+  exit 1
+  ;;
+esac
 
 [[ -d "$ZEKO_ROOT" && -f "$ENV_FILE" && -x "$NIX" && -x "$CAST" ]] || {
   echo "Missing Zeko checkout, PoC deployment environment, Nix, or cast" >&2
@@ -119,25 +128,63 @@ after_inner_length=$(
   exit 1
 }
 
-[[ $(jq -r '.proof.innerActionBatch.actions[0] | has("withdrawal")' \
-  "$second") == true ]] || {
-  echo "OCaml archive did not bind the native withdrawal preimage" >&2
+[[ $(jq -r '.bridgeAsset // "native"' "$OUTPUT_DIR/bridge-scenario.json") == \
+  "$BRIDGE_ASSET" ]] || {
+  echo "OCaml bridge scenario asset does not match BRIDGE_ASSET" >&2
   exit 1
 }
 expected_recipient=$(jq -r '.withdrawalRecipient | ascii_downcase' \
   "$OUTPUT_DIR/bridge-scenario.json")
-actual_recipient=$(jq -r \
-  '.proof.innerActionBatch.actions[0].withdrawal.recipient | ascii_downcase' \
-  "$second")
 expected_amount=$(jq -r '.withdrawalAmountZeko' \
   "$OUTPUT_DIR/bridge-scenario.json")
-actual_amount=$(jq -r \
-  '.proof.innerActionBatch.actions[0].withdrawal.amount' "$second")
-[[ $actual_recipient == "$expected_recipient" && \
-   $actual_amount == "$expected_amount" ]] || {
-  echo "Exported withdrawal preimage does not match the OCaml scenario" >&2
-  exit 1
-}
+if [[ $BRIDGE_ASSET == native ]]; then
+  [[ $(jq -r '.proof.innerActionBatch.actions[0] | has("withdrawal")' \
+    "$second") == true ]] || {
+    echo "OCaml archive did not bind the native withdrawal preimage" >&2
+    exit 1
+  }
+  actual_recipient=$(jq -r \
+    '.proof.innerActionBatch.actions[0].withdrawal.recipient | ascii_downcase' \
+    "$second")
+  actual_amount=$(jq -r \
+    '.proof.innerActionBatch.actions[0].withdrawal.amount' "$second")
+  [[ $actual_recipient == "$expected_recipient" && \
+     $actual_amount == "$expected_amount" ]] || {
+    echo "Exported native withdrawal preimage does not match the OCaml scenario" >&2
+    exit 1
+  }
+else
+  [[ $(jq -r '.proof.innerActionBatch.actions[0] | has("tokenWithdrawal")' \
+    "$second") == true ]] || {
+    echo "OCaml archive did not bind the ERC20 withdrawal preimage" >&2
+    exit 1
+  }
+  expected_token=$(jq -r '.ethereumTokenAddress | ascii_downcase' \
+    "$OUTPUT_DIR/bridge-scenario.json")
+  expected_asset=$(jq -r '.ethereumTokenAssetId | ascii_downcase' \
+    "$OUTPUT_DIR/bridge-scenario.json")
+  actual_token=$(jq -r \
+    '.proof.innerActionBatch.actions[0].tokenWithdrawal.token | ascii_downcase' \
+    "$second")
+  actual_asset=$(jq -r \
+    '.proof.innerActionBatch.actions[0].tokenWithdrawal.assetId | ascii_downcase' \
+    "$second")
+  actual_recipient=$(jq -r \
+    '.proof.innerActionBatch.actions[0].tokenWithdrawal.recipient | ascii_downcase' \
+    "$second")
+  actual_amount=$(jq -r \
+    '.proof.innerActionBatch.actions[0].tokenWithdrawal.amount' "$second")
+  params_length=$(jq \
+    '.proof.innerActionBatch.actions[0].tokenWithdrawal.paramsFields | length' \
+    "$second")
+  [[ $actual_token == "$expected_token" && \
+     $actual_asset == "$expected_asset" && \
+     $actual_recipient == "$expected_recipient" && \
+     $actual_amount == "$expected_amount" && $params_length -gt 0 ]] || {
+    echo "Exported ERC20 withdrawal preimage does not match the OCaml scenario" >&2
+    exit 1
+  }
+fi
 [[ $(jq -r '.zekoRecipientIsOdd' "$OUTPUT_DIR/bridge-scenario.json") == false ]]
 initial_action_state=$(jq -r '.outerActionStateBeforeDeposit | ascii_downcase' \
   "$OUTPUT_DIR/bridge-scenario.json")

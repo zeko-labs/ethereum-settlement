@@ -19,6 +19,15 @@ ZEKO_LOG=${ZEKO_LIVE_LOG:-/tmp/zeko-live-bridge-$$.log}
 ACTIONS_INDEXER_LOG=${ACTIONS_INDEXER_LOG:-/tmp/zeko-live-actions-indexer-$$.log}
 ACTIONS_API_LOG=${ACTIONS_API_LOG:-/tmp/zeko-live-actions-api-$$.log}
 ARCHIVE_PROXY_LOG=${ARCHIVE_PROXY_LOG:-/tmp/zeko-live-archive-proxy-$$.log}
+BRIDGE_ASSET=${BRIDGE_ASSET:-native}
+
+case "$BRIDGE_ASSET" in
+native | erc20) ;;
+*)
+  echo "Unsupported BRIDGE_ASSET: $BRIDGE_ASSET" >&2
+  exit 1
+  ;;
+esac
 
 for executable in "$NIX" "$CAST" "$BUN"; do
   [[ -x "$executable" ]] || {
@@ -92,6 +101,18 @@ fi
 set -a
 source "$ENV_FILE"
 set +a
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  for variable in \
+    ERC20_TOKEN_ADDRESS ERC20_ASSET_ID ERC20_DEPOSIT_CAP \
+    ERC20_DEPOSIT_AMOUNT ERC20_TOKEN_OWNER_PRIVATE_KEY \
+    ERC20_TOKEN_VAULT_PRIVATE_KEY ERC20_ADMIN_CONTRACT_PRIVATE_KEY \
+    ERC20_ADMIN_AUTHORITY_PRIVATE_KEY ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG; do
+    [[ -n ${!variable:-} ]] || {
+      echo "$variable is required for the ERC20 live sequencer scenario" >&2
+      exit 1
+    }
+  done
+fi
 # The testing ledger and the remote signer must hash zkApp commands in the
 # same Mina signature domain. Deployment environments already pin the signer
 # domain; carry it into both local clients unless the caller overrides either.
@@ -120,6 +141,9 @@ fi
     ZEKO_ETHEREUM_SETTLEMENT_FIXTURE_ONLY=true \
     ZEKO_ETHEREUM_BRIDGE_EXPORT_ONLY=true \
     ZEKO_ETHEREUM_BRIDGE_LIVE_SDK=true \
+    BRIDGE_ASSET="$BRIDGE_ASSET" \
+    ERC20_DEPOSIT_CAP="${ERC20_DEPOSIT_CAP:-}" \
+    ERC20_DEPOSIT_AMOUNT="${ERC20_DEPOSIT_AMOUNT:-}" \
     ZEKO_ETHEREUM_BRIDGE_LIVE_DIR="$LIVE_DIR" \
     ZEKO_ETHEREUM_BRIDGE_LIVE_PORT="$SEQUENCER_PORT" \
     ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY="$ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY" \
@@ -238,6 +262,10 @@ jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
     L2_NETWORK="$ZEKO_TEST_L2_NETWORK_ID" \
     ACTIONS_API_URL="http://127.0.0.1:$ACTIONS_API_PORT/graphql" \
     BRIDGE_ADDRESS="$BRIDGE_CONTRACT_ADDRESS" \
+    BRIDGE_ASSET="$BRIDGE_ASSET" \
+    ERC20_TOKEN_ADDRESS="${ERC20_TOKEN_ADDRESS:-}" \
+    ERC20_ASSET_ID="${ERC20_ASSET_ID:-}" \
+    ERC20_DEPOSIT_CAP="${ERC20_DEPOSIT_CAP:-}" \
     DEPOSIT_AMOUNT_ZEKO="$(jq -er '.depositAmountZeko' "$OUTPUT_DIR/bridge-scenario.json")" \
     WITHDRAWAL_AMOUNT_ZEKO="$(jq -er '.withdrawalAmountZeko' "$OUTPUT_DIR/bridge-scenario.json")" \
     WITHDRAWAL_RECIPIENT="$(jq -er '.withdrawalRecipient' "$OUTPUT_DIR/bridge-scenario.json")" \
@@ -246,12 +274,17 @@ jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
 
 wait "$ZEKO_PID"
 ZEKO_PID=
-POC_REUSE_OCAML_EXPORT=true "$ROOT/tools/export-bridge-ocaml-fixtures.sh" \
+BRIDGE_ASSET="$BRIDGE_ASSET" POC_REUSE_OCAML_EXPORT=true \
+  "$ROOT/tools/export-bridge-ocaml-fixtures.sh" \
   "$OUTPUT_DIR" >/dev/null
 
 jq -n --slurpfile sdk "$LIVE_DIR/operations-complete" \
   --arg fixtures "$OUTPUT_DIR" \
   '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,ocamlSettlements:2,
     liveSequencerGraphql:true,actionsPreparationApi:true,sp1ProofsGenerated:0}'
-echo "Browser SDK -> live sequencer deposit finalization -> native withdrawal request passed."
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  echo "Standard ERC20 mirror deployment, deposit finalization, and token withdrawal passed."
+else
+  echo "Browser SDK -> live sequencer deposit finalization -> native withdrawal request passed."
+fi
 echo "No SP1 proof was requested or generated."

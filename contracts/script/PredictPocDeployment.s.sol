@@ -17,6 +17,7 @@ contract PredictPocDeployment is PocDeploymentConfig {
         console2.log("LOCAL_SP1_VERIFIER_ADDRESS", addresses.localVerifier);
         console2.log("SETTLEMENT_CONTRACT_ADDRESS", addresses.settlementProxy);
         console2.log("BRIDGE_CONTRACT_ADDRESS", addresses.bridgeProxy);
+        console2.log("ERC20_TOKEN_ADDRESS", addresses.erc20Token);
         console2.logBytes32(bytes32(uint256(uint160(addresses.bridgeProxy))));
     }
 }

@@ -7,6 +7,7 @@ import {PocDeterministicFactory, PocERC1967Proxy} from "../src/PocDeterministicF
 import {ZekoSettlement} from "../src/ZekoSettlement.sol";
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
 import {LocalSP1Verifier} from "../src/mocks/LocalSP1Verifier.sol";
+import {PocERC20} from "../src/mocks/PocERC20.sol";
 
 abstract contract PocDeploymentConfig is Script {
     bytes32 internal constant FACTORY_SALT = keccak256("zeko-poc-factory-v1");
@@ -15,6 +16,7 @@ abstract contract PocDeploymentConfig is Script {
     bytes32 internal constant SETTLEMENT_PROXY_SALT = keccak256("zeko-settlement-proxy-v1");
     bytes32 internal constant BRIDGE_PROXY_SALT = keccak256("zeko-bridge-proxy-v1");
     bytes32 internal constant LOCAL_VERIFIER_SALT = keccak256("zeko-local-sp1-verifier-v1");
+    bytes32 internal constant ERC20_TOKEN_SALT = keccak256("zeko-poc-erc20-v1");
 
     struct Addresses {
         address factory;
@@ -23,6 +25,7 @@ abstract contract PocDeploymentConfig is Script {
         address localVerifier;
         address settlementProxy;
         address bridgeProxy;
+        address erc20Token;
     }
 
     function _predict(address admin) internal view returns (Addresses memory a) {
@@ -37,6 +40,9 @@ abstract contract PocDeploymentConfig is Script {
             _create2Address(a.factory, LOCAL_VERIFIER_SALT, keccak256(type(LocalSP1Verifier).creationCode));
         a.settlementProxy = _proxyAddress(a.factory, SETTLEMENT_PROXY_SALT, a.settlementImplementation);
         a.bridgeProxy = _proxyAddress(a.factory, BRIDGE_PROXY_SALT, a.bridgeImplementation);
+        a.erc20Token = _create2Address(
+            a.factory, ERC20_TOKEN_SALT, keccak256(abi.encodePacked(type(PocERC20).creationCode, abi.encode(admin)))
+        );
     }
 
     function _proxyAddress(address factory, bytes32 salt, address implementation) private pure returns (address) {

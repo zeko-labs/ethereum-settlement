@@ -8,6 +8,7 @@ import {PocDeterministicFactory} from "../src/PocDeterministicFactory.sol";
 import {ZekoSettlement} from "../src/ZekoSettlement.sol";
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
 import {LocalSP1Verifier} from "../src/mocks/LocalSP1Verifier.sol";
+import {PocERC20} from "../src/mocks/PocERC20.sol";
 
 contract DeployPoc is PocDeploymentConfig {
     function run()
@@ -113,6 +114,34 @@ contract DeployPoc is PocDeploymentConfig {
         }
         bridge = EthereumZekoBridge(payable(predicted.bridgeProxy));
 
+        bool erc20TokenEnabled = vm.envOr("ERC20_TOKEN_ENABLED", false);
+        PocERC20 erc20Token;
+        if (erc20TokenEnabled) {
+            if (predicted.erc20Token.code.length == 0) {
+                bytes memory tokenCreationCode = abi.encodePacked(type(PocERC20).creationCode, abi.encode(admin));
+                require(
+                    factory.deployCode(ERC20_TOKEN_SALT, tokenCreationCode) == predicted.erc20Token, "ERC20 token drift"
+                );
+            }
+            erc20Token = PocERC20(predicted.erc20Token);
+            require(erc20Token.mintAuthority() == admin, "ERC20 mint authority drift");
+            if (!bridge.canonicalTokenRegistered(address(erc20Token))) {
+                bridge.registerToken(
+                    address(erc20Token),
+                    vm.envBytes32("ERC20_ZEKO_TOKEN_OWNER"),
+                    vm.envBytes32("ERC20_ZEKO_TOKEN_ID"),
+                    9,
+                    9,
+                    uint64(vm.envUint("ERC20_DEPOSIT_CAP"))
+                );
+            }
+            uint256 depositAmount = vm.envUint("ERC20_DEPOSIT_AMOUNT");
+            if (erc20Token.balanceOf(admin) == 0) {
+                erc20Token.mint(admin, depositAmount);
+            }
+            require(erc20Token.balanceOf(admin) == depositAmount, "ERC20 depositor balance drift");
+        }
+
         settlement.setBridgeContract(address(bridge));
         bridge.setWithdrawalDelaySlots(withdrawalDelay);
         if (gatewayProver != admin) {
@@ -137,5 +166,9 @@ contract DeployPoc is PocDeploymentConfig {
         console2.log("GATEWAY_PROVER_ADDRESS", gatewayProver);
         console2.log("UPGRADER_ADDRESS", upgrader);
         console2.log("WITHDRAWAL_DELAY_SLOTS", withdrawalDelay);
+        if (erc20TokenEnabled) {
+            console2.log("ERC20_TOKEN_ADDRESS", address(erc20Token));
+            console2.logBytes32(bridge.assetIdByToken(address(erc20Token)));
+        }
     }
 }

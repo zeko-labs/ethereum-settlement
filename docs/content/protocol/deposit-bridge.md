@@ -1,4 +1,4 @@
-# Native deposits
+# Native and ERC-20 deposits
 
 The PoC bridge accepts native ETH, converts finalized deposit logs into exact
 Zeko outer Witness actions, and waits for a later real Zeko commit to
@@ -30,9 +30,41 @@ The user calls the canonical `depositETH(zekoRecipient)` overload. The bridge:
 - increments `depositNonce` and native escrow liability
 - emits `BridgeDeposit`
 
-The overloads with a caller-selected timeout and the ERC20 path are disabled
-unless an administrator explicitly enables the legacy compatibility switch.
-They are not part of this PoC.
+The overload with a caller-selected timeout and the old arbitrary-token path is
+disabled unless an administrator explicitly enables the legacy compatibility
+switch. Canonically registered ERC-20 assets instead use `submitDeposit` and do
+not depend on that switch.
+
+## Canonical ERC-20 deposit
+
+Each ERC-20 registry entry immutably binds the Ethereum token, standard Mina
+FungibleToken owner, derived L2 token ID, decimals, capacity, chain, and bridge
+proxy into an asset ID. `submitDeposit(token, amount, zekoRecipient)` requires
+matching nine-or-fewer decimals on both chains, exact transfer custody, a
+positive UInt64 amount, and remaining registered capacity. Its timeout is fixed
+to `UInt32.max`.
+
+The bridge guest verifies the V2 asset-bound deposit leaf and emits the same
+five-field outer Witness shape as native deposits. Its auxiliary value is:
+
+```text
+Poseidon("Ethereum ERC20 deposit V1", [
+  asset_id_high,
+  asset_id_low,
+  empty_call_forest,
+  bridge_address_as_field,
+  false,
+  amount,
+  recipient_x,
+  recipient_is_odd,
+  UInt32.max
+])
+```
+
+The asset-specific OCaml circuit checks both asset-ID limbs before allowing the
+proof-controlled L2 vault to debit its pre-minted inventory. The browser SDK
+then places that proved forest beneath the unmodified Mina Foundation
+FungibleToken owner's `approveBase` proof.
 
 ## Canonical proof input
 

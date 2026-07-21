@@ -1,6 +1,6 @@
 # Local E2E
 
-There are four useful local checkpoints. None requires an SP1 proof.
+There are five useful local checkpoints. None requires an SP1 proof.
 
 ::: warning Resource use
 The real settlement guest performs full Pickles verification and takes tens of
@@ -118,6 +118,37 @@ bridge and roughly 52.19 billion cycles for each settlement. The normal local
 mock path now verifies settlements natively and reports no settlement cycle
 count. See [current status](/status) for the recorded audit values.
 
+## 5. Full ERC-20 bridge round trip
+
+Run the asset-specialized combined scenario:
+
+```sh
+tools/run-local-erc20-bridge-roundtrip.sh
+```
+
+The runner derives fresh Mina owner, vault, admin, and recipient identities;
+predicts deterministic Ethereum bridge and token addresses; and computes the
+same registry asset ID used by Solidity. It then:
+
+1. generates the matching Zeko circuits/deploy configuration
+2. runs the real OCaml sequencer and prover with the asset-specific circuit
+3. deploys the stock `mina-fungible-token` owner/admin on L2
+4. installs the OCaml bridge verification key on a separate token vault and
+   mints exactly the Solidity deposit capacity
+5. finalizes an asset-bound deposit and submits a debit-first token withdrawal
+6. checks the live L2 user and vault balances and exports two real settlements
+7. deploys the deterministic ERC-20 and bridge to Anvil and registers the exact
+   owner, token ID, decimals, capacity, and asset ID
+8. calls Solidity `submitDeposit`, indexes it, executes the bridge guest, and
+   proves that the resulting outer action state equals the OCaml checkpoint
+9. submits both OCaml settlements, advances the delay, and claims the ERC-20
+   with the gateway's public depth-16 proof
+10. checks Ethereum custody, liability reduction, recipient balance, and replay
+    cursor
+
+The local verifier accepts empty proof bytes only on chain ID 31337. The runner
+never invokes `--prove` and never creates a Succinct request.
+
 ## Regenerate the OCaml fixture
 
 The fixture must use the same deterministic bridge address and circuit config
@@ -156,4 +187,6 @@ release storage before treating it as testnet identity.
   the live sequencer GraphQL API
 - the production Actions indexer/API pair accepts the gateway archive shape
 - bridge native liability falls by the claimed value
+- the canonical ERC-20 registry, asset ID, custody, liability, and recipient
+  balance match the live standard-token L2 scenario
 - no Succinct request ID exists in the job records

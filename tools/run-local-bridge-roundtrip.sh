@@ -4,8 +4,23 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tools/lib/workspace.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
-FIXTURE_ROOT=${BRIDGE_FIXTURE_ROOT:-$ROOT/build/poc/bridge-fixtures}
-DEPLOY_DIR=${POC_DEPLOY_DIR:-$ROOT/build/poc/bridge-roundtrip}
+BRIDGE_ASSET=${BRIDGE_ASSET:-native}
+case "$BRIDGE_ASSET" in
+native)
+  DEFAULT_FIXTURE_ROOT=$ROOT/build/poc/bridge-fixtures
+  DEFAULT_DEPLOY_DIR=$ROOT/build/poc/bridge-roundtrip
+  ;;
+erc20)
+  DEFAULT_FIXTURE_ROOT=$ROOT/build/poc/bridge-erc20-fixtures
+  DEFAULT_DEPLOY_DIR=$ROOT/build/poc/bridge-erc20-roundtrip
+  ;;
+*)
+  echo "Unsupported BRIDGE_ASSET: $BRIDGE_ASSET" >&2
+  exit 1
+  ;;
+esac
+FIXTURE_ROOT=${BRIDGE_FIXTURE_ROOT:-$DEFAULT_FIXTURE_ROOT}
+DEPLOY_DIR=${POC_DEPLOY_DIR:-$DEFAULT_DEPLOY_DIR}
 RPC_PORT=${RPC_PORT:-8547}
 PG_PORT=${PG_PORT:-55432}
 API_PORT=${API_PORT:-8081}
@@ -64,6 +79,11 @@ for fixture in \
     exit 1
   }
 done
+[[ $(jq -r '.bridgeAsset // "native"' "$FIXTURE_ROOT/bridge-scenario.json") == \
+  "$BRIDGE_ASSET" ]] || {
+  echo "Bridge fixture asset does not match BRIDGE_ASSET=$BRIDGE_ASSET" >&2
+  exit 1
+}
 
 cleanup() {
   local status=$?
@@ -159,6 +179,27 @@ expected_bridge=$(jq -r '.proof.innerActionBatch.bridgeAddress | ascii_downcase'
   echo "Fresh deterministic bridge address does not match the OCaml circuit" >&2
   exit 1
 }
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  export ERC20_TOKEN_ENABLED=true
+  export ERC20_TOKEN_ADDRESS
+  ERC20_TOKEN_ADDRESS=$(jq -er '.ethereumTokenAddress | ascii_downcase' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+  export ERC20_ASSET_ID
+  ERC20_ASSET_ID=$(jq -er '.ethereumTokenAssetId | ascii_downcase' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+  export ERC20_ZEKO_TOKEN_OWNER
+  ERC20_ZEKO_TOKEN_OWNER=$(jq -er '.ethereumTokenOwnerPacked' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+  export ERC20_ZEKO_TOKEN_ID
+  ERC20_ZEKO_TOKEN_ID=$(jq -er '.ethereumTokenIdL2' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+  export ERC20_DEPOSIT_CAP
+  ERC20_DEPOSIT_CAP=$(jq -er '.ethereumTokenDepositCap' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+  export ERC20_DEPOSIT_AMOUNT
+  ERC20_DEPOSIT_AMOUNT=$(jq -er '.depositAmountZeko' \
+    "$FIXTURE_ROOT/bridge-scenario.json")
+fi
 
 (
   cd "$ROOT/contracts"
@@ -172,6 +213,15 @@ expected_bridge=$(jq -r '.proof.innerActionBatch.bridgeAddress | ascii_downcase'
   'actionState()(bytes32)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]') == \
   "$(jq -r '.outerActionStateBeforeDeposit | ascii_downcase' \
     "$FIXTURE_ROOT/bridge-scenario.json")" ]]
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  [[ $("$CAST" code "$ERC20_TOKEN_ADDRESS" --rpc-url "$RPC_URL") != 0x ]]
+  [[ $("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'canonicalTokenRegistered(address)(bool)' "$ERC20_TOKEN_ADDRESS" \
+    --rpc-url "$RPC_URL") == true ]]
+  [[ $("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'assetIdByToken(address)(bytes32)' "$ERC20_TOKEN_ADDRESS" \
+    --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]') == "$ERC20_ASSET_ID" ]]
+fi
 
 docker run -d --name "$POSTGRES_CONTAINER" \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=zeko_proofs \
@@ -382,10 +432,17 @@ submit_settlement() {
 zeko_recipient_public_key=$(jq -r '.zekoRecipientPublicKey' \
   "$FIXTURE_ROOT/bridge-scenario.json")
 deposit_amount=$(jq -r '.depositAmountZeko' "$FIXTURE_ROOT/bridge-scenario.json")
-((deposit_amount % 1000000000 == 0))
-deposit_value_wei=$(bc <<<"$deposit_amount * 1000000000")
-run_eth_sdk deposit env ZEKO_RECIPIENT_PUBLIC_KEY="$zeko_recipient_public_key" \
-  DEPOSIT_VALUE_WEI="$deposit_value_wei" >/dev/null
+if [[ $BRIDGE_ASSET == native ]]; then
+  ((deposit_amount % 1000000000 == 0))
+  deposit_value_wei=$(bc <<<"$deposit_amount * 1000000000")
+  run_eth_sdk deposit env ZEKO_RECIPIENT_PUBLIC_KEY="$zeko_recipient_public_key" \
+    DEPOSIT_VALUE_WEI="$deposit_value_wei" >/dev/null
+else
+  run_eth_sdk token-deposit env \
+    ZEKO_RECIPIENT_PUBLIC_KEY="$zeko_recipient_public_key" \
+    ERC20_TOKEN_ADDRESS="$ERC20_TOKEN_ADDRESS" \
+    ERC20_DEPOSIT_AMOUNT="$deposit_amount" >/dev/null
+fi
 deposit_nonce=$(jq -r '.nonce' "$SDK_OUTPUT")
 deposit_tx_hash=$(jq -r '.hash' "$SDK_OUTPUT")
 [[ $deposit_nonce == 1 ]]
@@ -398,6 +455,17 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [[ -n ${bridge_job:-} ]]
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  [[ $(jq -r '.assetId | ascii_downcase' <<<"$deposit") == "$ERC20_ASSET_ID" ]]
+  [[ $(jq -r '.token | ascii_downcase' <<<"$deposit") == "$ERC20_TOKEN_ADDRESS" ]]
+  custody=$("$CAST" call "$ERC20_TOKEN_ADDRESS" \
+    'balanceOf(address)(uint256)' "$BRIDGE_CONTRACT_ADDRESS" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  liability=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'escrowLiabilityByToken(address)(uint256)' "$ERC20_TOKEN_ADDRESS" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  [[ $custody == "$deposit_amount" && $liability == "$deposit_amount" ]]
+fi
 wait_job "$bridge_job"
 "$CAST" rpc anvil_mine 0x1 --rpc-url "$RPC_URL" >/dev/null
 deposit_aux_decimal=$(
@@ -433,9 +501,21 @@ done
 submit_settlement "$FIXTURE_ROOT/withdrawal/settlement.json"
 withdrawal_recipient=$(jq -r '.withdrawalRecipient' \
   "$FIXTURE_ROOT/bridge-scenario.json")
-withdrawal=$(curl -fsS \
-  "$API_URL/v1/bridge/withdrawals?recipient=$withdrawal_recipient" \
-  | jq -e '.[0]')
+settlement_sequence=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
+  'batchSequence()(uint64)' --rpc-url "$RPC_URL" | awk '{print $1}')
+if [[ $BRIDGE_ASSET == native ]]; then
+  withdrawal=$(curl -fsS \
+    "$API_URL/v1/bridge/withdrawals?recipient=$withdrawal_recipient" \
+    | jq -e '.[0]')
+else
+  withdrawal=$(curl -fsS \
+    "$API_URL/v1/bridge/token-withdrawals/$settlement_sequence/0" \
+    | jq -e '.')
+  [[ $(jq -r '.token | ascii_downcase' <<<"$withdrawal") == \
+    "$ERC20_TOKEN_ADDRESS" ]]
+  [[ $(jq -r '.assetId | ascii_downcase' <<<"$withdrawal") == \
+    "$ERC20_ASSET_ID" ]]
+fi
 claimable_slot=$(jq -r '.claimableSlot' <<<"$withdrawal")
 genesis_timestamp=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'genesisTimestamp()(uint64)' --rpc-url "$RPC_URL" | awk '{print $1}')
@@ -449,32 +529,71 @@ if ((current_slot <= claimable_slot)); then
     --rpc-url "$RPC_URL" >/dev/null
   "$CAST" rpc evm_mine --rpc-url "$RPC_URL" >/dev/null
 fi
-withdrawal=$(curl -fsS \
-  "$API_URL/v1/bridge/withdrawals?recipient=$withdrawal_recipient" \
-  | jq -e '.[0]')
+if [[ $BRIDGE_ASSET == native ]]; then
+  withdrawal=$(curl -fsS \
+    "$API_URL/v1/bridge/withdrawals?recipient=$withdrawal_recipient" \
+    | jq -e '.[0]')
+else
+  withdrawal=$(curl -fsS \
+    "$API_URL/v1/bridge/token-withdrawals/$settlement_sequence/0" \
+    | jq -e '.')
+fi
 [[ $(jq -r '.status' <<<"$withdrawal") == claimable ]]
 
 amount=$(jq -r '.amount' <<<"$withdrawal")
-liability_before=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
-  'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
-run_eth_sdk claim env WITHDRAWAL_RECIPIENT="$withdrawal_recipient" >/dev/null
+if [[ $BRIDGE_ASSET == native ]]; then
+  liability_before=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+  run_eth_sdk claim env WITHDRAWAL_RECIPIENT="$withdrawal_recipient" >/dev/null
+else
+  liability_before=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'escrowLiabilityByToken(address)(uint256)' "$ERC20_TOKEN_ADDRESS" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  recipient_balance_before=$("$CAST" call "$ERC20_TOKEN_ADDRESS" \
+    'balanceOf(address)(uint256)' "$withdrawal_recipient" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  run_eth_sdk token-claim env \
+    WITHDRAWAL_SETTLEMENT_SEQUENCE="$settlement_sequence" \
+    WITHDRAWAL_OFFSET=0 >/dev/null
+fi
 claim_tx_hash=$(jq -r '.hash' "$SDK_OUTPUT")
-liability_after=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
-  'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
-expected_wei=$((amount * 1000000000))
+if [[ $BRIDGE_ASSET == native ]]; then
+  liability_after=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'nativeEscrowLiability()(uint256)' --rpc-url "$RPC_URL" | awk '{print $1}')
+  expected_release=$((amount * 1000000000))
+else
+  liability_after=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
+    'escrowLiabilityByToken(address)(uint256)' "$ERC20_TOKEN_ADDRESS" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  recipient_balance_after=$("$CAST" call "$ERC20_TOKEN_ADDRESS" \
+    'balanceOf(address)(uint256)' "$withdrawal_recipient" \
+    --rpc-url "$RPC_URL" | awk '{print $1}')
+  [[ $(bc <<<"$recipient_balance_after - $recipient_balance_before") == "$amount" ]]
+  expected_release=$amount
+fi
 released_wei=$(bc <<<"$liability_before - $liability_after")
-[[ $released_wei == "$expected_wei" ]]
+[[ $released_wei == "$expected_release" ]]
 
 jq -n --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
   --arg settlement "$SETTLEMENT_CONTRACT_ADDRESS" \
   --arg depositTransactionHash "$deposit_tx_hash" \
   --arg claimTransactionHash "$claim_tx_hash" \
+  --arg bridgeAsset "$BRIDGE_ASSET" \
+  --arg token "${ERC20_TOKEN_ADDRESS:-}" \
+  --arg assetId "${ERC20_ASSET_ID:-}" \
   --arg recipient "$withdrawal_recipient" --arg amountZeko "$amount" \
   '{status:"passed",bridge:$bridge,settlement:$settlement,
     depositTransactionHash:$depositTransactionHash,
     claimTransactionHash:$claimTransactionHash,
+    bridgeAsset:$bridgeAsset,
+    token:(if $token == "" then null else $token end),
+    assetId:(if $assetId == "" then null else $assetId end),
     actionsWitnessIndexed:true,
     withdrawalRecipient:$recipient,withdrawalAmountZeko:$amountZeko,
     ocamlCommits:2,sp1ProofsGenerated:0}'
-echo "ETH deposit -> bridge execute -> two real OCaml settlements -> Merkle withdrawal claim passed."
+if [[ $BRIDGE_ASSET == erc20 ]]; then
+  echo "ERC20 submitDeposit -> bridge execute -> two real OCaml settlements -> token claim passed."
+else
+  echo "ETH deposit -> bridge execute -> two real OCaml settlements -> Merkle withdrawal claim passed."
+fi
 echo "No SP1 proof was requested or generated."
