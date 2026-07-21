@@ -108,14 +108,24 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   mock-verifier contract test exercises the complete custody, checkpoint, and
   delayed-release sequence without requesting an SP1 proof.
 
-This branch is not yet a deployable Mina Fungible Token product. The remaining
-runtime work is to instantiate the asset-specific circuit in the sequencer and
-prover protocol, deploy the unmodified standard token owner/admin plus the
-proof-controlled vault and bounded inventory, and compose the returned bridge
-proof with the standard owner's `approveBase` proof before submitting the L2
-transaction. Each registered ERC-20 currently requires its own circuit/VK and
-coordinated registry entry. Its immutable Solidity deposit cap must equal the
-pre-minted inventory placed in that asset's L2 vault.
+The asset-specific runtime path is also implemented:
+
+- The sequencer accepts one immutable ERC-20 asset configuration, compiles and
+  serves its `Make_ethereum_token` circuit/VK, and exposes proof-only deposit
+  finalization and withdrawal mutations. It never executes the incomplete
+  custom-token forest by itself.
+- The browser SDK validates the returned vault forest and exact full token-owner
+  account-update body, then composes and proves the transaction with the
+  unmodified `mina-fungible-token` owner's `approveBase` method.
+- The operator deployment helper reads and validates the Solidity registration,
+  deploys the standard owner/admin, installs the asset-specific bridge VK on a
+  separate vault with proof-authorized sends, and mints exactly the immutable
+  Solidity deposit cap into that vault.
+
+Each registered ERC-20 still requires its own circuit/VK, sequencer instance,
+and coordinated registry entry. The Solidity cap, pre-minted L2 inventory,
+owner, derived token ID, vault, decimals, Ethereum address, and asset ID must all
+match before deployment.
 
 ## Needed for the live PoC
 
@@ -136,8 +146,8 @@ approval-gated external operations.
 
 - EIP-4844 blob DA, blob archival, and blob-to-Zeko data-root equivalence.
 - Deposit cancellation and refunds.
-- Production ERC-20 token deployment, inventory governance, and standard-token
-  owner proof composition.
+- Dynamic multi-asset circuit routing within one sequencer and production
+  inventory/governance automation.
 - Bridge proof fees.
 - A canonical Mina verification-key hash; the PoC uses SHA-256 of the exact
   verifier-index JSON bytes.

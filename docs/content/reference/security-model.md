@@ -87,7 +87,8 @@ investigate the RPC or chain before recovery.
 - Admin emergency withdrawal can violate user custody expectations.
 - Multisig DA can withhold data.
 - No blob payload/root binding or long-term blob archival exists.
-- No ERC20 asset-ID/decimal protocol is specified.
+- ERC20 support is one immutable asset per circuit/sequencer; dynamic
+  multi-asset VK routing and production mint-admin governance are not provided.
 - Legacy deposit/withdraw paths remain in storage-compatible code and must stay
   disabled.
 - Public bridge discovery endpoints need rate limiting and abuse monitoring.

@@ -84,6 +84,21 @@ the gateway only exposes consensus-finalized outer actions. Mina deployments
 keep the sequencer's existing block-delay behavior; no OCaml finality logic is
 changed by the Ethereum adapter.
 
+An ERC-20-enabled sequencer additionally supplies all five asset flags as one
+immutable set:
+
+```text
+--ethereum-bridge-address 0x...
+--ethereum-token-asset-id 0x...
+--ethereum-token-address 0x...
+--ethereum-token-owner-l2 B62...
+--ethereum-token-vault-l2 B62...
+```
+
+The token ID is derived from the owner. Startup rejects a partial set, malformed
+Ethereum values, a zero token address, or an owner/vault collision. One running
+sequencer currently compiles one configured ERC-20 circuit and verification key.
+
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
 materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing
 domain to custom endpoints. Do not substitute the display name or
