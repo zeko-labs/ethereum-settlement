@@ -97,6 +97,11 @@ contract EthereumZekoBridge is
     error InvalidZekoTokenId(bytes32 tokenId);
     error TokenDecimalsMustMatch(uint8 zekoDecimals, uint8 ethereumDecimals);
     error AmountExceedsZekoUInt64(uint256 amount);
+    error TokenDepositCapExceeded(
+        address token,
+        uint256 cap,
+        uint256 requestedLiability
+    );
     error CanonicalTokenRequiresSubmitDeposit(address token);
     error InvalidSettlementActionState(bytes32 actionState);
     error InvalidL2ActionStateTransition(
@@ -309,6 +314,7 @@ contract EthereumZekoBridge is
     mapping(address => uint256) public escrowLiabilityByToken;
     mapping(address => mapping(address => uint32))
         public nextTokenWithdrawalIndex;
+    mapping(address => uint64) public depositCapByToken;
 
     // -------------------------------------------------------------------------
     // Events
@@ -326,7 +332,8 @@ contract EthereumZekoBridge is
         bytes32 indexed assetId,
         bytes32 zekoTokenOwner,
         bytes32 indexed zekoTokenId,
-        uint8 decimals
+        uint8 decimals,
+        uint64 depositCap
     );
 
     event ERC20DepositSubmitted(
@@ -532,13 +539,15 @@ contract EthereumZekoBridge is
         bytes32 zekoTokenOwner,
         bytes32 zekoTokenId,
         uint8 zekoDecimals,
-        uint8 ethereumDecimals
+        uint8 ethereumDecimals,
+        uint64 depositCap
     ) external onlyRole(ADMIN_ROLE) {
         if (token == address(0)) revert ZeroAddress();
         if (zekoTokenId == bytes32(0)) {
             revert InvalidZekoTokenId(zekoTokenId);
         }
         if (zekoTokenOwner == bytes32(0)) revert ZeroAddress();
+        if (depositCap == 0) revert ZeroAmount();
         if (
             canonicalTokenRegistered[token] ||
             allowedToken[token].allowed
@@ -559,6 +568,7 @@ contract EthereumZekoBridge is
         canonicalTokenRegistered[token] = true;
         zekoTokenOwnerByToken[token] = zekoTokenOwner;
         zekoTokenIdByToken[token] = zekoTokenId;
+        depositCapByToken[token] = depositCap;
         bytes32 assetId = computeERC20AssetId(
             token,
             zekoTokenOwner,
@@ -578,7 +588,8 @@ contract EthereumZekoBridge is
             assetId,
             zekoTokenOwner,
             zekoTokenId,
-            zekoDecimals
+            zekoDecimals,
+            depositCap
         );
     }
 
@@ -707,6 +718,15 @@ contract EthereumZekoBridge is
         if (!config.allowed) revert TokenNotAllowed(token);
         if (amount == 0) revert ZeroAmount();
         if (amount > type(uint64).max) revert AmountExceedsZekoUInt64(amount);
+        uint256 requestedLiability = escrowLiabilityByToken[token] + amount;
+        uint256 depositCap = depositCapByToken[token];
+        if (requestedLiability > depositCap) {
+            revert TokenDepositCapExceeded(
+                token,
+                depositCap,
+                requestedLiability
+            );
+        }
 
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);

@@ -178,7 +178,14 @@ contract NativeBridgePocE2ETest is Test {
         ERC20BridgePocToken token = new ERC20BridgePocToken();
         bytes32 tokenOwner = bytes32(uint256(0x123456));
         bytes32 tokenId = keccak256("wrapped BPT token id");
-        bridge.registerToken(address(token), tokenOwner, tokenId, 18, 18);
+        bridge.registerToken(
+            address(token),
+            tokenOwner,
+            tokenId,
+            18,
+            18,
+            type(uint64).max
+        );
 
         uint64 amount = 2 ether;
         token.mint(depositor, amount);

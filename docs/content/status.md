@@ -88,9 +88,9 @@ or network request was generated.
 The ERC-20 port now has the proof and custody seam needed to turn a canonical
 `submitDeposit` call into a Zeko witness action:
 
-- Solidity registers an immutable Ethereum-token/Mina-token asset identity,
-  takes exact ERC-20 custody, emits the canonical deposit fields, and protects
-  the locked liability from emergency withdrawal.
+- Solidity registers an immutable Ethereum-token/Mina-token asset identity and
+  deposit-capacity ceiling, takes exact ERC-20 custody, emits the canonical
+  deposit fields, and protects the locked liability from emergency withdrawal.
 - The gateway indexes finalized `BridgeDeposit` logs together with the
   immutable asset ID. The bridge guest verifies the V2 ERC-20 deposit leaf and
   converts those fields into the exact five-field outer Witness action using
@@ -114,7 +114,8 @@ prover protocol, deploy the unmodified standard token owner/admin plus the
 proof-controlled vault and bounded inventory, and compose the returned bridge
 proof with the standard owner's `approveBase` proof before submitting the L2
 transaction. Each registered ERC-20 currently requires its own circuit/VK and
-coordinated registry entry.
+coordinated registry entry. Its immutable Solidity deposit cap must equal the
+pre-minted inventory placed in that asset's L2 vault.
 
 ## Needed for the live PoC
 

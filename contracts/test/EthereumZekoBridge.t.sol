@@ -406,7 +406,8 @@ contract EthereumZekoBridgeTest is Test {
             zekoTokenOwner,
             zekoTokenId,
             18,
-            18
+            18,
+            type(uint64).max
         );
         bridge.setLegacyDepositEnabled(false);
 
@@ -512,6 +513,10 @@ contract EthereumZekoBridgeTest is Test {
         );
         assertEq(bridge.zekoTokenIdByToken(address(token18)), zekoTokenId);
         assertEq(
+            bridge.depositCapByToken(address(token18)),
+            type(uint64).max
+        );
+        assertEq(
             bridge.assetIdByToken(address(token18)),
             bridge.computeERC20AssetId(
                 address(token18),
@@ -528,7 +533,8 @@ contract EthereumZekoBridgeTest is Test {
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
             18,
-            18
+            18,
+            type(uint64).max
         );
 
         uint256 amount = uint256(type(uint64).max) + 1;
@@ -549,13 +555,50 @@ contract EthereumZekoBridgeTest is Test {
         vm.stopPrank();
     }
 
+    function test_SubmitDepositRejectsLiabilityAboveRegisteredCapacity()
+        public
+    {
+        uint64 depositCap = 2_000_000;
+        bridge.registerToken(
+            address(token18),
+            bytes32(uint256(0x123456)),
+            keccak256("zeko fungible token id"),
+            18,
+            18,
+            depositCap
+        );
+
+        vm.startPrank(alice);
+        token18.approve(address(bridge), uint256(depositCap) + 1);
+        bridge.submitDeposit(
+            address(token18),
+            depositCap,
+            ZekoAddressLib.pack(0x01020304, false)
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.TokenDepositCapExceeded.selector,
+                address(token18),
+                uint256(depositCap),
+                uint256(depositCap) + 1
+            )
+        );
+        bridge.submitDeposit(
+            address(token18),
+            1,
+            ZekoAddressLib.pack(0x01020304, false)
+        );
+        vm.stopPrank();
+    }
+
     function test_CanonicalTokenCannotEnterThroughLegacyDeposit() public {
         bridge.registerToken(
             address(token18),
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
             18,
-            18
+            18,
+            type(uint64).max
         );
 
         vm.startPrank(alice);
@@ -732,7 +775,8 @@ contract EthereumZekoBridgeTest is Test {
             zekoTokenOwner,
             zekoTokenId,
             18,
-            18
+            18,
+            type(uint64).max
         );
 
         uint64 amount = 2 ether;
@@ -796,14 +840,16 @@ contract EthereumZekoBridgeTest is Test {
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id 18"),
             18,
-            18
+            18,
+            type(uint64).max
         );
         bridge.registerToken(
             address(token6),
             bytes32(uint256(0x654321)),
             keccak256("zeko fungible token id 6"),
             6,
-            6
+            6,
+            type(uint64).max
         );
 
         uint64 amount = 2_000_000;
@@ -860,7 +906,8 @@ contract EthereumZekoBridgeTest is Test {
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
             18,
-            18
+            18,
+            type(uint64).max
         );
 
         uint64 amount = 2 ether;
