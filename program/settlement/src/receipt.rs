@@ -23,6 +23,8 @@ const INNER_ACTION_TREE_DEPTH: usize = 16;
 const MAX_INNER_ACTIONS: usize = 1 << INNER_ACTION_TREE_DEPTH;
 const ASSET_REGISTRY_TREE_DEPTH: usize = 8;
 const MAX_ASSET_RECORDS: usize = 1 << ASSET_REGISTRY_TREE_DEPTH;
+const ACCOUNT_UPDATE_NODE_PREFIX: &str = "MinaAcctUpdateNode**";
+const ACCOUNT_UPDATE_CONS_PREFIX: &str = "MinaAcctUpdateCons**";
 
 const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
 const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
@@ -957,9 +959,17 @@ fn hash_call_forest(signature_kind: MinaSignatureKindV1, forest: &[CallForestNod
             let account_update =
                 hash_account_update_body(signature_kind, &node.account_update_body);
             let calls = hash_call_forest(signature_kind, &node.calls);
-            let tree = hash_with_prefix("MinaAcctUpdateNode", &[account_update, calls]);
-            hash_with_prefix("MinaAcctUpdateCons", &[tree, tail])
+            hash_call_forest_node(account_update, calls, tail)
         })
+}
+
+fn hash_call_forest_node(
+    account_update: StepField,
+    calls: StepField,
+    tail: StepField,
+) -> StepField {
+    let tree = hash_with_prefix(ACCOUNT_UPDATE_NODE_PREFIX, &[account_update, calls]);
+    hash_with_prefix(ACCOUNT_UPDATE_CONS_PREFIX, &[tree, tail])
 }
 
 fn count_registry_checkpoint_calls(
@@ -1080,6 +1090,7 @@ fn prefix_to_field(prefix: &str) -> StepField {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::str::FromStr;
     use zeko_sp1_lib::{
         ChunkedRandomOracleInputV1, InnerActionWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2,
         SettlementBindingV1, SettlementContextV1, TokenWithdrawalV3,
@@ -1091,6 +1102,21 @@ mod tests {
 
     fn encoded(value: u64) -> Bytes32 {
         field_to_bytes(field(value))
+    }
+
+    #[test]
+    fn call_forest_node_matches_ocaml_registration_vector() {
+        let account_update = StepField::from_str(
+            "6528279222021746619597853333770653270120181231726695154482993200072609572798",
+        )
+        .unwrap();
+        let actual =
+            hash_call_forest_node(account_update, StepField::from(0u8), StepField::from(0u8));
+        let expected = StepField::from_str(
+            "6713979864511449168695265977170256483008903802405252410767630545091817987004",
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
     }
 
     fn fixture() -> (Vec<StepField>, SettlementWitnessV1) {
