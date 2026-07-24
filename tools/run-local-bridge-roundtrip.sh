@@ -236,7 +236,7 @@ fi
   cd "$ROOT/contracts"
   PRIVATE_KEY="$PRIVATE_KEY" LOCAL_MOCK_VERIFIER=true \
     "$FORGE" script script/DeployPoc.s.sol:DeployPoc \
-      --rpc-url "$RPC_URL" --broadcast >/dev/null
+      --rpc-url "$RPC_URL" --broadcast --slow >/dev/null
 )
 [[ $("$CAST" call "$LOCAL_SP1_VERIFIER_ADDRESS" \
   'isLocalSP1Verifier()(bool)' --rpc-url "$RPC_URL") == true ]]
