@@ -138,11 +138,14 @@ if [[ $BRIDGE_ASSET == erc20 ]]; then
     exit 1
   }
   expected_withdrawals=2
+  # One registry checkpoint precedes the two deposits in the outer stream.
+  expected_outer_actions=3
 else
   registration=
   deposit_sync=${fixtures[0]}
   withdrawal=${fixtures[1]}
   expected_withdrawals=1
+  expected_outer_actions=1
 fi
 
 [[ $(jq '.proof.innerActionBatch.actions | length' "$deposit_sync") == 0 ]] || {
@@ -158,9 +161,8 @@ fi
 sync_length=$(
   "$CAST" to-dec "$(jq -r '.proof.binding.actions[0][5]' "$deposit_sync")"
 )
-expected_deposits=$expected_withdrawals
-[[ $sync_length == "$expected_deposits" ]] || {
-  echo "Deposit commit synchronized $sync_length outer actions, expected $expected_deposits" >&2
+[[ $sync_length == "$expected_outer_actions" ]] || {
+  echo "Deposit commit synchronized $sync_length outer actions, expected $expected_outer_actions" >&2
   exit 1
 }
 
