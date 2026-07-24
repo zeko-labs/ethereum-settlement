@@ -199,7 +199,7 @@ mv "$manifest_tmp" "$POC_MANIFEST_PATH"
       action_state_field=outerActionStateBeforeRegistration
     fi
     echo "INITIAL_OUTER_ACTION_STATE=$(jq -er \
-      \".$action_state_field\" "$BRIDGE_SCENARIO")"
+      --arg field "$action_state_field" '.[$field]' "$BRIDGE_SCENARIO")"
   else
     echo "INITIAL_OUTER_ACTION_STATE=$(jq -r \
       '.proof.binding.accountUpdateBody.fieldElements[36]' \
