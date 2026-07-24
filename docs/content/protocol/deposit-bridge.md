@@ -61,10 +61,13 @@ Poseidon("Ethereum ERC20 deposit V1", [
 ])
 ```
 
-The asset-specific OCaml circuit checks both asset-ID limbs before allowing the
-proof-controlled L2 vault to debit its pre-minted inventory. The browser SDK
-then places that proved forest beneath the unmodified Mina Foundation
-FungibleToken owner's `approveBase` proof.
+The universal OCaml circuit authenticates the complete record against the
+registry zkApp root/count, derives the token ID from the registered MFT owner,
+and checks both asset-ID limbs before allowing the token-specific shared-vault
+account to debit its pre-minted inventory. The browser SDK then places that
+proved forest beneath the unmodified Mina Foundation FungibleToken owner's
+`approveBase` proof. Different assets share the vault public key and bridge VK
+but use distinct derived token IDs, balances, and replay-helper domains.
 
 ## Canonical proof input
 

@@ -122,6 +122,24 @@ export SETTLEMENT_IMPLEMENTATION_ADDRESS BRIDGE_IMPLEMENTATION_ADDRESS
 export SETTLEMENT_CONTRACT_ADDRESS BRIDGE_CONTRACT_ADDRESS
 export SETTLEMENT_PROGRAM_VKEY BRIDGE_PROGRAM_VKEY WITHDRAW_PROGRAM_VKEY
 export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
+export SETTLEMENT_SOURCE_REVISION ZEKO_SOURCE_REVISION ZEKO_UI_SOURCE_REVISION
+SETTLEMENT_SOURCE_REVISION=$(git -C "$ROOT" rev-parse HEAD)
+ZEKO_SOURCE_REVISION=$(git -C "$ZEKO_ROOT" rev-parse HEAD)
+ZEKO_UI_SOURCE_REVISION=$(git -C "$ZEKO_UI_ROOT" rev-parse HEAD)
+if [[ -f "$BRIDGE_SCENARIO" && \
+  $(jq -r '.bridgeAsset // "native"' "$BRIDGE_SCENARIO") == erc20 ]]; then
+  export ERC20_REGISTRY_L2 ERC20_SHARED_VAULT_L2
+  export ERC20_MFT_STANDARD_VK_ID ERC20_UNIVERSAL_BRIDGE_VK_ID
+  export ERC20_REGISTRY_SCHEMA_VERSION
+  ERC20_REGISTRY_L2=$(jq -er '.ethereumAssetRegistryL2' "$BRIDGE_SCENARIO")
+  ERC20_SHARED_VAULT_L2=$(jq -er '.ethereumSharedVaultL2' "$BRIDGE_SCENARIO")
+  ERC20_MFT_STANDARD_VK_ID=$(jq -er \
+    '.ethereumAssets[0].record.mftStandardVkId' "$BRIDGE_SCENARIO")
+  ERC20_UNIVERSAL_BRIDGE_VK_ID=$(jq -er \
+    '.ethereumAssets[0].record.universalBridgeVkId' "$BRIDGE_SCENARIO")
+  ERC20_REGISTRY_SCHEMA_VERSION=$(jq -er \
+    '.ethereumAssets[0].record.schemaVersion' "$BRIDGE_SCENARIO")
+fi
 
 (
   cd "$ROOT/contracts"
@@ -175,8 +193,13 @@ mv "$manifest_tmp" "$POC_MANIFEST_PATH"
     echo "INITIAL_OUTER_STATE_$index=$value"
   done
   if [[ -f "$BRIDGE_SCENARIO" ]]; then
+    action_state_field=outerActionStateBeforeDeposit
+    if [[ $(jq -r '.proof.assetRegistryBatch != null' \
+      "$FIXTURE_DIR/settlement.json") == true ]]; then
+      action_state_field=outerActionStateBeforeRegistration
+    fi
     echo "INITIAL_OUTER_ACTION_STATE=$(jq -er \
-      '.outerActionStateBeforeDeposit' "$BRIDGE_SCENARIO")"
+      \".$action_state_field\" "$BRIDGE_SCENARIO")"
   else
     echo "INITIAL_OUTER_ACTION_STATE=$(jq -r \
       '.proof.binding.accountUpdateBody.fieldElements[36]' \

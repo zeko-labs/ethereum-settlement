@@ -2,8 +2,12 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {
+    IAccessControl
+} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {
+    ERC1967Proxy
+} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {ISP1Verifier, ZekoSettlement} from "../src/ZekoSettlement.sol";
 
@@ -59,8 +63,12 @@ contract ZekoSettlementV1Test is Test {
         _assertStateEq(settlement.outerState(), initialState);
         assertTrue(settlement.isActionStateValid(initialActionState));
 
-        (uint64 index, uint64 acceptedAt, uint32 length, bool valid) = settlement
-            .acceptedInnerActionState(initialState[3]);
+        (
+            uint64 index,
+            uint64 acceptedAt,
+            uint32 length,
+            bool valid
+        ) = settlement.acceptedInnerActionState(initialState[3]);
         assertEq(index, 0);
         assertEq(acceptedAt, block.timestamp);
         assertEq(length, 3);
@@ -100,13 +108,18 @@ contract ZekoSettlementV1Test is Test {
         assertEq(settlement.outerActionStateLength(), 6);
         assertEq(settlement.batchSequence(), 1);
         assertTrue(settlement.isActionStateValid(afterAction));
-        (uint64 actionIndex, bool actionValid) = settlement
-            .l2ActionStateInfo(afterAction);
+        (uint64 actionIndex, bool actionValid) = settlement.l2ActionStateInfo(
+            afterAction
+        );
         assertEq(actionIndex, 1);
         assertTrue(actionValid);
 
-        (uint64 index, uint64 acceptedAt, uint32 length, bool valid) = settlement
-            .acceptedInnerActionState(afterState[3]);
+        (
+            uint64 index,
+            uint64 acceptedAt,
+            uint32 length,
+            bool valid
+        ) = settlement.acceptedInnerActionState(afterState[3]);
         assertEq(index, 1);
         assertEq(acceptedAt, block.timestamp);
         assertEq(length, 4);
@@ -145,15 +158,110 @@ contract ZekoSettlementV1Test is Test {
         assertTrue(valid);
     }
 
+    function test_V3StoresRegistryCheckpointAndExactRecord() public {
+        address bridgeAddress = address(0xB12D63);
+        settlement.setBridgeContract(bridgeAddress);
+        bytes32 registryRoot = keccak256("Poseidon registry root");
+        bytes32 recordHash = keccak256("canonical asset record");
+        bytes memory values = _buildPublicValuesV3(
+            _afterState(),
+            bridgeAddress,
+            keccak256("inner action root"),
+            3,
+            1,
+            registryRoot,
+            1,
+            1,
+            recordHash
+        );
+
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+
+        assertEq(settlement.assetRegistryRoot(), registryRoot);
+        assertEq(settlement.assetRegistryCount(), 1);
+        assertEq(settlement.assetRegistrySchemaVersion(), 1);
+        assertTrue(settlement.settledAssetRecord(recordHash));
+    }
+
+    function test_V4StoresTwoRecordRegistryBatch() public {
+        address bridgeAddress = address(0xB12D63);
+        settlement.setBridgeContract(bridgeAddress);
+        bytes32 registryRoot = keccak256("two-record Poseidon registry root");
+        bytes32 recordBatchRoot = keccak256(
+            "two exact canonical asset records"
+        );
+        bytes memory values = _buildPublicValuesV4(
+            _afterState(),
+            bridgeAddress,
+            keccak256("inner action root"),
+            3,
+            1,
+            registryRoot,
+            2,
+            1,
+            recordBatchRoot,
+            2
+        );
+
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+
+        assertEq(settlement.assetRegistryRoot(), registryRoot);
+        assertEq(settlement.assetRegistryCount(), 2);
+        assertEq(settlement.assetRegistrySchemaVersion(), 1);
+        (
+            bytes32 storedRegistryRoot,
+            uint32 storedRegistryCount,
+            uint32 storedSchema,
+            bytes32 storedBatchRoot,
+            uint32 storedBatchCount,
+            bool valid
+        ) = settlement.assetRegistryRecordBatch(1);
+        assertEq(storedRegistryRoot, registryRoot);
+        assertEq(storedRegistryCount, 2);
+        assertEq(storedSchema, 1);
+        assertEq(storedBatchRoot, recordBatchRoot);
+        assertEq(storedBatchCount, 2);
+        assertTrue(valid);
+    }
+
+    function test_V4RejectsRegistryBatchAboveCapacity() public {
+        address bridgeAddress = address(0xB12D63);
+        settlement.setBridgeContract(bridgeAddress);
+        bytes32 registryRoot = keccak256("oversized Poseidon registry root");
+        bytes32 recordBatchRoot = keccak256(
+            "oversized exact canonical asset records"
+        );
+        bytes memory values = _buildPublicValuesV4(
+            _afterState(),
+            bridgeAddress,
+            keccak256("inner action root"),
+            3,
+            1,
+            registryRoot,
+            257,
+            1,
+            recordBatchRoot,
+            257
+        );
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZekoSettlement.InvalidAssetRegistryBatch.selector,
+                registryRoot,
+                uint32(257),
+                uint32(1),
+                recordBatchRoot,
+                uint32(257)
+            )
+        );
+        settlement.verifyAndUpdateRoot(values, hex"1234");
+    }
+
     function test_AppendOuterWitnessBatchRecordsExactCheckpoint() public {
         settlement.setBridgeContract(alice);
         bytes32 afterState = keccak256("witness action state");
         vm.prank(alice);
-        settlement.appendOuterWitnessBatch(
-            initialActionState,
-            afterState,
-            2
-        );
+        settlement.appendOuterWitnessBatch(initialActionState, afterState, 2);
 
         assertEq(settlement.actionState(), afterState);
         assertEq(settlement.outerActionStateLength(), 7);
@@ -393,12 +501,74 @@ contract ZekoSettlementV1Test is Test {
     ) private view returns (bytes memory values) {
         bytes memory v1 = _buildPublicValues(afterState);
         values = new bytes(828);
-        for (uint256 i = 0; i < v1.length; i++) values[i] = v1[i];
+        for (uint256 i = 0; i < v1.length; i++) {
+            values[i] = v1[i];
+        }
         _writeUint16(values, 4, 2);
         _writeAddress(values, 768, bridgeAddress);
         _writeBytes32(values, 788, root);
         _writeUint32(values, 820, startIndex);
         _writeUint32(values, 824, count);
+    }
+
+    function _buildPublicValuesV3(
+        bytes32[8] memory afterState,
+        address bridgeAddress,
+        bytes32 innerRoot,
+        uint32 startIndex,
+        uint32 innerCount,
+        bytes32 registryRoot,
+        uint32 registryCount,
+        uint32 schemaVersion,
+        bytes32 recordHash
+    ) private view returns (bytes memory values) {
+        bytes memory v2 = _buildPublicValuesV2(
+            afterState,
+            bridgeAddress,
+            innerRoot,
+            startIndex,
+            innerCount
+        );
+        values = new bytes(900);
+        for (uint256 i = 0; i < v2.length; i++) {
+            values[i] = v2[i];
+        }
+        _writeUint16(values, 4, 3);
+        _writeBytes32(values, 828, registryRoot);
+        _writeUint32(values, 860, registryCount);
+        _writeUint32(values, 864, schemaVersion);
+        _writeBytes32(values, 868, recordHash);
+    }
+
+    function _buildPublicValuesV4(
+        bytes32[8] memory afterState,
+        address bridgeAddress,
+        bytes32 innerRoot,
+        uint32 startIndex,
+        uint32 innerCount,
+        bytes32 registryRoot,
+        uint32 registryCount,
+        uint32 schemaVersion,
+        bytes32 recordBatchRoot,
+        uint32 recordBatchCount
+    ) private view returns (bytes memory values) {
+        bytes memory v2 = _buildPublicValuesV2(
+            afterState,
+            bridgeAddress,
+            innerRoot,
+            startIndex,
+            innerCount
+        );
+        values = new bytes(904);
+        for (uint256 i = 0; i < v2.length; i++) {
+            values[i] = v2[i];
+        }
+        _writeUint16(values, 4, 4);
+        _writeBytes32(values, 828, registryRoot);
+        _writeUint32(values, 860, registryCount);
+        _writeUint32(values, 864, schemaVersion);
+        _writeBytes32(values, 868, recordBatchRoot);
+        _writeUint32(values, 900, recordBatchCount);
     }
 
     function _writeAddress(

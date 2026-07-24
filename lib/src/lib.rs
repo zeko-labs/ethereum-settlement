@@ -112,8 +112,12 @@ pub type ZekoAddress = Bytes32;
 pub const SETTLEMENT_PUBLIC_VALUES_MAGIC: [u8; 4] = *b"ZKST";
 pub const SETTLEMENT_PUBLIC_VALUES_VERSION: u16 = 1;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_VERSION: u16 = 2;
+pub const SETTLEMENT_PUBLIC_VALUES_V3_VERSION: u16 = 3;
+pub const SETTLEMENT_PUBLIC_VALUES_V4_VERSION: u16 = 4;
 pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_LENGTH: usize = 828;
+pub const SETTLEMENT_PUBLIC_VALUES_V3_LENGTH: usize = 900;
+pub const SETTLEMENT_PUBLIC_VALUES_V4_LENGTH: usize = 904;
 
 /// Mina network domain used when hashing the account-update body that is the
 /// first field of the verified Zkapp statement.
@@ -154,6 +158,18 @@ pub struct SettlementBindingV1 {
     #[serde(with = "serde_vec_vec_bytes32")]
     pub actions: Vec<Vec<Bytes32>>,
     pub state_before: OuterStateV1,
+    /// Exact child call forest from the Pickles statement. It is required for
+    /// V3 registry checkpoints and omitted by retained V1/V2 fixtures.
+    #[serde(default)]
+    pub call_forest: Vec<CallForestNodeV3>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CallForestNodeV3 {
+    pub account_update_body: ChunkedRandomOracleInputV1,
+    #[serde(default)]
+    pub calls: Vec<CallForestNodeV3>,
 }
 
 /// Ethereum-domain values supplied by the gateway. These are intentionally
@@ -180,6 +196,88 @@ pub struct SettlementWitnessV1 {
     /// optional preserves the existing V1 fixture and execute checkpoint.
     #[serde(default)]
     pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
+    /// Optional proof-synchronized asset-registry checkpoint. The settlement
+    /// guest emits V3 only together with the V2 inner-action range.
+    #[serde(default)]
+    pub asset_registry_checkpoint: Option<AssetRegistryCheckpointV3>,
+    /// Optional batched proof-synchronized asset-registry checkpoint. V4
+    /// validates every sequential Poseidon append and emits a depth-8 Keccak
+    /// commitment to the exact canonical record hashes so Solidity can
+    /// activate any record with a fixed-size membership proof.
+    #[serde(default)]
+    pub asset_registry_batch: Option<AssetRegistryBatchCheckpointV4>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryCheckpointV3 {
+    /// Mina field encoding of the configured registry account public-key x
+    /// coordinate. The guest uses it to select the authenticated child call.
+    #[serde(with = "serde_bytes32")]
+    pub registry_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub root: Bytes32,
+    pub count: u32,
+    pub schema_version: u32,
+    /// Keccak hash of the exact canonical Solidity/TypeScript V1 asset record
+    /// whose append produced this checkpoint.
+    #[serde(with = "serde_bytes32")]
+    pub record_hash: Bytes32,
+    pub record: CanonicalAssetRecordV1,
+    #[serde(with = "serde_vec_bytes32")]
+    pub append_path: Vec<Bytes32>,
+    #[serde(with = "serde_bytes32")]
+    pub old_root: Bytes32,
+    pub old_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryBatchCheckpointV4 {
+    /// Mina field encoding of the configured registry account public-key x
+    /// coordinate. The guest uses it to select the authenticated child call.
+    #[serde(with = "serde_bytes32")]
+    pub registry_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub root: Bytes32,
+    pub count: u32,
+    pub schema_version: u32,
+    #[serde(with = "serde_bytes32")]
+    pub old_root: Bytes32,
+    pub old_count: u32,
+    pub appends: Vec<AssetRegistryAppendV1>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryAppendV1 {
+    pub record: CanonicalAssetRecordV1,
+    #[serde(with = "serde_vec_bytes32")]
+    pub append_path: Vec<Bytes32>,
+}
+
+/// Canonical V1 asset wire shared with Solidity, OCaml and TypeScript.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalAssetRecordV1 {
+    pub schema_version: u32,
+    pub registry_index: u32,
+    #[serde(with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    #[serde(with = "serde_address")]
+    pub ethereum_token: Address,
+    #[serde(with = "serde_bytes32")]
+    pub token_owner_l2: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub token_id_l2: Bytes32,
+    pub decimals: u8,
+    pub inventory_cap: u64,
+    #[serde(with = "serde_bytes32")]
+    pub mft_standard_vk_id: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub vault_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub universal_bridge_vk_id: Bytes32,
 }
 
 /// A clear native withdrawal whose preimage must match the OCaml action aux.
@@ -447,6 +545,164 @@ pub struct SettlementPublicValuesV2 {
     pub inner_action_count: u32,
 }
 
+/// V3 extends the V2 receipt with the settled L2 asset-registry checkpoint and
+/// exact canonical record identity used by the pending-to-active L1 flow.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV3 {
+    pub settlement: SettlementPublicValuesV2,
+    pub asset_registry_root: Bytes32,
+    pub asset_registry_count: u32,
+    pub asset_registry_schema_version: u32,
+    pub asset_record_hash: Bytes32,
+}
+
+/// V4 extends the V2 receipt with a settled L2 asset-registry checkpoint and a
+/// depth-8 Keccak commitment to all exact record hashes appended by this
+/// settlement. The tree uses global registry indices, so a membership proof
+/// also binds each record to its canonical append position.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV4 {
+    pub settlement: SettlementPublicValuesV2,
+    pub asset_registry_root: Bytes32,
+    pub asset_registry_count: u32,
+    pub asset_registry_schema_version: u32,
+    pub asset_record_batch_root: Bytes32,
+    pub asset_record_batch_count: u32,
+}
+
+impl SettlementPublicValuesV4 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V4_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V4_LENGTH];
+        output[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH].copy_from_slice(&self.settlement.encode());
+        output[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V4_VERSION.to_be_bytes());
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        write_bytes(&mut output, &mut cursor, &self.asset_registry_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_count.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_schema_version.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &self.asset_record_batch_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_record_batch_count.to_be_bytes(),
+        );
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V4_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V4_LENGTH {
+            return Err(format!(
+                "settlement V4 public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V4_LENGTH,
+                input.len()
+            ));
+        }
+        if input[..4] != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement V4 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != SETTLEMENT_PUBLIC_VALUES_V4_VERSION {
+            return Err(format!(
+                "settlement V4 public values: unsupported version {version}"
+            ));
+        }
+
+        let mut v2_prefix = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
+        v2_prefix.copy_from_slice(&input[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH]);
+        v2_prefix[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+        let settlement = SettlementPublicValuesV2::decode(&v2_prefix)?;
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        let asset_registry_root = read_array(input, &mut cursor);
+        let asset_registry_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_registry_schema_version = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_record_batch_root = read_array(input, &mut cursor);
+        let asset_record_batch_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            settlement,
+            asset_registry_root,
+            asset_registry_count,
+            asset_registry_schema_version,
+            asset_record_batch_root,
+            asset_record_batch_count,
+        })
+    }
+}
+
+impl SettlementPublicValuesV3 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V3_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V3_LENGTH];
+        output[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH].copy_from_slice(&self.settlement.encode());
+        output[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V3_VERSION.to_be_bytes());
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        write_bytes(&mut output, &mut cursor, &self.asset_registry_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_count.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_schema_version.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &self.asset_record_hash);
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V3_LENGTH {
+            return Err(format!(
+                "settlement V3 public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V3_LENGTH,
+                input.len()
+            ));
+        }
+        if input[..4] != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement V3 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != SETTLEMENT_PUBLIC_VALUES_V3_VERSION {
+            return Err(format!(
+                "settlement V3 public values: unsupported version {version}"
+            ));
+        }
+
+        let mut v2_prefix = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
+        v2_prefix.copy_from_slice(&input[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH]);
+        v2_prefix[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+        let settlement = SettlementPublicValuesV2::decode(&v2_prefix)?;
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        let asset_registry_root = read_array(input, &mut cursor);
+        let asset_registry_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_registry_schema_version = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_record_hash = read_array(input, &mut cursor);
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            settlement,
+            asset_registry_root,
+            asset_registry_count,
+            asset_registry_schema_version,
+            asset_record_hash,
+        })
+    }
+}
+
 impl SettlementPublicValuesV2 {
     pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH] {
         let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
@@ -514,6 +770,8 @@ impl SettlementPublicValuesV2 {
 pub enum SettlementPublicValues {
     V1(SettlementPublicValuesV1),
     V2(SettlementPublicValuesV2),
+    V3(SettlementPublicValuesV3),
+    V4(SettlementPublicValuesV4),
 }
 
 impl SettlementPublicValues {
@@ -525,6 +783,12 @@ impl SettlementPublicValues {
             SETTLEMENT_PUBLIC_VALUES_V2_LENGTH => {
                 SettlementPublicValuesV2::decode(input).map(Self::V2)
             }
+            SETTLEMENT_PUBLIC_VALUES_V3_LENGTH => {
+                SettlementPublicValuesV3::decode(input).map(Self::V3)
+            }
+            SETTLEMENT_PUBLIC_VALUES_V4_LENGTH => {
+                SettlementPublicValuesV4::decode(input).map(Self::V4)
+            }
             actual => Err(format!(
                 "settlement public values: unsupported length {actual}"
             )),
@@ -535,6 +799,8 @@ impl SettlementPublicValues {
         match self {
             Self::V1(values) => values,
             Self::V2(values) => &values.settlement,
+            Self::V3(values) => &values.settlement.settlement,
+            Self::V4(values) => &values.settlement.settlement,
         }
     }
 }
@@ -1143,6 +1409,55 @@ mod tests {
     }
 
     #[test]
+    fn settlement_public_values_v3_round_trip() {
+        let values = SettlementPublicValuesV3 {
+            settlement: SettlementPublicValuesV2 {
+                settlement: settlement_values(),
+                bridge_address: [0x88; 20],
+                inner_action_root: [0x99; 32],
+                inner_action_start_index: 7,
+                inner_action_count: 1,
+            },
+            asset_registry_root: [0xaa; 32],
+            asset_registry_count: 3,
+            asset_registry_schema_version: 1,
+            asset_record_hash: [0xbb; 32],
+        };
+        let encoded = values.encode();
+        assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
+        assert_eq!(SettlementPublicValuesV3::decode(&encoded).unwrap(), values);
+        assert!(matches!(
+            SettlementPublicValues::decode(&encoded).unwrap(),
+            SettlementPublicValues::V3(_)
+        ));
+    }
+
+    #[test]
+    fn settlement_public_values_v4_round_trip() {
+        let values = SettlementPublicValuesV4 {
+            settlement: SettlementPublicValuesV2 {
+                settlement: settlement_values(),
+                bridge_address: [0x88; 20],
+                inner_action_root: [0x99; 32],
+                inner_action_start_index: 7,
+                inner_action_count: 2,
+            },
+            asset_registry_root: [0xaa; 32],
+            asset_registry_count: 5,
+            asset_registry_schema_version: 1,
+            asset_record_batch_root: [0xbb; 32],
+            asset_record_batch_count: 2,
+        };
+        let encoded = values.encode();
+        assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V4_LENGTH);
+        assert_eq!(SettlementPublicValuesV4::decode(&encoded).unwrap(), values);
+        assert!(matches!(
+            SettlementPublicValues::decode(&encoded).unwrap(),
+            SettlementPublicValues::V4(_)
+        ));
+    }
+
+    #[test]
     fn settlement_binding_uses_hex_json_and_round_trips() {
         let binding = SettlementBindingV1 {
             mina_signature_kind: MinaSignatureKindV1::Testnet,
@@ -1157,6 +1472,7 @@ mod tests {
             state_before: OuterStateV1 {
                 fields: [[0x55; 32]; 8],
             },
+            call_forest: Vec::new(),
         };
         let json = serde_json::to_string(&binding).unwrap();
         assert!(json.contains("0x1111111111111111"));
@@ -1175,6 +1491,8 @@ mod tests {
                 outer_action_state_length_before: 3,
             },
             inner_action_batch: None,
+            asset_registry_checkpoint: None,
+            asset_registry_batch: None,
         };
         let encoded = bincode::serialize(&witness).unwrap();
         assert_eq!(

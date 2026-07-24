@@ -120,34 +120,34 @@ count. See [current status](/status) for the recorded audit values.
 
 ## 5. Full ERC-20 bridge round trip
 
-Run the asset-specialized combined scenario:
+Run the universal two-token combined scenario:
 
 ```sh
 tools/run-local-erc20-bridge-roundtrip.sh
 ```
 
-The runner derives fresh Mina owner, vault, admin, and recipient identities;
-predicts deterministic Ethereum bridge and token addresses; and computes the
-same registry asset ID used by Solidity. It then:
+The runner derives two independent Mina owner/admin identities plus a shared
+vault and recipient; predicts two deterministic Ethereum token addresses; and
+computes both canonical asset IDs. It then:
 
-1. generates the matching Zeko circuits/deploy configuration
-2. runs the real OCaml sequencer and prover with the asset-specific circuit
-3. deploys the stock `mina-fungible-token` owner/admin on L2
-4. installs the OCaml bridge verification key on a separate token vault and
-   mints exactly the Solidity deposit capacity
-5. finalizes an asset-bound deposit and submits a debit-first token withdrawal
-6. checks the live L2 user and vault balances and exports two real settlements
-7. deploys the deterministic ERC-20 and bridge to Anvil and registers the exact
-   owner, token ID, decimals, capacity, and asset ID
-8. calls Solidity `submitDeposit`, indexes it, executes the bridge guest, and
-   proves that the resulting outer action state equals the OCaml checkpoint
-9. submits both OCaml settlements, advances the delay, and claims the ERC-20
-   with the gateway's public depth-16 proof
-10. checks Ethereum custody, liability reduction, recipient balance, and replay
-    cursor
+1. generates one universal Zeko registry/circuit configuration
+2. runs the real OCaml sequencer, prover, and three-node DA quorum
+3. registers both immutable records through the SDK and Actions indexer
+4. settles the ordered two-record registry batch and activates both pending
+   Solidity proposals with exact batch membership proofs
+5. deploys two unmodified `mina-fungible-token` owner/admin pairs
+6. installs the same bridge VK at the shared vault key under two distinct token
+   IDs and provisions each independent inventory
+7. finalizes both asset-bound deposits and advances both replay helpers
+8. submits withdrawals for both assets and checks their independent L2 balances
+9. submits the deposit-sync and withdrawal OCaml settlements to Anvil
+10. advances the delay, claims both corresponding ERC-20s, and checks per-token
+    custody, liabilities, recipient balances, and replay cursors
 
 The local verifier accepts empty proof bytes only on chain ID 31337. The runner
-never invokes `--prove` and never creates a Succinct request.
+never invokes `--prove` and never creates a Succinct request. The registry
+checkpoint precedes the two bridge settlements because pending assets cannot
+accept deposits.
 
 ## Regenerate the OCaml fixture
 

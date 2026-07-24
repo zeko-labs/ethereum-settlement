@@ -12,7 +12,8 @@ use sp1_sdk::{include_elf, Elf, SP1Stdin};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use zeko_sp1_lib::{
-    InnerActionBatchWitnessV2, SettlementBindingV1, SettlementContextV1, SettlementWitnessV1,
+    AssetRegistryBatchCheckpointV4, AssetRegistryCheckpointV3, InnerActionBatchWitnessV2,
+    SettlementBindingV1, SettlementContextV1, SettlementWitnessV1,
 };
 
 pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
@@ -70,6 +71,10 @@ pub struct SettlementProofBundle {
     pub context: Option<SettlementContextV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_registry_checkpoint: Option<AssetRegistryCheckpointV3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_registry_batch: Option<AssetRegistryBatchCheckpointV4>,
 }
 
 pub fn settlement_stdin(fixture_dir: &str) -> Result<SP1Stdin> {
@@ -123,6 +128,8 @@ fn settlement_witness(bundle: &SettlementProofBundle) -> Result<Option<Settlemen
             binding: binding.clone(),
             context: context.clone(),
             inner_action_batch: bundle.inner_action_batch.clone(),
+            asset_registry_checkpoint: bundle.asset_registry_checkpoint.clone(),
+            asset_registry_batch: bundle.asset_registry_batch.clone(),
         })),
         (None, None) => Ok(None),
         _ => anyhow::bail!("settlement binding and context must either both be present or absent"),
@@ -158,6 +165,8 @@ fn load_verifiable(fixture_dir: &Path) -> Result<VerifiableProof> {
         binding: None,
         context: None,
         inner_action_batch: None,
+        asset_registry_checkpoint: None,
+        asset_registry_batch: None,
     })
 }
 
@@ -199,6 +208,8 @@ mod tests {
             binding: None,
             context: None,
             inner_action_batch: None,
+            asset_registry_checkpoint: None,
+            asset_registry_batch: None,
         }
     }
 

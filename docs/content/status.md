@@ -108,24 +108,32 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   mock-verifier contract test exercises the complete custody, checkpoint, and
   delayed-release sequence without requesting an SP1 proof.
 
-The asset-specific runtime path is also implemented:
+The universal registry runtime path is also implemented:
 
-- The sequencer accepts one immutable ERC-20 asset configuration, compiles and
-  serves its `Make_ethereum_token` circuit/VK, and exposes proof-only deposit
-  finalization and withdrawal mutations. It never executes the incomplete
-  custom-token forest by itself.
+- The sequencer accepts one registry account, schema version, approved MFT
+  standard VK ID, shared vault public key, and universal bridge VK ID. Asset
+  records and depth-8 membership witnesses are dynamic circuit inputs. The
+  current schema supports 256 records with at most nine decimals; adding a
+  token does not compile another circuit or VK.
+- Registration is an append-only Poseidon Merkle-list transition. Its recursive
+  scan proves dense ordered traversal of every existing leaf and rejects
+  duplicate Ethereum tokens, asset IDs, or L2 owner/token identities.
+- Solidity proposals remain `Pending` until a V4 settlement binds the exact
+  ordered record-hash batch and the new L2 registry root/count. Depth-8 Keccak
+  batch proofs activate the corresponding immutable records without requiring
+  Solidity to evaluate Poseidon.
 - The browser SDK validates the returned vault forest and exact full token-owner
   account-update body, then composes and proves the transaction with the
   unmodified `mina-fungible-token` owner's `approveBase` method.
-- The operator deployment helper reads and validates the Solidity registration,
-  deploys the standard owner/admin, installs the asset-specific bridge VK on a
-  separate vault with proof-authorized sends, and mints exactly the immutable
-  Solidity deposit cap into that vault.
-
-Each registered ERC-20 still requires its own circuit/VK, sequencer instance,
-and coordinated registry entry. The Solidity cap, pre-minted L2 inventory,
-owner, derived token ID, vault, decimals, Ethereum address, and asset ID must all
-match before deployment.
+- The Actions indexer reconstructs immutable records and current membership
+  paths. The SDK resolves by Ethereum token, asset ID, or stable registry index
+  and rejects malformed records, roots, paths, and runtime identities before
+  proving.
+- The two-token local gate deploys two unmodified standard owners with distinct
+  derived token IDs, one shared vault key, and one universal bridge VK. It
+  registers and activates both records, finalizes both deposits, submits both
+  withdrawals, and claims the corresponding Ethereum tokens without generating
+  an SP1 proof.
 
 ## Needed for the live PoC
 
