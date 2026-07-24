@@ -43,7 +43,7 @@ ANVIL=${ANVIL:-$HOME/.foundry/bin/anvil}
 API_BIN=${API_BIN:-$ROOT/target/release/zeko-proof-api}
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 
-for command in bc curl docker jq date pgrep; do
+for command in bc curl docker jq date nc pgrep; do
   command -v "$command" >/dev/null || {
     echo "Missing command: $command" >&2
     exit 1
@@ -133,17 +133,10 @@ terminate_tree() {
   wait "$pid" 2>/dev/null || true
 }
 
-if curl -fsS "$RPC_URL" >/dev/null 2>&1; then
-  echo "RPC port $RPC_PORT is already in use" >&2
-  exit 1
-fi
-if curl -fsS "$API_URL/health" >/dev/null 2>&1; then
-  echo "API port $API_PORT is already in use" >&2
-  exit 1
-fi
-for port in "$ACTIONS_INDEXER_PORT" "$ACTIONS_API_PORT"; do
-  if curl -fsS "http://127.0.0.1:$port" >/dev/null 2>&1; then
-    echo "Actions service port $port is already in use" >&2
+for port in "$RPC_PORT" "$PG_PORT" "$API_PORT" \
+  "$ACTIONS_INDEXER_PORT" "$ACTIONS_API_PORT"; do
+  if nc -z 127.0.0.1 "$port" 2>/dev/null; then
+    echo "Port $port is already in use" >&2
     exit 1
   fi
 done
