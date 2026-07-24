@@ -847,6 +847,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                     block_number,
                     &block_hash,
                     &transaction_hash,
+                    config.fee_payer_public_key.as_deref(),
                 )
                 .await?;
             }
@@ -1020,6 +1021,7 @@ async fn reconcile_jobs(
                 receipt.block_number,
                 &receipt.block_hash.to_string(),
                 &transaction_hash,
+                config.fee_payer_public_key.as_deref(),
             )
             .await?;
         }
@@ -1178,6 +1180,7 @@ pub(crate) async fn apply_confirmed_bridge(
     block_number: u64,
     block_hash: &str,
     transaction_hash: &str,
+    fee_payer_public_key: Option<&str>,
 ) -> Result<()> {
     let bytes = hex::decode(
         public_values_hex
@@ -1264,6 +1267,18 @@ pub(crate) async fn apply_confirmed_bridge(
         block_hash,
     )
     .await?;
+    if let Some(fee_payer_public_key) = fee_payer_public_key {
+        advance_fee_payer(
+            &mut tx,
+            job_id,
+            fee_payer_public_key,
+            None,
+            u64::try_from(decoded.actions.len())?,
+            block_number,
+            block_hash,
+        )
+        .await?;
+    }
 
     let mut state_before = decoded.zeko_action_state_before;
     for (offset, action) in decoded.actions.iter().enumerate() {
@@ -1667,6 +1682,27 @@ async fn update_fee_payer(
     block_number: u64,
     block_hash: &str,
 ) -> Result<()> {
+    advance_fee_payer(
+        tx,
+        job_id,
+        public_key,
+        Some(nonce),
+        1,
+        block_number,
+        block_hash,
+    )
+    .await
+}
+
+async fn advance_fee_payer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    job_id: uuid::Uuid,
+    public_key: &str,
+    expected_nonce: Option<u64>,
+    increment: u64,
+    block_number: u64,
+    block_hash: &str,
+) -> Result<()> {
     let Some(mut account) = sqlx::query_scalar::<_, Value>(
         "SELECT account_json FROM gateway_accounts
          WHERE public_key = $1 AND token_id = '1' FOR UPDATE",
@@ -1677,18 +1713,34 @@ async fn update_fee_payer(
     else {
         anyhow::bail!("fee-payer virtual Mina account {public_key} is not configured");
     };
+    let current_nonce = account
+        .get("nonce")
+        .and_then(Value::as_str)
+        .unwrap_or("0")
+        .parse::<u64>()
+        .context("virtual Mina fee-payer nonce is invalid")?;
+    if let Some(expected_nonce) = expected_nonce {
+        anyhow::ensure!(
+            current_nonce == expected_nonce,
+            "virtual Mina fee-payer nonce {current_nonce} does not match expected nonce \
+             {expected_nonce}"
+        );
+    }
     snapshot_account(tx, job_id, public_key, &account, block_number, block_hash).await?;
     account
         .as_object_mut()
         .context("virtual Mina account must be a JSON object")?
         .insert(
             "nonce".to_owned(),
-            json!(nonce
-                .checked_add(1)
-                .context("fee-payer nonce overflow")?
-                .to_string()),
+            json!(fee_payer_nonce_after(current_nonce, increment)?.to_string()),
         );
     store_account(tx, public_key, account, block_number, block_hash).await
+}
+
+fn fee_payer_nonce_after(current_nonce: u64, increment: u64) -> Result<u64> {
+    current_nonce
+        .checked_add(increment)
+        .context("fee-payer nonce overflow")
 }
 
 async fn snapshot_account(
@@ -1846,5 +1898,11 @@ mod tests {
             FinalityMode::Confirmations
         );
         assert!(FinalityMode::parse("safe").is_err());
+    }
+
+    #[test]
+    fn bridge_actions_advance_the_virtual_fee_payer_nonce() {
+        assert_eq!(fee_payer_nonce_after(2, 2).unwrap(), 4);
+        assert!(fee_payer_nonce_after(u64::MAX, 1).is_err());
     }
 }
