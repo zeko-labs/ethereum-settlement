@@ -118,6 +118,10 @@ The universal registry runtime path is also implemented:
 - Registration is an append-only Poseidon Merkle-list transition. Its recursive
   scan proves dense ordered traversal of every existing leaf and rejects
   duplicate Ethereum tokens, asset IDs, or L2 owner/token identities.
+- Each outer Pickles commit binds the registry public key, root, count, and
+  schema through a domain-separated Poseidon digest in the signed sequencer
+  child's call data. This keeps the checkpoint in the verified call forest
+  without requiring a shadow registry account on Mina L1.
 - Solidity proposals remain `Pending` until a V4 settlement binds the exact
   ordered record-hash batch and the new L2 registry root/count. Depth-8 Keccak
   batch proofs activate the corresponding immutable records without requiring

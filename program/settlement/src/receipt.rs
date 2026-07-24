@@ -14,6 +14,7 @@ use zeko_sp1_lib::{
 
 const BODY_UPDATE_STATE_START: usize = 2;
 const BODY_ACTIONS_HASH: usize = 15;
+const BODY_CALL_DATA: usize = 16;
 const BODY_PRECONDITION_STATE_START: usize = 28;
 const BODY_PRECONDITION_ACTION_STATE: usize = 36;
 const OUTER_COMMIT_ACTION_FIELDS: usize = 8;
@@ -30,6 +31,8 @@ const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
 const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
 const ASSET_RECORD_BATCH_LEAF_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_LEAF_V1";
 const ASSET_RECORD_BATCH_NODE_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_NODE_V1";
+// Must match Zeko's Pickles-bound sequencer child call-data commitment.
+const ASSET_REGISTRY_CHECKPOINT_DOMAIN: &str = "Zeko registry checkpoint V1";
 
 pub fn derive_receipt(
     proof: &VerifiableProof,
@@ -966,15 +969,25 @@ fn count_registry_checkpoint_calls(
     count: u32,
     schema_version: u32,
 ) -> usize {
+    // The registry is an L2 account, so its checkpoint cannot be an executable
+    // Mina L1 account precondition. The signed sequencer child commits this
+    // digest in inert call data, and the verified call-forest hash authenticates
+    // the child body.
+    let expected_call_data = field_to_bytes(hash_with_prefix(
+        ASSET_REGISTRY_CHECKPOINT_DOMAIN,
+        &[
+            field_from_bytes(&registry_public_key),
+            field_from_bytes(&root),
+            StepField::from(count),
+            StepField::from(schema_version),
+        ],
+    ));
     forest
         .iter()
         .map(|node| {
             let fields = &node.account_update_body.field_elements;
-            let matches = fields.len() > BODY_PRECONDITION_STATE_START + 2
-                && fields[0] == registry_public_key
-                && fields[BODY_PRECONDITION_STATE_START] == root
-                && fields[BODY_PRECONDITION_STATE_START + 1] == u32_word(count)
-                && fields[BODY_PRECONDITION_STATE_START + 2] == u32_word(schema_version);
+            let matches =
+                fields.len() > BODY_CALL_DATA && fields[BODY_CALL_DATA] == expected_call_data;
             usize::from(matches)
                 + count_registry_checkpoint_calls(
                     &node.calls,
@@ -1322,10 +1335,16 @@ mod tests {
         let registry_key = field_to_bytes(StepField::from(991u64));
         let root = field_to_bytes(StepField::from(992u64));
         let mut child_fields = vec![[0u8; 32]; BODY_PRECONDITION_ACTION_STATE + 1];
-        child_fields[0] = registry_key;
-        child_fields[BODY_PRECONDITION_STATE_START] = root;
-        child_fields[BODY_PRECONDITION_STATE_START + 1] = u32_word(1);
-        child_fields[BODY_PRECONDITION_STATE_START + 2] = u32_word(1);
+        child_fields[0] = encoded(777);
+        child_fields[BODY_CALL_DATA] = field_to_bytes(hash_with_prefix(
+            ASSET_REGISTRY_CHECKPOINT_DOMAIN,
+            &[
+                field_from_bytes(&registry_key),
+                field_from_bytes(&root),
+                StepField::from(1u32),
+                StepField::from(1u32),
+            ],
+        ));
         witness.binding.call_forest = vec![CallForestNodeV3 {
             account_update_body: ChunkedRandomOracleInputV1 {
                 field_elements: child_fields,
