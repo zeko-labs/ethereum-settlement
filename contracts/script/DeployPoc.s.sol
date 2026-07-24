@@ -7,6 +7,12 @@ import {PocDeploymentConfig} from "./PocDeploymentConfig.sol";
 import {PocDeterministicFactory} from "../src/PocDeterministicFactory.sol";
 import {ZekoSettlement} from "../src/ZekoSettlement.sol";
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
+import {
+    AssetRecord,
+    AssetStatus,
+    IZekoAssetRegistry,
+    ZekoAssetRegistry
+} from "../src/ZekoAssetRegistry.sol";
 import {LocalSP1Verifier} from "../src/mocks/LocalSP1Verifier.sol";
 import {PocERC20} from "../src/mocks/PocERC20.sol";
 
@@ -64,9 +70,18 @@ contract DeployPoc is PocDeploymentConfig {
                 "settlement implementation drift"
             );
         }
-        if (predicted.bridgeImplementation.code.length == 0) {
+        if (predicted.assetRegistryModule.code.length == 0) {
             require(
-                factory.deployCode(BRIDGE_IMPLEMENTATION_SALT, type(EthereumZekoBridge).creationCode)
+                factory.deployCode(ASSET_REGISTRY_MODULE_SALT, type(ZekoAssetRegistry).creationCode)
+                    == predicted.assetRegistryModule,
+                "asset registry module drift"
+            );
+        }
+        if (predicted.bridgeImplementation.code.length == 0) {
+            bytes memory bridgeCreationCode =
+                abi.encodePacked(type(EthereumZekoBridge).creationCode, abi.encode(predicted.assetRegistryModule));
+            require(
+                factory.deployCode(BRIDGE_IMPLEMENTATION_SALT, bridgeCreationCode)
                     == predicted.bridgeImplementation,
                 "bridge implementation drift"
             );
@@ -113,6 +128,7 @@ contract DeployPoc is PocDeploymentConfig {
             );
         }
         bridge = EthereumZekoBridge(payable(predicted.bridgeProxy));
+        IZekoAssetRegistry assetRegistry = IZekoAssetRegistry(address(bridge));
 
         bool erc20TokenEnabled = vm.envOr("ERC20_TOKEN_ENABLED", false);
         if (erc20TokenEnabled) {
@@ -129,9 +145,9 @@ contract DeployPoc is PocDeploymentConfig {
                 }
                 PocERC20 token = PocERC20(predictedTokens[index]);
                 require(token.mintAuthority() == admin, "ERC20 mint authority drift");
-                if (bridge.assetStatusByToken(address(token)) == EthereumZekoBridge.AssetStatus.None) {
-                    bridge.proposeAsset(
-                        EthereumZekoBridge.AssetRecord({
+                if (assetRegistry.assetStatusByToken(address(token)) == AssetStatus.None) {
+                    assetRegistry.proposeAsset(
+                        AssetRecord({
                             schemaVersion: 1,
                             registryIndex: index,
                             assetId: vm.envBytes32(string.concat(prefix, "ASSET_ID")),
@@ -172,6 +188,7 @@ contract DeployPoc is PocDeploymentConfig {
 
         console2.log("POC_FACTORY_ADDRESS", address(factory));
         console2.log("SETTLEMENT_IMPLEMENTATION_ADDRESS", predicted.settlementImplementation);
+        console2.log("ASSET_REGISTRY_MODULE_ADDRESS", predicted.assetRegistryModule);
         console2.log("BRIDGE_IMPLEMENTATION_ADDRESS", predicted.bridgeImplementation);
         console2.log("SETTLEMENT_CONTRACT_ADDRESS", address(settlement));
         console2.log("BRIDGE_CONTRACT_ADDRESS", address(bridge));
@@ -181,8 +198,8 @@ contract DeployPoc is PocDeploymentConfig {
         if (erc20TokenEnabled) {
             console2.log("ERC20_TOKEN_0_ADDRESS", predicted.erc20Token0);
             console2.log("ERC20_TOKEN_1_ADDRESS", predicted.erc20Token1);
-            console2.log("ERC20_TOKEN_0_STATUS", uint8(bridge.assetStatusByToken(predicted.erc20Token0)));
-            console2.log("ERC20_TOKEN_1_STATUS", uint8(bridge.assetStatusByToken(predicted.erc20Token1)));
+            console2.log("ERC20_TOKEN_0_STATUS", uint8(assetRegistry.assetStatusByToken(predicted.erc20Token0)));
+            console2.log("ERC20_TOKEN_1_STATUS", uint8(assetRegistry.assetStatusByToken(predicted.erc20Token1)));
         }
     }
 }

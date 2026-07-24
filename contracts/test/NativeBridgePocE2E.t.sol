@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
+import {ZekoAssetRegistry} from "../src/ZekoAssetRegistry.sol";
 import {ZekoAddress, ZekoAddressLib} from "../src/ZekoAddress.sol";
 import {ISP1Verifier, ZekoSettlement} from "../src/ZekoSettlement.sol";
 
@@ -75,7 +76,9 @@ contract NativeBridgePocE2ETest is Test {
             )
         );
 
-        EthereumZekoBridge bridgeImplementation = new EthereumZekoBridge();
+        EthereumZekoBridge bridgeImplementation = new EthereumZekoBridge(
+            new ZekoAssetRegistry()
+        );
         bridge = EthereumZekoBridge(
             payable(
                 address(

@@ -149,6 +149,10 @@ never invokes `--prove` and never creates a Succinct request. The registry
 checkpoint precedes the two bridge settlements because pending assets cannot
 accept deposits.
 
+The deterministic manifest records the registry module separately from the
+bridge proxy. Registry calls keep the bridge ABI selectors but delegate into
+that module, while custody changes return through self-only bridge callbacks.
+
 ## Regenerate the OCaml fixture
 
 The fixture must use the same deterministic bridge address and circuit config

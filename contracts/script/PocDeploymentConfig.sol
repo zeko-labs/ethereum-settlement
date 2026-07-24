@@ -6,12 +6,14 @@ import {Script} from "forge-std/Script.sol";
 import {PocDeterministicFactory, PocERC1967Proxy} from "../src/PocDeterministicFactory.sol";
 import {ZekoSettlement} from "../src/ZekoSettlement.sol";
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
+import {ZekoAssetRegistry} from "../src/ZekoAssetRegistry.sol";
 import {LocalSP1Verifier} from "../src/mocks/LocalSP1Verifier.sol";
 import {PocERC20} from "../src/mocks/PocERC20.sol";
 
 abstract contract PocDeploymentConfig is Script {
     bytes32 internal constant FACTORY_SALT = keccak256("zeko-poc-factory-v1");
     bytes32 internal constant SETTLEMENT_IMPLEMENTATION_SALT = keccak256("zeko-settlement-implementation-v1");
+    bytes32 internal constant ASSET_REGISTRY_MODULE_SALT = keccak256("zeko-asset-registry-module-v1");
     bytes32 internal constant BRIDGE_IMPLEMENTATION_SALT = keccak256("zeko-bridge-implementation-v1");
     bytes32 internal constant SETTLEMENT_PROXY_SALT = keccak256("zeko-settlement-proxy-v1");
     bytes32 internal constant BRIDGE_PROXY_SALT = keccak256("zeko-bridge-proxy-v1");
@@ -22,6 +24,7 @@ abstract contract PocDeploymentConfig is Script {
     struct Addresses {
         address factory;
         address settlementImplementation;
+        address assetRegistryModule;
         address bridgeImplementation;
         address localVerifier;
         address settlementProxy;
@@ -36,8 +39,12 @@ abstract contract PocDeploymentConfig is Script {
         a.factory = vm.computeCreate2Address(FACTORY_SALT, keccak256(factoryCreationCode));
         a.settlementImplementation =
             _create2Address(a.factory, SETTLEMENT_IMPLEMENTATION_SALT, keccak256(type(ZekoSettlement).creationCode));
+        a.assetRegistryModule =
+            _create2Address(a.factory, ASSET_REGISTRY_MODULE_SALT, keccak256(type(ZekoAssetRegistry).creationCode));
+        bytes memory bridgeCreationCode =
+            abi.encodePacked(type(EthereumZekoBridge).creationCode, abi.encode(a.assetRegistryModule));
         a.bridgeImplementation =
-            _create2Address(a.factory, BRIDGE_IMPLEMENTATION_SALT, keccak256(type(EthereumZekoBridge).creationCode));
+            _create2Address(a.factory, BRIDGE_IMPLEMENTATION_SALT, keccak256(bridgeCreationCode));
         a.localVerifier =
             _create2Address(a.factory, LOCAL_VERIFIER_SALT, keccak256(type(LocalSP1Verifier).creationCode));
         a.settlementProxy = _proxyAddress(a.factory, SETTLEMENT_PROXY_SALT, a.settlementImplementation);

@@ -20,6 +20,7 @@ import {
     ReentrancyGuard
 } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ZekoAddress, ZekoAddressLib} from "./ZekoAddress.sol";
+import {AssetRecord, ZekoAssetRegistry} from "./ZekoAssetRegistry.sol";
 import {ISP1Verifier} from "./ZekoSettlement.sol";
 
 interface IZekoSettlementVerifier {
@@ -57,30 +58,6 @@ interface IZekoSettlementVerifier {
     function l2ActionStateInfo(
         bytes32 actionState
     ) external view returns (uint64 index, bool valid);
-
-    function assetRegistryRoot() external view returns (bytes32);
-
-    function assetRegistryCount() external view returns (uint32);
-
-    function assetRegistrySchemaVersion() external view returns (uint32);
-
-    function settledAssetRecord(
-        bytes32 recordHash
-    ) external view returns (bool);
-
-    function assetRegistryRecordBatch(
-        uint64 sequence
-    )
-        external
-        view
-        returns (
-            bytes32 registryRoot,
-            uint32 registryCount,
-            uint32 registrySchemaVersion,
-            bytes32 recordBatchRoot,
-            uint32 recordBatchCount,
-            bool valid
-        );
 }
 
 /// @title EthereumZekoBridge
@@ -168,24 +145,7 @@ contract EthereumZekoBridge is
         uint32 currentIndex,
         uint32 suppliedIndex
     );
-    error InvalidAssetRecord();
-    error AssetRecordAlreadyProposed(bytes32 recordHash);
-    error AssetIdentityAlreadyProposed(bytes32 identity);
-    error AssetRecordNotPending(bytes32 recordHash);
-    error AssetRecordNotSettled(bytes32 recordHash);
-    error InvalidAssetRecordBatch(
-        bytes32 expectedRoot,
-        bytes32 actualRoot,
-        uint64 settlementSequence
-    );
-    error RegistryCheckpointMismatch(
-        bytes32 expectedRoot,
-        uint32 expectedCount,
-        uint32 expectedSchema,
-        bytes32 actualRoot,
-        uint32 actualCount,
-        uint32 actualSchema
-    );
+    error UnauthorizedAssetRegistryModule(address caller);
 
     // -------------------------------------------------------------------------
     // Constants
@@ -202,21 +162,6 @@ contract EthereumZekoBridge is
 
     bytes32 public constant ERC20_ASSET_V1_DOMAIN =
         keccak256("ZEKO_ERC20_ASSET_V1");
-
-    bytes32 public constant ERC20_ASSET_RECORD_V1_DOMAIN =
-        keccak256("ZEKO_ERC20_ASSET_RECORD_V1");
-
-    bytes32 public constant ASSET_RECORD_BATCH_LEAF_V1_DOMAIN =
-        keccak256("ZEKO_ASSET_RECORD_BATCH_LEAF_V1");
-
-    bytes32 public constant ASSET_RECORD_BATCH_NODE_V1_DOMAIN =
-        keccak256("ZEKO_ASSET_RECORD_BATCH_NODE_V1");
-
-    uint256 public constant ASSET_REGISTRY_TREE_DEPTH = 8;
-    uint256 public constant ASSET_REGISTRY_CAPACITY =
-        1 << ASSET_REGISTRY_TREE_DEPTH;
-
-    uint32 public constant ERC20_ASSET_RECORD_SCHEMA_V1 = 1;
 
     bytes32 public constant ERC20_DEPOSIT_LEAF_V2_DOMAIN =
         keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V2");
@@ -264,29 +209,6 @@ contract EthereumZekoBridge is
         uint8 zekoDecimals;
         uint8 ethereumDecimals;
         bool allowed;
-    }
-
-    enum AssetStatus {
-        None,
-        Pending,
-        Active,
-        Paused,
-        Disallowed
-    }
-
-    /// @notice Immutable cross-chain identity. Field order is the V1 ABI wire.
-    struct AssetRecord {
-        uint32 schemaVersion;
-        uint32 registryIndex;
-        bytes32 assetId;
-        address ethereumToken;
-        bytes32 tokenOwnerL2;
-        bytes32 tokenIdL2;
-        uint8 decimals;
-        uint64 inventoryCap;
-        bytes32 mftStandardVkId;
-        bytes32 vaultPublicKey;
-        bytes32 universalBridgeVkId;
     }
 
     struct WithdrawClaim {
@@ -396,14 +318,10 @@ contract EthereumZekoBridge is
         public nextTokenWithdrawalIndex;
     mapping(address => uint64) public depositCapByToken;
 
-    // Universal append-only asset registry. Appended for UUPS compatibility.
-    mapping(address => AssetRecord) private _assetRecordByToken;
-    mapping(uint32 => address) public assetTokenByRegistryIndex;
-    mapping(address => AssetStatus) public assetStatusByToken;
-    mapping(bytes32 => bool) public proposedAssetRecord;
-    mapping(bytes32 => bool) public proposedAssetId;
-    mapping(bytes32 => bool) public proposedL2TokenIdentity;
-    uint32 public proposedAssetCount;
+    /// @notice Registry facet used by this implementation.
+    /// @dev Immutable on the implementation, so upgrades select their facet
+    /// without consuming or mutating proxy storage.
+    ZekoAssetRegistry public immutable assetRegistryModule;
 
     // -------------------------------------------------------------------------
     // Events
@@ -423,35 +341,6 @@ contract EthereumZekoBridge is
         bytes32 indexed zekoTokenId,
         uint8 decimals,
         uint64 depositCap
-    );
-
-    event AssetRegistrationProposed(
-        bytes32 indexed recordHash,
-        uint32 indexed registryIndex,
-        address indexed token,
-        bytes32 assetId,
-        bytes32 tokenOwnerL2,
-        bytes32 tokenIdL2,
-        uint8 decimals,
-        uint64 inventoryCap,
-        bytes32 mftStandardVkId,
-        bytes32 vaultPublicKey,
-        bytes32 universalBridgeVkId
-    );
-
-    event AssetRegistrationActivated(
-        bytes32 indexed recordHash,
-        uint32 indexed registryIndex,
-        address indexed token,
-        bytes32 registryRoot,
-        uint32 registryCount,
-        uint32 registrySchemaVersion
-    );
-
-    event AssetStatusUpdated(
-        address indexed token,
-        AssetStatus oldStatus,
-        AssetStatus newStatus
     );
 
     event ERC20DepositSubmitted(
@@ -544,7 +433,9 @@ contract EthereumZekoBridge is
     // -------------------------------------------------------------------------
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(ZekoAssetRegistry assetRegistryModule_) {
+        if (address(assetRegistryModule_) == address(0)) revert ZeroAddress();
+        assetRegistryModule = assetRegistryModule_;
         _disableInitializers();
     }
 
@@ -712,217 +603,15 @@ contract EthereumZekoBridge is
         );
     }
 
-    /// @notice Proposes one immutable registry leaf. Deposits remain disabled
-    /// until the same record and resulting L2 root are accepted by settlement.
-    function proposeAsset(
+    /// @notice Applies a proof-checked registry record to bridge custody state.
+    /// @dev Called only by the registry facet through the proxy itself.
+    function activateAssetRecordFromRegistry(
         AssetRecord calldata record
-    ) external onlyRole(ADMIN_ROLE) returns (bytes32 recordHash) {
-        if (
-            record.schemaVersion != ERC20_ASSET_RECORD_SCHEMA_V1 ||
-            record.registryIndex != proposedAssetCount ||
-            record.registryIndex >= ASSET_REGISTRY_CAPACITY ||
-            record.ethereumToken == address(0) ||
-            record.assetId == bytes32(0) ||
-            record.tokenOwnerL2 == bytes32(0) ||
-            record.tokenIdL2 == bytes32(0) ||
-            record.decimals > MAX_ZEKO_DECIMALS ||
-            record.inventoryCap == 0 ||
-            record.mftStandardVkId == bytes32(0) ||
-            record.vaultPublicKey == bytes32(0) ||
-            record.universalBridgeVkId == bytes32(0) ||
-            record.tokenOwnerL2 == record.vaultPublicKey
-        ) revert InvalidAssetRecord();
-        if (
-            canonicalTokenRegistered[record.ethereumToken] ||
-            assetStatusByToken[record.ethereumToken] != AssetStatus.None ||
-            allowedToken[record.ethereumToken].allowed
-        ) revert TokenAlreadyAdded(record.ethereumToken);
-
-        uint8 actualDecimals = IERC20Metadata(record.ethereumToken).decimals();
-        if (actualDecimals != record.decimals) {
-            revert InvalidEthereumDecimals(
-                record.ethereumToken,
-                record.decimals,
-                actualDecimals
-            );
+    ) external {
+        if (msg.sender != address(this)) {
+            revert UnauthorizedAssetRegistryModule(msg.sender);
         }
-        bytes32 expectedAssetId = computeERC20AssetId(
-            record.ethereumToken,
-            record.tokenOwnerL2,
-            record.tokenIdL2,
-            record.decimals
-        );
-        if (record.assetId != expectedAssetId) revert InvalidAssetRecord();
-
-        recordHash = hashAssetRecord(record);
-        if (proposedAssetRecord[recordHash]) {
-            revert AssetRecordAlreadyProposed(recordHash);
-        }
-        if (proposedAssetId[record.assetId]) {
-            revert AssetIdentityAlreadyProposed(record.assetId);
-        }
-        bytes32 l2Identity = keccak256(
-            abi.encode(record.tokenOwnerL2, record.tokenIdL2)
-        );
-        if (proposedL2TokenIdentity[l2Identity]) {
-            revert AssetIdentityAlreadyProposed(l2Identity);
-        }
-
-        _assetRecordByToken[record.ethereumToken] = record;
-        assetTokenByRegistryIndex[record.registryIndex] = record.ethereumToken;
-        assetStatusByToken[record.ethereumToken] = AssetStatus.Pending;
-        proposedAssetRecord[recordHash] = true;
-        proposedAssetId[record.assetId] = true;
-        proposedL2TokenIdentity[l2Identity] = true;
-        proposedAssetCount = record.registryIndex + 1;
-
-        emit AssetRegistrationProposed(
-            recordHash,
-            record.registryIndex,
-            record.ethereumToken,
-            record.assetId,
-            record.tokenOwnerL2,
-            record.tokenIdL2,
-            record.decimals,
-            record.inventoryCap,
-            record.mftStandardVkId,
-            record.vaultPublicKey,
-            record.universalBridgeVkId
-        );
-    }
-
-    /// @notice Activates a proposed leaf only after a proof-backed settlement
-    /// has recorded the exact canonical record and its L2 root/count.
-    function activateAsset(
-        address token,
-        bytes32 expectedRegistryRoot,
-        uint32 expectedRegistryCount
-    ) external onlyRole(ADMIN_ROLE) {
-        AssetRecord memory record = _assetRecordByToken[token];
-        bytes32 recordHash = hashAssetRecord(record);
-        if (assetStatusByToken[token] != AssetStatus.Pending) {
-            revert AssetRecordNotPending(recordHash);
-        }
-        if (!settlementVerifier.settledAssetRecord(recordHash)) {
-            revert AssetRecordNotSettled(recordHash);
-        }
-
-        bytes32 actualRoot = settlementVerifier.assetRegistryRoot();
-        uint32 actualCount = settlementVerifier.assetRegistryCount();
-        uint32 actualSchema = settlementVerifier.assetRegistrySchemaVersion();
-        if (
-            actualRoot != expectedRegistryRoot ||
-            actualCount != expectedRegistryCount ||
-            actualSchema != record.schemaVersion ||
-            actualCount <= record.registryIndex
-        ) {
-            revert RegistryCheckpointMismatch(
-                expectedRegistryRoot,
-                expectedRegistryCount,
-                record.schemaVersion,
-                actualRoot,
-                actualCount,
-                actualSchema
-            );
-        }
-
-        _activateAsset(
-            token,
-            record,
-            recordHash,
-            actualRoot,
-            actualCount,
-            actualSchema
-        );
-    }
-
-    /// @notice Activates a proposed leaf from a V4 settlement's record-hash
-    /// batch. The fixed depth-8 proof uses the global registry index, binding
-    /// the exact canonical record to its ordered L2 append position.
-    function activateAssetFromBatch(
-        address token,
-        uint64 settlementSequence,
-        bytes32[8] calldata siblings
-    ) external onlyRole(ADMIN_ROLE) {
-        AssetRecord memory record = _assetRecordByToken[token];
-        bytes32 recordHash = hashAssetRecord(record);
-        if (assetStatusByToken[token] != AssetStatus.Pending) {
-            revert AssetRecordNotPending(recordHash);
-        }
-
-        (
-            bytes32 registryRoot,
-            uint32 registryCount,
-            uint32 registrySchema,
-            bytes32 recordBatchRoot,
-            uint32 recordBatchCount,
-            bool valid
-        ) = settlementVerifier.assetRegistryRecordBatch(settlementSequence);
-        if (
-            !valid ||
-            recordBatchRoot == bytes32(0) ||
-            recordBatchCount == 0 ||
-            registrySchema != record.schemaVersion ||
-            record.registryIndex >= registryCount
-        ) {
-            revert RegistryCheckpointMismatch(
-                registryRoot,
-                registryCount,
-                record.schemaVersion,
-                registryRoot,
-                registryCount,
-                registrySchema
-            );
-        }
-
-        bytes32 computed = keccak256(
-            abi.encodePacked(ASSET_RECORD_BATCH_LEAF_V1_DOMAIN, recordHash)
-        );
-        uint256 index = record.registryIndex;
-        for (uint256 level = 0; level < ASSET_REGISTRY_TREE_DEPTH; level++) {
-            computed = (index & 1) == 0
-                ? keccak256(
-                    abi.encodePacked(
-                        ASSET_RECORD_BATCH_NODE_V1_DOMAIN,
-                        computed,
-                        siblings[level]
-                    )
-                )
-                : keccak256(
-                    abi.encodePacked(
-                        ASSET_RECORD_BATCH_NODE_V1_DOMAIN,
-                        siblings[level],
-                        computed
-                    )
-                );
-            index >>= 1;
-        }
-        if (computed != recordBatchRoot) {
-            revert InvalidAssetRecordBatch(
-                recordBatchRoot,
-                computed,
-                settlementSequence
-            );
-        }
-
-        _activateAsset(
-            token,
-            record,
-            recordHash,
-            registryRoot,
-            registryCount,
-            registrySchema
-        );
-    }
-
-    function _activateAsset(
-        address token,
-        AssetRecord memory record,
-        bytes32 recordHash,
-        bytes32 registryRoot,
-        uint32 registryCount,
-        uint32 registrySchema
-    ) internal {
+        address token = record.ethereumToken;
         canonicalTokenRegistered[token] = true;
         zekoTokenOwnerByToken[token] = record.tokenOwnerL2;
         zekoTokenIdByToken[token] = record.tokenIdL2;
@@ -933,7 +622,6 @@ contract EthereumZekoBridge is
             ethereumDecimals: record.decimals,
             allowed: true
         });
-        assetStatusByToken[token] = AssetStatus.Active;
 
         emit TokenAllowed(token, true, record.decimals, record.decimals);
         emit TokenRegistered(
@@ -944,66 +632,24 @@ contract EthereumZekoBridge is
             record.decimals,
             record.inventoryCap
         );
-        emit AssetRegistrationActivated(
-            recordHash,
-            record.registryIndex,
-            token,
-            registryRoot,
-            registryCount,
-            registrySchema
-        );
     }
 
-    /// @notice Changes operational status without mutating registry identity.
-    /// Paused/disallowed assets cannot accept deposits; claims stay available.
-    function setAssetStatus(
+    /// @notice Applies an operational registry status to deposit admission.
+    /// @dev Called only by the registry facet through the proxy itself.
+    function setAssetAllowedFromRegistry(
         address token,
-        AssetStatus newStatus
-    ) external onlyRole(ADMIN_ROLE) {
-        AssetStatus oldStatus = assetStatusByToken[token];
-        if (
-            oldStatus == AssetStatus.None ||
-            oldStatus == AssetStatus.Pending ||
-            newStatus == AssetStatus.None ||
-            newStatus == AssetStatus.Pending
-        ) revert InvalidAssetRecord();
-        assetStatusByToken[token] = newStatus;
-        allowedToken[token].allowed = newStatus == AssetStatus.Active;
+        bool allowed
+    ) external {
+        if (msg.sender != address(this)) {
+            revert UnauthorizedAssetRegistryModule(msg.sender);
+        }
+        allowedToken[token].allowed = allowed;
         emit TokenAllowed(
             token,
-            allowedToken[token].allowed,
+            allowed,
             allowedToken[token].zekoDecimals,
             allowedToken[token].ethereumDecimals
         );
-        emit AssetStatusUpdated(token, oldStatus, newStatus);
-    }
-
-    function assetRecord(
-        address token
-    ) external view returns (AssetRecord memory) {
-        return _assetRecordByToken[token];
-    }
-
-    function hashAssetRecord(
-        AssetRecord memory record
-    ) public pure returns (bytes32) {
-        return
-            keccak256(
-                abi.encode(
-                    ERC20_ASSET_RECORD_V1_DOMAIN,
-                    record.schemaVersion,
-                    record.registryIndex,
-                    record.assetId,
-                    record.ethereumToken,
-                    record.tokenOwnerL2,
-                    record.tokenIdL2,
-                    record.decimals,
-                    record.inventoryCap,
-                    record.mftStandardVkId,
-                    record.vaultPublicKey,
-                    record.universalBridgeVkId
-                )
-            );
     }
 
     function pause() external onlyRole(ADMIN_ROLE) {
@@ -2237,6 +1883,31 @@ contract EthereumZekoBridge is
         uint256 offset
     ) private pure returns (uint32) {
         return uint32(bytes4(data[offset:offset + 4]));
+    }
+
+    /// @dev Registry selectors are implemented by the immutable facet while
+    /// executing against this proxy's namespaced registry storage.
+    fallback() external {
+        address module = address(assetRegistryModule);
+        assembly ("memory-safe") {
+            calldatacopy(0, 0, calldatasize())
+            let success := delegatecall(
+                gas(),
+                module,
+                0,
+                calldatasize(),
+                0,
+                0
+            )
+            returndatacopy(0, 0, returndatasize())
+            switch success
+            case 0 {
+                revert(0, returndatasize())
+            }
+            default {
+                return(0, returndatasize())
+            }
+        }
     }
 
     function _authorizeUpgrade(

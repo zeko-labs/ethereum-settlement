@@ -21,6 +21,7 @@ contract WritePocManifest is PocDeploymentConfig {
         vm.serializeAddress(object, "gatewayProver", vm.envOr("GATEWAY_PROVER_ADDRESS", admin));
         vm.serializeAddress(object, "factory", addresses.factory);
         vm.serializeAddress(object, "settlementImplementation", addresses.settlementImplementation);
+        vm.serializeAddress(object, "assetRegistryModule", addresses.assetRegistryModule);
         vm.serializeAddress(object, "bridgeImplementation", addresses.bridgeImplementation);
         vm.serializeAddress(object, "localSp1Verifier", addresses.localVerifier);
         vm.serializeAddress(object, "sp1Verifier", vm.envOr("SP1_VERIFIER_ADDRESS", addresses.localVerifier));

@@ -12,6 +12,12 @@ import {
 } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
+import {
+    AssetRecord,
+    AssetStatus,
+    IZekoAssetRegistry,
+    ZekoAssetRegistry
+} from "../src/ZekoAssetRegistry.sol";
 import {ZekoAddress, ZekoAddressLib} from "../src/ZekoAddress.sol";
 import {ISP1Verifier} from "../src/ZekoSettlement.sol";
 
@@ -219,6 +225,8 @@ contract EthereumZekoBridgeTest is Test {
         28948022309329048855892746252171976963363056481941560715954676764349967630337;
 
     EthereumZekoBridge internal bridge;
+    IZekoAssetRegistry internal registry;
+    ZekoAssetRegistry internal registryModule;
     MockSettlementVerifier internal settlement;
     MockSP1Verifier internal sp1Verifier;
     TestERC20 internal token18;
@@ -233,7 +241,10 @@ contract EthereumZekoBridgeTest is Test {
     function setUp() public {
         settlement = new MockSettlementVerifier();
         sp1Verifier = new MockSP1Verifier();
-        EthereumZekoBridge implementation = new EthereumZekoBridge();
+        registryModule = new ZekoAssetRegistry();
+        EthereumZekoBridge implementation = new EthereumZekoBridge(
+            registryModule
+        );
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
             abi.encodeCall(
@@ -249,6 +260,7 @@ contract EthereumZekoBridgeTest is Test {
             )
         );
         bridge = EthereumZekoBridge(payable(address(proxy)));
+        registry = IZekoAssetRegistry(address(proxy));
         bridge.setLegacyDepositEnabled(true);
         bridge.setLegacyWithdrawEnabled(true);
         token18 = new TestERC20("Token18", "TK18", 18);
@@ -278,7 +290,9 @@ contract EthereumZekoBridgeTest is Test {
     }
 
     function test_Upgrade_RevertsWhenNotUpgrader() public {
-        EthereumZekoBridge newImplementation = new EthereumZekoBridge();
+        EthereumZekoBridge newImplementation = new EthereumZekoBridge(
+            registryModule
+        );
         bytes32 upgraderRole = bridge.UPGRADER_ROLE();
 
         vm.expectRevert(
@@ -293,7 +307,9 @@ contract EthereumZekoBridgeTest is Test {
     }
 
     function test_Upgrade_AllowsUpgrader() public {
-        EthereumZekoBridge newImplementation = new EthereumZekoBridge();
+        EthereumZekoBridge newImplementation = new EthereumZekoBridge(
+            registryModule
+        );
 
         bridge.upgradeToAndCall(address(newImplementation), "");
 
@@ -571,8 +587,7 @@ contract EthereumZekoBridgeTest is Test {
     function test_UniversalAssetRemainsPendingUntilMatchingSettlement() public {
         bytes32 ownerL2 = bytes32(uint256(0x123456));
         bytes32 tokenIdL2 = keccak256("universal token id");
-        EthereumZekoBridge.AssetRecord memory record = EthereumZekoBridge
-            .AssetRecord({
+        AssetRecord memory record = AssetRecord({
                 schemaVersion: 1,
                 registryIndex: 0,
                 assetId: bridge.computeERC20AssetId(
@@ -591,10 +606,10 @@ contract EthereumZekoBridgeTest is Test {
                 universalBridgeVkId: keccak256("universal bridge vk")
             });
 
-        bytes32 recordHash = bridge.proposeAsset(record);
+        bytes32 recordHash = registry.proposeAsset(record);
         assertEq(
-            uint8(bridge.assetStatusByToken(address(token6))),
-            uint8(EthereumZekoBridge.AssetStatus.Pending)
+            uint8(registry.assetStatusByToken(address(token6))),
+            uint8(AssetStatus.Pending)
         );
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -613,7 +628,7 @@ contract EthereumZekoBridgeTest is Test {
         bytes32 wrongRoot = keccak256("wrong root");
         vm.expectRevert(
             abi.encodeWithSelector(
-                EthereumZekoBridge.RegistryCheckpointMismatch.selector,
+                IZekoAssetRegistry.RegistryCheckpointMismatch.selector,
                 wrongRoot,
                 uint32(1),
                 uint32(1),
@@ -622,30 +637,26 @@ contract EthereumZekoBridgeTest is Test {
                 uint32(1)
             )
         );
-        bridge.activateAsset(address(token6), wrongRoot, 1);
+        registry.activateAsset(address(token6), wrongRoot, 1);
 
-        bridge.activateAsset(address(token6), settledRoot, 1);
+        registry.activateAsset(address(token6), settledRoot, 1);
         assertTrue(bridge.canonicalTokenRegistered(address(token6)));
         assertEq(bridge.assetIdByToken(address(token6)), record.assetId);
         assertEq(
-            uint8(bridge.assetStatusByToken(address(token6))),
-            uint8(EthereumZekoBridge.AssetStatus.Active)
+            uint8(registry.assetStatusByToken(address(token6))),
+            uint8(AssetStatus.Active)
         );
 
-        bridge.setAssetStatus(
-            address(token6),
-            EthereumZekoBridge.AssetStatus.Paused
-        );
+        registry.setAssetStatus(address(token6), AssetStatus.Paused);
         (, , bool allowed) = bridge.allowedToken(address(token6));
         assertFalse(allowed);
-        assertEq(bridge.assetRecord(address(token6)).assetId, record.assetId);
+        assertEq(registry.assetRecord(address(token6)).assetId, record.assetId);
     }
 
     function test_UniversalAssetRejectsDecimalsAboveZekoMaximum() public {
         bytes32 ownerL2 = bytes32(uint256(0x123456));
         bytes32 tokenIdL2 = keccak256("high-decimal token id");
-        EthereumZekoBridge.AssetRecord memory record = EthereumZekoBridge
-            .AssetRecord({
+        AssetRecord memory record = AssetRecord({
                 schemaVersion: 1,
                 registryIndex: 0,
                 assetId: bridge.computeERC20AssetId(
@@ -664,15 +675,14 @@ contract EthereumZekoBridgeTest is Test {
                 universalBridgeVkId: keccak256("universal bridge vk")
             });
 
-        vm.expectRevert(EthereumZekoBridge.InvalidAssetRecord.selector);
-        bridge.proposeAsset(record);
+        vm.expectRevert(IZekoAssetRegistry.InvalidAssetRecord.selector);
+        registry.proposeAsset(record);
     }
 
     function test_UniversalRegistryRejectsDuplicateL2Identity() public {
         bytes32 ownerL2 = bytes32(uint256(0x123456));
         bytes32 tokenIdL2 = keccak256("shared token id");
-        EthereumZekoBridge.AssetRecord memory first = EthereumZekoBridge
-            .AssetRecord({
+        AssetRecord memory first = AssetRecord({
                 schemaVersion: 1,
                 registryIndex: 0,
                 assetId: bridge.computeERC20AssetId(
@@ -690,10 +700,10 @@ contract EthereumZekoBridgeTest is Test {
                 vaultPublicKey: bytes32(uint256(0x654321)),
                 universalBridgeVkId: keccak256("universal bridge vk")
             });
-        bridge.proposeAsset(first);
+        registry.proposeAsset(first);
 
         TestERC20 duplicateToken = new TestERC20("Duplicate token", "DUP", 6);
-        EthereumZekoBridge.AssetRecord memory duplicate = first;
+        AssetRecord memory duplicate = first;
         duplicate.registryIndex = 1;
         duplicate.ethereumToken = address(duplicateToken);
         duplicate.assetId = bridge.computeERC20AssetId(
@@ -704,11 +714,11 @@ contract EthereumZekoBridgeTest is Test {
         );
         vm.expectRevert(
             abi.encodeWithSelector(
-                EthereumZekoBridge.AssetIdentityAlreadyProposed.selector,
+                IZekoAssetRegistry.AssetIdentityAlreadyProposed.selector,
                 keccak256(abi.encode(ownerL2, tokenIdL2))
             )
         );
-        bridge.proposeAsset(duplicate);
+        registry.proposeAsset(duplicate);
     }
 
     function test_UniversalRegistryActivatesTwoExactRecordsFromOneSettlementBatch()
@@ -718,8 +728,7 @@ contract EthereumZekoBridgeTest is Test {
         bytes32 mftVk = keccak256("mft standard vk");
         bytes32 universalVk = keccak256("universal bridge vk");
         TestERC20 secondToken = new TestERC20("Second token", "SECOND", 6);
-        EthereumZekoBridge.AssetRecord memory first = EthereumZekoBridge
-            .AssetRecord({
+        AssetRecord memory first = AssetRecord({
                 schemaVersion: 1,
                 registryIndex: 0,
                 assetId: bridge.computeERC20AssetId(
@@ -737,8 +746,7 @@ contract EthereumZekoBridgeTest is Test {
                 vaultPublicKey: sharedVault,
                 universalBridgeVkId: universalVk
             });
-        EthereumZekoBridge.AssetRecord memory second = EthereumZekoBridge
-            .AssetRecord({
+        AssetRecord memory second = AssetRecord({
                 schemaVersion: 1,
                 registryIndex: 1,
                 assetId: bridge.computeERC20AssetId(
@@ -757,8 +765,8 @@ contract EthereumZekoBridgeTest is Test {
                 universalBridgeVkId: universalVk
             });
 
-        bytes32 firstHash = bridge.proposeAsset(first);
-        bytes32 secondHash = bridge.proposeAsset(second);
+        bytes32 firstHash = registry.proposeAsset(first);
+        bytes32 secondHash = registry.proposeAsset(second);
         (
             bytes32 batchRoot,
             bytes32[8] memory firstProof,
@@ -777,33 +785,33 @@ contract EthereumZekoBridgeTest is Test {
         );
 
         vm.expectRevert();
-        bridge.activateAssetFromBatch(address(secondToken), 1, firstProof);
+        registry.activateAssetFromBatch(address(secondToken), 1, firstProof);
 
-        bridge.activateAssetFromBatch(address(token6), 1, firstProof);
-        bridge.activateAssetFromBatch(address(secondToken), 1, secondProof);
+        registry.activateAssetFromBatch(address(token6), 1, firstProof);
+        registry.activateAssetFromBatch(address(secondToken), 1, secondProof);
 
         assertEq(
-            uint8(bridge.assetStatusByToken(address(token6))),
-            uint8(EthereumZekoBridge.AssetStatus.Active)
+            uint8(registry.assetStatusByToken(address(token6))),
+            uint8(AssetStatus.Active)
         );
         assertEq(
-            uint8(bridge.assetStatusByToken(address(secondToken))),
-            uint8(EthereumZekoBridge.AssetStatus.Active)
+            uint8(registry.assetStatusByToken(address(secondToken))),
+            uint8(AssetStatus.Active)
         );
         assertEq(
-            bridge.assetRecord(address(token6)).vaultPublicKey,
+            registry.assetRecord(address(token6)).vaultPublicKey,
             sharedVault
         );
         assertEq(
-            bridge.assetRecord(address(secondToken)).vaultPublicKey,
+            registry.assetRecord(address(secondToken)).vaultPublicKey,
             sharedVault
         );
         assertEq(
-            bridge.assetRecord(address(token6)).universalBridgeVkId,
+            registry.assetRecord(address(token6)).universalBridgeVkId,
             universalVk
         );
         assertEq(
-            bridge.assetRecord(address(secondToken)).universalBridgeVkId,
+            registry.assetRecord(address(secondToken)).universalBridgeVkId,
             universalVk
         );
         assertNotEq(
@@ -2100,13 +2108,13 @@ contract EthereumZekoBridgeTest is Test {
         bytes32[256] memory nodes;
         nodes[0] = keccak256(
             abi.encodePacked(
-                bridge.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
+                registryModule.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
                 firstRecordHash
             )
         );
         nodes[1] = keccak256(
             abi.encodePacked(
-                bridge.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
+                registryModule.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
                 secondRecordHash
             )
         );
@@ -2119,7 +2127,7 @@ contract EthereumZekoBridgeTest is Test {
             for (uint256 index = 0; index < width; index += 2) {
                 nodes[index / 2] = keccak256(
                     abi.encodePacked(
-                        bridge.ASSET_RECORD_BATCH_NODE_V1_DOMAIN(),
+                        registryModule.ASSET_RECORD_BATCH_NODE_V1_DOMAIN(),
                         nodes[index],
                         nodes[index + 1]
                     )

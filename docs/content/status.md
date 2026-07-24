@@ -126,6 +126,10 @@ The universal registry runtime path is also implemented:
   ordered record-hash batch and the new L2 registry root/count. Depth-8 Keccak
   batch proofs activate the corresponding immutable records without requiring
   Solidity to evaluate Poseidon.
+- Registry selectors execute in a dedicated immutable module against
+  namespaced proxy storage. The bridge retains custody configuration behind
+  self-only callbacks; deterministic deployment records the module address and
+  keeps both implementations below Ethereum's EIP-170 bytecode limit.
 - The browser SDK validates the returned vault forest and exact full token-owner
   account-update body, then composes and proves the transaction with the
   unmodified `mina-fungible-token` owner's `approveBase` method.
