@@ -37,12 +37,23 @@ not depend on that switch.
 
 ## Canonical ERC-20 deposit
 
-Each ERC-20 registry entry immutably binds the Ethereum token, standard Mina
-FungibleToken owner, derived L2 token ID, decimals, capacity, chain, and bridge
-proxy into an asset ID. `submitDeposit(token, amount, zekoRecipient)` requires
-matching nine-or-fewer decimals on both chains, exact transfer custody, a
-positive UInt64 amount, and remaining registered capacity. Its timeout is fixed
-to `UInt32.max`.
+Each ERC-20 registry record immutably binds its stable index, Ethereum token,
+standard Mina FungibleToken owner, derived L2 token ID, decimals, capacity, and
+approved VK identities. The asset ID separately binds the chain, bridge proxy,
+token, owner, token ID, and decimals. `submitDeposit(token, amount,
+zekoRecipient)` requires matching nine-or-fewer decimals on both chains, exact
+transfer custody, a positive UInt64 amount, and remaining registered capacity.
+Its timeout is fixed to `UInt32.max`.
+
+Registration is a three-stage flow. An administrator first calls
+`proposeAsset`, which stores a dense append as `Pending` but cannot enable
+custody. The OCaml registry transition must then be verified in a V3 settlement
+for one record or a V4 settlement for an ordered batch. Finally,
+`activateAsset` or `activateAssetFromBatch` checks the settlement-bound record
+hash and canonical Mina Poseidon record commitment before making the asset
+active. `registerToken` cannot create a registry-backed asset: it is retained
+only for the explicit one-token V1 fixture path and reverts unless the legacy
+deposit switch is enabled.
 
 The one-token compatibility path is action encoding V1. It keeps the
 `ZEKO_ERC20_DEPOSIT_LEAF_V2` Keccak leaf and this auxiliary value:
@@ -114,7 +125,7 @@ head, an operator calls `POST /v1/bridge/deposits/prove`. The gateway constructs
 the batch itself from the next contiguous canonical finalized `BridgeDeposit`
 rows. A caller cannot substitute deposit contents.
 
-For each deposit the guest recomputes:
+For native deposits the guest recomputes:
 
 ```text
 deposit_leaf = keccak256(

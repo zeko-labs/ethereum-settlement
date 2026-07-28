@@ -20,9 +20,11 @@ commits into proof jobs and canonical Ethereum state.
                          Succinct Groth16 proof
                                   |
                                   v
-                     +--------------------------+
- Ethereum users ---->| bridge proxy | settlement proxy |
-                     +--------------------------+
+                     +------------------------------------+
+ Ethereum users ---->| bridge proxy <-> settlement proxy |
+                     |       |                            |
+                     |       +--> registry module         |
+                     +------------------------------------+
 ```
 
 ## Component ownership
@@ -33,8 +35,9 @@ commits into proof jobs and canonical Ethereum state.
 | Gateway | Compatibility API, job persistence, pinned native Pickles validation for settlements, zkVM checks for other guests, proof approval, transaction submission, Ethereum-derived views. | Zeko ledger semantics or a trusted `stateAfter`. |
 | Settlement guest | Complete Pickles verification and proof-bound receipt derivation. | Ethereum continuity or finality. |
 | Bridge guest | Deposit accumulator replay and exact Poseidon outer actions. | Which logs are canonical; the gateway supplies only finalized contiguous logs. |
-| Settlement contract | SP1 verification, outer-state continuity, action checkpoints, virtual slot, V2 inner root. | Pickles internals or L2 transaction execution. |
-| Bridge contract | ETH custody, deposit accumulator, bridge proof acceptance, withdrawal delay/cursor, claim transfer. | L2 ledger or user-generated withdrawal proving. |
+| Settlement contract | SP1 verification, outer-state continuity, action checkpoints, virtual slot, V2 inner root, and V3/V4 registry attestations. | Pickles internals or L2 transaction execution. |
+| Bridge contract | ETH/ERC-20 custody, deposit accumulator, bridge proof acceptance, withdrawal delay/cursors, and claim transfer. | L2 ledger or user-generated withdrawal proving. |
+| Asset registry module | Dense proposals, proof-settled activation, and operational asset status through namespaced bridge-proxy storage. | Custody or an independent proxy/storage layout. |
 
 ## Two directions of action flow
 
@@ -47,7 +50,8 @@ is the L2-facing side.
   checkpoint into the inner state.
 - Zeko-to-Ethereum messages are **inner Witness actions**. The settlement guest
   proves their ordered transition and commits a Keccak root. The bridge
-  releases ETH only for leaves under that settlement-bound root after delay.
+  releases ETH or the bound ERC-20 only for leaves under that
+  settlement-bound root after delay.
 
 ## Serialized state writers
 

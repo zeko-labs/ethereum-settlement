@@ -283,10 +283,7 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
         uint64 settlementSequence,
         bytes32 recordCommitment,
         bytes32[8] calldata siblings
-    )
-        external
-        onlyBridgeAdmin
-    {
+    ) external onlyBridgeAdmin {
         (AssetRecord memory record, bytes32 recordHash) = _pendingRecord(token);
         (
             bytes32 registryRoot,
@@ -297,17 +294,15 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
             bool valid
         ) = _settlement().assetRegistryRecordBatch(settlementSequence);
         if (
-            !valid || recordBatchRoot == bytes32(0) || recordBatchCount == 0
-                || recordCommitment == bytes32(0) || registrySchema != record.schemaVersion
-                || record.registryIndex >= registryCount
+            !valid || recordBatchRoot == bytes32(0) || recordBatchCount == 0 || recordCommitment == bytes32(0)
+                || registrySchema != record.schemaVersion || record.registryIndex >= registryCount
         ) {
             revert RegistryCheckpointMismatch(
                 registryRoot, registryCount, record.schemaVersion, registryRoot, registryCount, registrySchema
             );
         }
 
-        bytes32 computed =
-            keccak256(abi.encodePacked(ASSET_RECORD_BATCH_LEAF_V2_DOMAIN, recordHash, recordCommitment));
+        bytes32 computed = keccak256(abi.encodePacked(ASSET_RECORD_BATCH_LEAF_V2_DOMAIN, recordHash, recordCommitment));
         uint256 index = record.registryIndex;
         for (uint256 level = 0; level < ASSET_REGISTRY_TREE_DEPTH; level++) {
             computed = (index & 1) == 0

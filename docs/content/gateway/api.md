@@ -53,7 +53,7 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | Method and path | Purpose |
 | --- | --- |
 | `POST /v1/settlements` | Queue a settlement proof bundle. Alias: `/v1/proofs/settlement`. |
-| `POST /v1/bridge/deposits/prove` | Queue the next canonical finalized native-deposit batch. |
+| `POST /v1/bridge/deposits/prove` | Queue the next canonical finalized deposit batch. |
 | `POST /v1/proofs/bridge` | Low-level bridge fixture endpoint; not the production deposit entry point. |
 | `POST /v1/proofs/withdraw` | Legacy withdrawal fixture endpoint. |
 | `GET /v1/proofs` | List jobs, optionally filtered by kind/status. |

@@ -33,9 +33,7 @@ contract WritePocManifest is PocDeploymentConfig {
         vm.serializeString(object, "assetRegistryZkapp", vm.envOr("ERC20_REGISTRY_L2", string("")));
         vm.serializeString(object, "sharedVaultL2", vm.envOr("ERC20_SHARED_VAULT_L2", string("")));
         vm.serializeBytes32(object, "mftStandardVkId", vm.envOr("ERC20_MFT_STANDARD_VK_ID", bytes32(0)));
-        vm.serializeBytes32(
-            object, "universalBridgeVkId", vm.envOr("ERC20_UNIVERSAL_BRIDGE_VK_ID", bytes32(0))
-        );
+        vm.serializeBytes32(object, "universalBridgeVkId", vm.envOr("ERC20_UNIVERSAL_BRIDGE_VK_ID", bytes32(0)));
         vm.serializeUint(object, "assetRegistrySchemaVersion", vm.envOr("ERC20_REGISTRY_SCHEMA_VERSION", uint256(1)));
         vm.serializeString(object, "zekoRevision", vm.envOr("ZEKO_SOURCE_REVISION", string("")));
         vm.serializeString(object, "settlementRevision", vm.envOr("SETTLEMENT_SOURCE_REVISION", string("")));

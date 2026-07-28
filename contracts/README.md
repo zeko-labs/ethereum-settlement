@@ -25,6 +25,9 @@ forge test -vv
   PoC settlement root/action-state checkpoint.
 - `src/EthereumZekoBridge.sol` handles Ethereum asset custody, deposit
   accumulation, withdrawal-state acceptance, and withdrawal claims.
+- `src/ZekoAssetRegistry.sol` is the immutable registry module delegated
+  through the bridge proxy; it owns proposal and proof-settled activation logic
+  while its state remains in namespaced proxy storage.
 - `src/ZekoAddress.sol` validates packed Mina/Pasta public-key encodings.
 - `src/PocDeterministicFactory.sol` deploys implementations and atomically
   initialized ERC-1967 proxies at CREATE2 addresses shared by local and testnet

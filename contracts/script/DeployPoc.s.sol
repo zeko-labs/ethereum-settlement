@@ -7,12 +7,7 @@ import {PocDeploymentConfig} from "./PocDeploymentConfig.sol";
 import {PocDeterministicFactory} from "../src/PocDeterministicFactory.sol";
 import {ZekoSettlement} from "../src/ZekoSettlement.sol";
 import {EthereumZekoBridge} from "../src/EthereumZekoBridge.sol";
-import {
-    AssetRecord,
-    AssetStatus,
-    IZekoAssetRegistry,
-    ZekoAssetRegistry
-} from "../src/ZekoAssetRegistry.sol";
+import {AssetRecord, AssetStatus, IZekoAssetRegistry, ZekoAssetRegistry} from "../src/ZekoAssetRegistry.sol";
 import {LocalSP1Verifier} from "../src/mocks/LocalSP1Verifier.sol";
 import {PocERC20} from "../src/mocks/PocERC20.sol";
 
@@ -81,8 +76,7 @@ contract DeployPoc is PocDeploymentConfig {
             bytes memory bridgeCreationCode =
                 abi.encodePacked(type(EthereumZekoBridge).creationCode, abi.encode(predicted.assetRegistryModule));
             require(
-                factory.deployCode(BRIDGE_IMPLEMENTATION_SALT, bridgeCreationCode)
-                    == predicted.bridgeImplementation,
+                factory.deployCode(BRIDGE_IMPLEMENTATION_SALT, bridgeCreationCode) == predicted.bridgeImplementation,
                 "bridge implementation drift"
             );
         }

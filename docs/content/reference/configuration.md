@@ -33,7 +33,7 @@ environment file.
 | `ETHEREUM_CONFIRMATIONS` | Depth used only when `ETHEREUM_FINALITY_MODE=confirmations`; local E2E uses 1. |
 | `ETHEREUM_POLL_INTERVAL_SECS` | Receipt/indexer poll interval. |
 | `ETHEREUM_INDEXER_START_BLOCK` | Contract deployment block. |
-| `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized native-deposit batch automatically. Enable for the browser PoC. |
+| `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized deposit batch automatically. Enable for the browser PoC. |
 | `BRIDGE_AUTO_PROVE_POLL_SECS` | Automatic batch scan interval; reference value 5. |
 | `API_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins, or `*` for isolated local development. |
 
@@ -132,7 +132,7 @@ The runtime config directory is mounted read-only:
 | `bridge-genesis-ledger.json` | Genuine OCaml bridge export. |
 | `bridge-scenario.json` | Public DA/sequencer/recipient identity and bridge checkpoint manifest. |
 | `virtual-mina-accounts.json` | Outer and fee-payer GraphQL account objects. |
-| `artifacts/manifest.json` | Chain, proxies, vkeys, VK identifier, DA mode, and holder address. |
+| `artifacts/manifest.json` | Chain, proxy/implementation/registry-module addresses, registry identity, vkeys, VK identifier, DA mode, and holder address. |
 
 Changing any of the first three after building the Zeko/gateway images creates
 a different proof identity.

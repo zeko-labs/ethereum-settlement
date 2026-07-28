@@ -43,14 +43,12 @@ abstract contract PocDeploymentConfig is Script {
             _create2Address(a.factory, ASSET_REGISTRY_MODULE_SALT, keccak256(type(ZekoAssetRegistry).creationCode));
         bytes memory bridgeCreationCode =
             abi.encodePacked(type(EthereumZekoBridge).creationCode, abi.encode(a.assetRegistryModule));
-        a.bridgeImplementation =
-            _create2Address(a.factory, BRIDGE_IMPLEMENTATION_SALT, keccak256(bridgeCreationCode));
+        a.bridgeImplementation = _create2Address(a.factory, BRIDGE_IMPLEMENTATION_SALT, keccak256(bridgeCreationCode));
         a.localVerifier =
             _create2Address(a.factory, LOCAL_VERIFIER_SALT, keccak256(type(LocalSP1Verifier).creationCode));
         a.settlementProxy = _proxyAddress(a.factory, SETTLEMENT_PROXY_SALT, a.settlementImplementation);
         a.bridgeProxy = _proxyAddress(a.factory, BRIDGE_PROXY_SALT, a.bridgeImplementation);
-        bytes32 tokenCreationCodeHash =
-            keccak256(abi.encodePacked(type(PocERC20).creationCode, abi.encode(admin)));
+        bytes32 tokenCreationCodeHash = keccak256(abi.encodePacked(type(PocERC20).creationCode, abi.encode(admin)));
         a.erc20Token0 = _create2Address(a.factory, ERC20_TOKEN_0_SALT, tokenCreationCodeHash);
         a.erc20Token1 = _create2Address(a.factory, ERC20_TOKEN_1_SALT, tokenCreationCodeHash);
     }

@@ -127,9 +127,9 @@ The universal registry runtime path is also implemented:
   child's call data. This keeps the checkpoint in the verified call forest
   without requiring a shadow registry account on Mina L1.
 - Solidity proposals remain `Pending` until a V4 settlement binds the exact
-  ordered record-hash batch and the new L2 registry root/count. Depth-8 Keccak
-  batch proofs activate the corresponding immutable records without requiring
-  Solidity to evaluate Poseidon.
+  ordered `(record hash, Mina record commitment)` batch and the new L2 registry
+  root/count. Depth-8 Keccak batch proofs activate the corresponding immutable
+  records without requiring Solidity to evaluate Poseidon.
 - Registry selectors execute in a dedicated immutable module against
   namespaced proxy storage. The bridge retains custody configuration behind
   self-only callbacks; deterministic deployment records the module address and
@@ -152,7 +152,8 @@ The universal registry runtime path is also implemented:
 1. Build and record immutable machine-local images from the final committed
    source and retained verifier index.
 2. Provide a funded Sepolia RPC/admin/gateway identity and a funded Succinct
-   requester, deploy the settlement and bridge proxies, and pass preflight.
+   requester, deploy the registry module plus settlement and bridge proxies,
+   and pass preflight.
 3. Obtain a network-simulation PGU value for each genuine job, review the
    capped quote, and explicitly approve the three paid proofs used by the demo.
 4. Complete one browser-driven Sepolia round trip and archive transaction,
@@ -175,4 +176,4 @@ approval-gated external operations.
 
 The old arbitrary-timeout/ERC20 deposit path and separate withdrawal guest are
 retained for compatibility tests but are disabled by default. They are not the
-native bridge protocol described in these docs.
+canonical bridge paths described in these docs.
