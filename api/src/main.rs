@@ -1240,7 +1240,7 @@ async fn list_native_withdrawals(
     let rows = sqlx::query(
         "SELECT settlement_sequence, action_offset
          FROM gateway_inner_action_leaves
-         WHERE recipient IS NOT NULL AND NOT removed
+         WHERE recipient IS NOT NULL AND token IS NULL AND NOT removed
            AND ($1::text IS NULL OR lower(recipient) = lower($1))
            AND ($2::bigint IS NULL OR global_action_index > $2)
          ORDER BY global_action_index
@@ -1375,8 +1375,8 @@ async fn load_native_withdrawal_proof_at(
 ) -> Result<NativeWithdrawalProof> {
     let rows = sqlx::query(
         "SELECT action_offset, global_action_index, action_fields_hash, leaf,
-                recipient, zeko_amount::text AS zeko_amount, inner_action_root,
-                commit_slot_upper
+                token, recipient, zeko_amount::text AS zeko_amount,
+                inner_action_root, commit_slot_upper
          FROM gateway_inner_action_leaves
          WHERE settlement_sequence = $1 AND NOT removed
          ORDER BY action_offset",
@@ -1392,6 +1392,7 @@ async fn load_native_withdrawal_proof_at(
         target.try_get::<i32, _>("action_offset")? == i32::try_from(offset)?,
         "inner-action batch is not contiguous"
     );
+    ensure_native_withdrawal_kind(target.try_get("token")?)?;
     let recipient: String = target
         .try_get::<Option<String>, _>("recipient")?
         .context("inner action is not a claimable native withdrawal")?;
@@ -1449,6 +1450,14 @@ async fn load_native_withdrawal_proof_at(
         status: status.to_owned(),
         next_action: next_action.to_owned(),
     })
+}
+
+fn ensure_native_withdrawal_kind(token: Option<String>) -> Result<()> {
+    anyhow::ensure!(
+        token.is_none(),
+        "inner action is not a claimable native withdrawal"
+    );
+    Ok(())
 }
 
 async fn load_token_withdrawal_proof(
@@ -2846,5 +2855,19 @@ mod tests {
             withdrawal_progress(10, 10, 90, 90, "claimERC20Withdrawal"),
             ("claimable", "claimERC20Withdrawal")
         );
+    }
+
+    #[test]
+    fn native_withdrawal_queries_require_the_native_asset_discriminator() {
+        let source = include_str!("main.rs");
+        let list = &source[source.find("async fn list_native_withdrawals").unwrap()
+            ..source.find("async fn list_pending_withdrawals").unwrap()];
+
+        assert!(list.contains("token IS NULL"));
+        assert!(ensure_native_withdrawal_kind(None).is_ok());
+        assert!(ensure_native_withdrawal_kind(Some(
+            "0x1111111111111111111111111111111111111111".into()
+        ))
+        .is_err());
     }
 }

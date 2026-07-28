@@ -963,23 +963,17 @@ fn registry_checkpoint_call_data(
     count: u32,
     schema_version: u32,
 ) -> Bytes32 {
-    let (registry_x, registry_is_odd) = unpack_registry_public_key(registry_public_key);
+    let (registry_x, registry_is_odd) = unpack_public_key(registry_public_key);
     field_to_bytes(hash_with_prefix(
         ASSET_REGISTRY_CHECKPOINT_DOMAIN,
         &[
             registry_x,
-            StepField::from(u8::from(registry_is_odd)),
+            registry_is_odd,
             field_from_bytes(&root),
             StepField::from(count),
             StepField::from(schema_version),
         ],
     ))
-}
-
-fn unpack_registry_public_key(mut packed: Bytes32) -> (StepField, bool) {
-    let is_odd = packed[0] & 0x80 != 0;
-    packed[0] &= 0x7f;
-    (field_from_bytes(&packed), is_odd)
 }
 
 fn field_from_bytes(bytes: &Bytes32) -> StepField {
