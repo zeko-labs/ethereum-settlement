@@ -128,7 +128,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     bytes32 public constant INNER_ACTION_NODE_V2_DOMAIN = keccak256("ZEKO_INNER_ACTION_NODE_V2");
 
     uint256 public constant WITHDRAW_MERKLE_TREE_DEPTH = 16;
-    uint256 public constant MAX_WITHDRAW_COUNT = 1 << WITHDRAW_MERKLE_TREE_DEPTH;
+    uint256 public constant MAX_WITHDRAW_COUNT = 2 ** WITHDRAW_MERKLE_TREE_DEPTH;
 
     uint256 private constant BRIDGE_PUBLIC_VALUES_LENGTH = 148;
     bytes4 private constant BRIDGE_PUBLIC_VALUES_V2_MAGIC = 0x5a4b4252; // ZKBR
@@ -672,6 +672,9 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         if (!config.allowed) revert TokenNotAllowed(token);
         if (amount == 0) revert ZeroAmount();
         if (amount > type(uint64).max) revert AmountExceedsZekoUInt64(amount);
+        // `amount` is bounded to the Zeko UInt64 range above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint64 zekoAmount = uint64(amount);
         uint256 requestedLiability = escrowLiabilityByToken[token] + amount;
         uint256 depositCap = depositCapByToken[token];
         if (requestedLiability > depositCap) {
@@ -686,8 +689,8 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         }
 
         return legacyEncoding
-            ? _recordLegacyERC20Deposit(token, uint64(amount), zekoRecipient)
-            : _recordERC20Deposit(token, uint64(amount), zekoRecipient);
+            ? _recordLegacyERC20Deposit(token, zekoAmount, zekoRecipient)
+            : _recordERC20Deposit(token, zekoAmount, zekoRecipient);
     }
 
     /// @notice Deposits native ETH and appends a deposit leaf to the bridge accumulator.
@@ -1623,14 +1626,14 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     }
 
     function _readUint64LE(bytes calldata data, uint256 offset) private pure returns (uint64 value) {
-        for (uint256 i = 0; i < 8; i++) {
-            value |= uint64(uint8(data[offset + i])) << uint64(8 * i);
+        for (uint8 i = 0; i < 8; i++) {
+            value |= uint64(uint8(data[offset + i])) << (8 * i);
         }
     }
 
     function _readUint32LE(bytes calldata data, uint256 offset) private pure returns (uint32 value) {
-        for (uint256 i = 0; i < 4; i++) {
-            value |= uint32(uint8(data[offset + i])) << uint32(8 * i);
+        for (uint8 i = 0; i < 4; i++) {
+            value |= uint32(uint8(data[offset + i])) << (8 * i);
         }
     }
 

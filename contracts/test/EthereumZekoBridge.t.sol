@@ -152,21 +152,21 @@ contract MockSettlementVerifier {
         );
     }
 
-    function setActionStateValid(bytes32 actionState, bool valid) external {
-        validActionState[actionState] = valid;
+    function setActionStateValid(bytes32 targetActionState, bool valid) external {
+        validActionState[targetActionState] = valid;
     }
 
-    function setL2ActionStateInfo(bytes32 actionState, uint64 index, bool valid) external {
-        l2ActionStateIndex[actionState] = index;
-        validActionState[actionState] = valid;
+    function setL2ActionStateInfo(bytes32 targetActionState, uint64 index, bool valid) external {
+        l2ActionStateIndex[targetActionState] = index;
+        validActionState[targetActionState] = valid;
     }
 
-    function isActionStateValid(bytes32 actionState) external view returns (bool) {
-        return validActionState[actionState];
+    function isActionStateValid(bytes32 targetActionState) external view returns (bool) {
+        return validActionState[targetActionState];
     }
 
-    function l2ActionStateInfo(bytes32 actionState) external view returns (uint64 index, bool valid) {
-        return (l2ActionStateIndex[actionState], validActionState[actionState]);
+    function l2ActionStateInfo(bytes32 targetActionState) external view returns (uint64 index, bool valid) {
+        return (l2ActionStateIndex[targetActionState], validActionState[targetActionState]);
     }
 }
 
@@ -470,7 +470,8 @@ contract EthereumZekoBridgeTest is Test {
         (, bytes32 recordCommitment) = _activateCanonicalToken(token9, zekoTokenOwner, zekoTokenId, type(uint64).max);
         bridge.setLegacyDepositEnabled(false);
 
-        uint256 amount = 2 * 10 ** 9;
+        uint64 zekoAmount = 2 * 10 ** 9;
+        uint256 amount = zekoAmount;
         ZekoAddress recipient = ZekoAddressLib.pack(0x01020304, false);
 
         vm.startPrank(alice);
@@ -553,7 +554,7 @@ contract EthereumZekoBridgeTest is Test {
                 recordCommitment,
                 bridge.assetIdByToken(address(token9)),
                 recipient,
-                uint64(amount),
+                zekoAmount,
                 type(uint32).max,
                 nonce
             )
@@ -1691,14 +1692,16 @@ contract EthereumZekoBridgeTest is Test {
     }
 
     function _writeUint64LE(bytes memory data, uint256 offset, uint64 value) private pure {
+        bytes8 encoded = bytes8(value);
         for (uint256 i = 0; i < 8; i++) {
-            data[offset + i] = bytes1(uint8(value >> (8 * i)));
+            data[offset + i] = encoded[7 - i];
         }
     }
 
     function _writeUint32LE(bytes memory data, uint256 offset, uint32 value) private pure {
+        bytes4 encoded = bytes4(value);
         for (uint256 i = 0; i < 4; i++) {
-            data[offset + i] = bytes1(uint8(value >> (8 * i)));
+            data[offset + i] = encoded[3 - i];
         }
     }
 

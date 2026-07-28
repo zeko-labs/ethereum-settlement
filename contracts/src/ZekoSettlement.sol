@@ -260,6 +260,8 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     }
 
     function currentVirtualSlot() public view returns (uint64) {
+        // Validator timestamp influence is acceptable for coarse protocol slot timing.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= genesisTimestamp) return forkSlot;
         return uint64(forkSlot) + uint64((block.timestamp - genesisTimestamp) / slotDuration);
     }

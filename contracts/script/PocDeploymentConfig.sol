@@ -33,7 +33,7 @@ abstract contract PocDeploymentConfig is Script {
         address erc20Token1;
     }
 
-    function _predict(address admin) internal view returns (Addresses memory a) {
+    function _predict(address admin) internal pure returns (Addresses memory a) {
         bytes memory factoryCreationCode =
             abi.encodePacked(type(PocDeterministicFactory).creationCode, abi.encode(admin));
         a.factory = vm.computeCreate2Address(FACTORY_SALT, keccak256(factoryCreationCode));

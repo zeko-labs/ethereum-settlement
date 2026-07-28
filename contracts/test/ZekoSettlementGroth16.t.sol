@@ -495,19 +495,22 @@ contract ZekoSettlementV1Test is Test {
     }
 
     function _writeUint16(bytes memory output, uint256 offset, uint16 value) private pure {
-        output[offset] = bytes1(uint8(value >> 8));
-        output[offset + 1] = bytes1(uint8(value));
+        bytes2 encoded = bytes2(value);
+        output[offset] = encoded[0];
+        output[offset + 1] = encoded[1];
     }
 
     function _writeUint32(bytes memory output, uint256 offset, uint32 value) private pure {
+        bytes4 encoded = bytes4(value);
         for (uint256 i = 0; i < 4; i++) {
-            output[offset + i] = bytes1(uint8(value >> ((3 - i) * 8)));
+            output[offset + i] = encoded[i];
         }
     }
 
     function _writeUint64(bytes memory output, uint256 offset, uint64 value) private pure {
+        bytes8 encoded = bytes8(value);
         for (uint256 i = 0; i < 8; i++) {
-            output[offset + i] = bytes1(uint8(value >> ((7 - i) * 8)));
+            output[offset + i] = encoded[i];
         }
     }
 }

@@ -176,7 +176,7 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
     bytes32 public constant ASSET_RECORD_BATCH_NODE_V1_DOMAIN = keccak256("ZEKO_ASSET_RECORD_BATCH_NODE_V1");
 
     uint256 public constant ASSET_REGISTRY_TREE_DEPTH = 8;
-    uint256 public constant ASSET_REGISTRY_CAPACITY = 1 << ASSET_REGISTRY_TREE_DEPTH;
+    uint256 public constant ASSET_REGISTRY_CAPACITY = 2 ** ASSET_REGISTRY_TREE_DEPTH;
     uint32 public constant ERC20_ASSET_RECORD_SCHEMA_V1 = 1;
     uint8 private constant MAX_ZEKO_DECIMALS = 9;
 
