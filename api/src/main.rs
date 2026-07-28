@@ -1600,13 +1600,19 @@ fn build_inner_action_batch_proof(
                 .0,
         );
     }
-    anyhow::ensure!(
-        inner_action_commitment::root(&leaves) == expected_root.0,
-        "indexed inner actions do not reproduce their settlement root"
-    );
     let target_index = usize::try_from(offset)?;
     let siblings = inner_action_commitment::merkle_proof(&leaves, target_index)
-        .context("withdrawal offset is outside the batch")?
+        .context("withdrawal offset is outside the batch")?;
+    anyhow::ensure!(
+        inner_action_commitment::verify_merkle_proof(
+            leaves[target_index],
+            target_index,
+            &siblings,
+            expected_root.0,
+        ),
+        "indexed inner actions do not reproduce their settlement root"
+    );
+    let siblings = siblings
         .into_iter()
         .map(|hash| format!("0x{}", hex::encode(hash)))
         .collect();
@@ -2974,5 +2980,30 @@ mod tests {
             1
         )
         .is_err());
+        assert!(build_inner_action_batch_proof(
+            leaves
+                .into_iter()
+                .enumerate()
+                .map(|(offset, leaf)| {
+                    inner_action_row(i32::try_from(offset).unwrap(), leaf, [0x77; 32])
+                })
+                .collect(),
+            1,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn shared_withdrawal_loader_reduces_the_merkle_tree_once() {
+        let source = include_str!("main.rs");
+        let start = source.find("fn build_inner_action_batch_proof").unwrap();
+        let end = source[start..]
+            .find("fn withdrawal_progress")
+            .map(|offset| start + offset)
+            .unwrap();
+        let loader = &source[start..end];
+
+        assert!(!loader.contains("inner_action_commitment::root(&leaves)"));
+        assert!(loader.contains("inner_action_commitment::verify_merkle_proof"));
     }
 }

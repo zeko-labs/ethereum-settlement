@@ -182,6 +182,14 @@ pub struct TokenWithdrawalIdentity {
     pub asset_id: B256,
 }
 
+enum TokenWithdrawalValidation {
+    Legacy,
+    Registry {
+        registry_index: u32,
+        record_commitment: B256,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct BridgeDepositLog {
     pub nonce: u64,
@@ -944,15 +952,34 @@ impl Ethereum {
 
         let mut resolved = HashMap::with_capacity(identities.len());
         for identity in identities {
-            let token = match identity.encoding_version {
-                ERC20_ACTION_ENCODING_V1 => *legacy_tokens
-                    .get(&identity.asset_id)
-                    .context("archived ERC20 asset is not registered on Ethereum")?,
+            let (token, validation) = match identity.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => {
+                    anyhow::ensure!(
+                        identity.registry_index == 0 && identity.record_commitment.is_zero(),
+                        "legacy ERC20 withdrawal has registry identity"
+                    );
+                    (
+                        *legacy_tokens
+                            .get(&identity.asset_id)
+                            .context("archived ERC20 asset is not registered on Ethereum")?,
+                        TokenWithdrawalValidation::Legacy,
+                    )
+                }
                 ERC20_ACTION_ENCODING_V2 => {
-                    contract
-                        .assetTokenByRegistryIndex(identity.registry_index)
-                        .call()
-                        .await?
+                    anyhow::ensure!(
+                        !identity.record_commitment.is_zero(),
+                        "archived ERC20 registry identity does not match Ethereum"
+                    );
+                    (
+                        contract
+                            .assetTokenByRegistryIndex(identity.registry_index)
+                            .call()
+                            .await?,
+                        TokenWithdrawalValidation::Registry {
+                            registry_index: identity.registry_index,
+                            record_commitment: identity.record_commitment,
+                        },
+                    )
                 }
                 version => {
                     anyhow::bail!("unsupported ERC20 withdrawal encoding version {version}")
@@ -967,30 +994,28 @@ impl Ethereum {
                 contract.assetIdByToken(token).call().await? == identity.asset_id,
                 "archived ERC20 asset id does not match Ethereum"
             );
-            match identity.encoding_version {
-                ERC20_ACTION_ENCODING_V1 => {
+            match validation {
+                TokenWithdrawalValidation::Legacy => {
                     anyhow::ensure!(
-                        identity.registry_index == 0
-                            && identity.record_commitment.is_zero()
-                            && contract
-                                .recordCommitmentByToken(token)
-                                .call()
-                                .await?
-                                .is_zero(),
+                        contract
+                            .recordCommitmentByToken(token)
+                            .call()
+                            .await?
+                            .is_zero(),
                         "legacy ERC20 withdrawal has registry identity"
                     );
                 }
-                ERC20_ACTION_ENCODING_V2 => {
+                TokenWithdrawalValidation::Registry {
+                    registry_index,
+                    record_commitment,
+                } => {
                     anyhow::ensure!(
-                        contract.registryIndexByToken(token).call().await?
-                            == identity.registry_index
+                        contract.registryIndexByToken(token).call().await? == registry_index
                             && contract.recordCommitmentByToken(token).call().await?
-                                == identity.record_commitment
-                            && !identity.record_commitment.is_zero(),
+                                == record_commitment,
                         "archived ERC20 registry identity does not match Ethereum"
                     );
                 }
-                _ => unreachable!(),
             }
             resolved.insert(identity, token);
         }
@@ -1126,5 +1151,24 @@ mod tests {
                 "BridgeTransitionAccepted(bytes32,bytes32,bytes32,bytes32,uint64)"
             )
         );
+    }
+
+    #[test]
+    fn token_identity_resolution_dispatches_on_version_once() {
+        let source = include_str!("ethereum.rs");
+        let start = source
+            .find("pub async fn resolve_token_withdrawal_identities")
+            .unwrap();
+        let end = source[start..]
+            .find("pub async fn l2_action_state_info")
+            .map(|offset| start + offset)
+            .unwrap();
+        let resolver = &source[start..end];
+
+        assert_eq!(
+            resolver.matches("match identity.encoding_version").count(),
+            1
+        );
+        assert!(!resolver.contains("_ => unreachable!()"));
     }
 }
