@@ -52,6 +52,7 @@ contract MockSettlementVerifier {
     uint32 public assetRegistryCount;
     uint32 public assetRegistrySchemaVersion;
     mapping(bytes32 => bool) public settledAssetRecord;
+    mapping(bytes32 => bytes32) public settledAssetRecordCommitment;
 
     struct AssetRecordBatch {
         bytes32 registryRoot;
@@ -102,12 +103,14 @@ contract MockSettlementVerifier {
         bytes32 root,
         uint32 count,
         uint32 schemaVersion,
-        bytes32 recordHash
+        bytes32 recordHash,
+        bytes32 recordCommitment
     ) external {
         assetRegistryRoot = root;
         assetRegistryCount = count;
         assetRegistrySchemaVersion = schemaVersion;
         settledAssetRecord[recordHash] = true;
+        settledAssetRecordCommitment[recordHash] = recordCommitment;
     }
 
     function setAssetRegistryRecordBatch(
@@ -231,6 +234,7 @@ contract EthereumZekoBridgeTest is Test {
     MockSP1Verifier internal sp1Verifier;
     TestERC20 internal token18;
     TestERC20 internal token6;
+    TestERC20 internal token9;
     bytes32 internal bridgeProgramVKey = keccak256("bridge program vkey");
     bytes32 internal withdrawProgramVKey = keccak256("withdraw program vkey");
 
@@ -265,9 +269,60 @@ contract EthereumZekoBridgeTest is Test {
         bridge.setLegacyWithdrawEnabled(true);
         token18 = new TestERC20("Token18", "TK18", 18);
         token6 = new TestERC20("Token6", "TK6", 6);
+        token9 = new TestERC20("Token9", "TK9", 9);
 
         token18.mint(alice, 100 ether);
         token6.mint(alice, 100 * 10 ** 6);
+        token9.mint(alice, 100 * 10 ** 9);
+    }
+
+    function _activateCanonicalToken(
+        TestERC20 token,
+        bytes32 ownerL2,
+        bytes32 tokenIdL2,
+        uint64 inventoryCap
+    ) private returns (AssetRecord memory record, bytes32 recordCommitment) {
+        uint32 registryIndex = registry.proposedAssetCount();
+        uint8 decimals = token.decimals();
+        record = AssetRecord({
+            schemaVersion: 1,
+            registryIndex: registryIndex,
+            assetId: bridge.computeERC20AssetId(
+                address(token),
+                ownerL2,
+                tokenIdL2,
+                decimals
+            ),
+            ethereumToken: address(token),
+            tokenOwnerL2: ownerL2,
+            tokenIdL2: tokenIdL2,
+            decimals: decimals,
+            inventoryCap: inventoryCap,
+            mftStandardVkId: keccak256(
+                abi.encode("test mft standard vk", registryIndex)
+            ),
+            vaultPublicKey: bytes32(uint256(0xA00000) + registryIndex),
+            universalBridgeVkId: keccak256(
+                abi.encode("test universal bridge vk", registryIndex)
+            )
+        });
+        bytes32 recordHash = registry.proposeAsset(record);
+        recordCommitment = bytes32(uint256(1_000_000) + registryIndex);
+        bytes32 settledRoot = keccak256(
+            abi.encode("settled registry root", registryIndex, recordHash)
+        );
+        settlement.setAssetRegistryCheckpoint(
+            settledRoot,
+            registryIndex + 1,
+            1,
+            recordHash,
+            recordCommitment
+        );
+        registry.activateAsset(
+            address(token),
+            settledRoot,
+            registryIndex + 1
+        );
     }
 
     function test_SetUp_ConfiguresNativeETH() public view {
@@ -287,6 +342,106 @@ contract EthereumZekoBridgeTest is Test {
         assertTrue(bridge.hasRole(bridge.ADMIN_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.PROVER_ROLE(), owner));
         assertTrue(bridge.hasRole(bridge.UPGRADER_ROLE(), owner));
+    }
+
+    function test_RegisterTokenCannotBypassProofSynchronizedRegistry() public {
+        bridge.setLegacyDepositEnabled(false);
+        vm.expectRevert(
+            EthereumZekoBridge.CanonicalRegistrationRequiresRegistry.selector
+        );
+        bridge.registerToken(
+            address(token6),
+            bytes32(uint256(0x123456)),
+            keccak256("legacy direct token id"),
+            6,
+            6,
+            type(uint64).max
+        );
+
+        assertFalse(bridge.canonicalTokenRegistered(address(token6)));
+        assertEq(bridge.recordCommitmentByToken(address(token6)), bytes32(0));
+        (, , bool allowed) = bridge.allowedToken(address(token6));
+        assertFalse(allowed);
+    }
+
+    function test_RegisterTokenRetainsExplicitLegacyV1Deposit() public {
+        bytes32 ownerL2 = bytes32(uint256(0x123456));
+        bytes32 tokenIdL2 = keccak256("legacy direct token id");
+        bridge.registerToken(
+            address(token18),
+            ownerL2,
+            tokenIdL2,
+            18,
+            18,
+            type(uint64).max
+        );
+        assertEq(
+            bridge.recordCommitmentByToken(address(token18)),
+            bytes32(0)
+        );
+        assertEq(bridge.registryIndexByToken(address(token18)), 0);
+
+        uint64 amount = 2 ether;
+        ZekoAddress recipient = ZekoAddressLib.pack(0x01020304, false);
+        vm.startPrank(alice);
+        token18.approve(address(bridge), amount);
+        (uint64 nonce, bytes32 leaf, ) = bridge.submitDeposit(
+            address(token18),
+            amount,
+            recipient
+        );
+        vm.stopPrank();
+
+        assertEq(
+            leaf,
+            bridge.computeLegacyERC20DepositLeaf(
+                address(token18),
+                bridge.assetIdByToken(address(token18)),
+                recipient,
+                amount,
+                type(uint32).max,
+                nonce
+            )
+        );
+    }
+
+    function test_LegacyTokenCannotBeReboundToUniversalRecord() public {
+        bytes32 ownerL2 = bytes32(uint256(0x123456));
+        bytes32 tokenIdL2 = keccak256("immutable legacy token id");
+        bridge.registerToken(
+            address(token6),
+            ownerL2,
+            tokenIdL2,
+            6,
+            6,
+            type(uint64).max
+        );
+        AssetRecord memory record = AssetRecord({
+            schemaVersion: 1,
+            registryIndex: 0,
+            assetId: bridge.computeERC20AssetId(
+                address(token6),
+                ownerL2,
+                tokenIdL2,
+                6
+            ),
+            ethereumToken: address(token6),
+            tokenOwnerL2: ownerL2,
+            tokenIdL2: tokenIdL2,
+            decimals: 6,
+            inventoryCap: type(uint64).max,
+            mftStandardVkId: keccak256("immutable mft standard vk"),
+            vaultPublicKey: bytes32(uint256(0x654321)),
+            universalBridgeVkId: keccak256("immutable universal bridge vk")
+        });
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.TokenAlreadyAdded.selector,
+                address(token6)
+            )
+        );
+        registry.proposeAsset(record);
+        assertEq(bridge.recordCommitmentByToken(address(token6)), bytes32(0));
     }
 
     function test_Upgrade_RevertsWhenNotUpgrader() public {
@@ -458,24 +613,22 @@ contract EthereumZekoBridgeTest is Test {
     function test_SubmitDepositRecordsCanonicalERC20WitnessInput() public {
         bytes32 zekoTokenOwner = bytes32(uint256(0x123456));
         bytes32 zekoTokenId = keccak256("zeko fungible token id");
-        bridge.registerToken(
-            address(token18),
+        (, bytes32 recordCommitment) = _activateCanonicalToken(
+            token9,
             zekoTokenOwner,
             zekoTokenId,
-            18,
-            18,
             type(uint64).max
         );
         bridge.setLegacyDepositEnabled(false);
 
-        uint256 amount = 2 ether;
+        uint256 amount = 2 * 10 ** 9;
         ZekoAddress recipient = ZekoAddressLib.pack(0x01020304, false);
 
         vm.startPrank(alice);
-        token18.approve(address(bridge), amount);
+        token9.approve(address(bridge), amount);
         vm.recordLogs();
         (uint64 nonce, bytes32 leaf, bytes32 newState) = bridge.submitDeposit(
-            address(token18),
+            address(token9),
             amount,
             recipient
         );
@@ -488,8 +641,12 @@ contract EthereumZekoBridgeTest is Test {
         bytes32 erc20DepositSignature = keccak256(
             "ERC20DepositSubmitted(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint64,uint64)"
         );
+        bytes32 erc20DepositV2Signature = keccak256(
+            "ERC20DepositSubmittedV2(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint64,uint64,uint32,uint32,bytes32)"
+        );
         bool foundWitnessEvent;
         bool foundCanonicalEvent;
+        bool foundRegistryBoundEvent;
         for (uint256 i = 0; i < logs.length; i++) {
             if (logs[i].topics[0] == bridgeDepositSignature) {
                 foundWitnessEvent = true;
@@ -516,7 +673,7 @@ contract EthereumZekoBridgeTest is Test {
                             uint64
                         )
                     );
-                assertEq(eventToken, address(token18));
+                assertEq(eventToken, address(token9));
                 assertEq(eventSender, alice);
                 assertEq(eventRecipient, ZekoAddress.unwrap(recipient));
                 assertEq(eventAmount, amount);
@@ -527,7 +684,7 @@ contract EthereumZekoBridgeTest is Test {
                 assertEq(uint64(uint256(logs[i].topics[1])), nonce);
                 assertEq(
                     logs[i].topics[2],
-                    bridge.assetIdByToken(address(token18))
+                    bridge.assetIdByToken(address(token9))
                 );
                 assertEq(logs[i].topics[3], leaf);
                 (
@@ -542,22 +699,54 @@ contract EthereumZekoBridgeTest is Test {
                         (bytes32, address, address, uint256, uint64, uint64)
                     );
                 assertEq(eventState, newState);
-                assertEq(eventToken, address(token18));
+                assertEq(eventToken, address(token9));
                 assertEq(eventSender, alice);
                 assertEq(eventRecipient, ZekoAddress.unwrap(recipient));
                 assertEq(eventAmount, amount);
                 assertEq(eventTimeout, type(uint32).max);
+            } else if (logs[i].topics[0] == erc20DepositV2Signature) {
+                foundRegistryBoundEvent = true;
+                (
+                    ,
+                    ,
+                    ,
+                    ,
+                    ,
+                    ,
+                    uint32 encodingVersion,
+                    uint32 registryIndex,
+                    bytes32 eventRecordCommitment
+                ) = abi.decode(
+                        logs[i].data,
+                        (
+                            bytes32,
+                            address,
+                            address,
+                            uint256,
+                            uint64,
+                            uint64,
+                            uint32,
+                            uint32,
+                            bytes32
+                        )
+                    );
+                assertEq(encodingVersion, 2);
+                assertEq(registryIndex, 0);
+                assertEq(eventRecordCommitment, recordCommitment);
             }
         }
         assertTrue(foundWitnessEvent);
         assertTrue(foundCanonicalEvent);
+        assertTrue(foundRegistryBoundEvent);
 
         assertEq(nonce, 1);
         assertEq(
             leaf,
             bridge.computeERC20DepositLeaf(
-                address(token18),
-                bridge.assetIdByToken(address(token18)),
+                address(token9),
+                0,
+                recordCommitment,
+                bridge.assetIdByToken(address(token9)),
                 recipient,
                 uint64(amount),
                 type(uint32).max,
@@ -565,21 +754,21 @@ contract EthereumZekoBridgeTest is Test {
             )
         );
         assertEq(newState, bridge.currentDepositState());
-        assertEq(token18.balanceOf(address(bridge)), amount);
-        assertEq(bridge.escrowLiabilityByToken(address(token18)), amount);
+        assertEq(token9.balanceOf(address(bridge)), amount);
+        assertEq(bridge.escrowLiabilityByToken(address(token9)), amount);
         assertEq(
-            bridge.zekoTokenOwnerByToken(address(token18)),
+            bridge.zekoTokenOwnerByToken(address(token9)),
             zekoTokenOwner
         );
-        assertEq(bridge.zekoTokenIdByToken(address(token18)), zekoTokenId);
-        assertEq(bridge.depositCapByToken(address(token18)), type(uint64).max);
+        assertEq(bridge.zekoTokenIdByToken(address(token9)), zekoTokenId);
+        assertEq(bridge.depositCapByToken(address(token9)), type(uint64).max);
         assertEq(
-            bridge.assetIdByToken(address(token18)),
+            bridge.assetIdByToken(address(token9)),
             bridge.computeERC20AssetId(
-                address(token18),
+                address(token9),
                 zekoTokenOwner,
                 zekoTokenId,
-                18
+                9
             )
         );
     }
@@ -624,7 +813,14 @@ contract EthereumZekoBridgeTest is Test {
         );
 
         bytes32 settledRoot = keccak256("settled Poseidon registry root");
-        settlement.setAssetRegistryCheckpoint(settledRoot, 1, 1, recordHash);
+        bytes32 recordCommitment = bytes32(uint256(991));
+        settlement.setAssetRegistryCheckpoint(
+            settledRoot,
+            1,
+            1,
+            recordHash,
+            recordCommitment
+        );
         bytes32 wrongRoot = keccak256("wrong root");
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -642,6 +838,11 @@ contract EthereumZekoBridgeTest is Test {
         registry.activateAsset(address(token6), settledRoot, 1);
         assertTrue(bridge.canonicalTokenRegistered(address(token6)));
         assertEq(bridge.assetIdByToken(address(token6)), record.assetId);
+        assertEq(bridge.registryIndexByToken(address(token6)), 0);
+        assertEq(
+            bridge.recordCommitmentByToken(address(token6)),
+            recordCommitment
+        );
         assertEq(
             uint8(registry.assetStatusByToken(address(token6))),
             uint8(AssetStatus.Active)
@@ -767,11 +968,18 @@ contract EthereumZekoBridgeTest is Test {
 
         bytes32 firstHash = registry.proposeAsset(first);
         bytes32 secondHash = registry.proposeAsset(second);
+        bytes32 firstCommitment = bytes32(uint256(991));
+        bytes32 secondCommitment = bytes32(uint256(992));
         (
             bytes32 batchRoot,
             bytes32[8] memory firstProof,
             bytes32[8] memory secondProof
-        ) = _twoAssetRecordBatch(firstHash, secondHash);
+        ) = _twoAssetRecordBatch(
+                firstHash,
+                firstCommitment,
+                secondHash,
+                secondCommitment
+            );
         bytes32 registryRoot = keccak256(
             "settled two-record Poseidon registry root"
         );
@@ -785,10 +993,32 @@ contract EthereumZekoBridgeTest is Test {
         );
 
         vm.expectRevert();
-        registry.activateAssetFromBatch(address(secondToken), 1, firstProof);
+        registry.activateAssetFromBatch(
+            address(secondToken),
+            1,
+            secondCommitment,
+            firstProof
+        );
+        vm.expectRevert();
+        registry.activateAssetFromBatch(
+            address(token6),
+            1,
+            secondCommitment,
+            firstProof
+        );
 
-        registry.activateAssetFromBatch(address(token6), 1, firstProof);
-        registry.activateAssetFromBatch(address(secondToken), 1, secondProof);
+        registry.activateAssetFromBatch(
+            address(token6),
+            1,
+            firstCommitment,
+            firstProof
+        );
+        registry.activateAssetFromBatch(
+            address(secondToken),
+            1,
+            secondCommitment,
+            secondProof
+        );
 
         assertEq(
             uint8(registry.assetStatusByToken(address(token6))),
@@ -822,22 +1052,28 @@ contract EthereumZekoBridgeTest is Test {
             bridge.zekoTokenIdByToken(address(token6)),
             bridge.zekoTokenIdByToken(address(secondToken))
         );
+        assertEq(
+            bridge.recordCommitmentByToken(address(token6)),
+            firstCommitment
+        );
+        assertEq(
+            bridge.recordCommitmentByToken(address(secondToken)),
+            secondCommitment
+        );
     }
 
     function test_SubmitDepositRejectsAmountOutsideZekoUInt64() public {
-        bridge.registerToken(
-            address(token18),
+        _activateCanonicalToken(
+            token9,
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
-            18,
-            18,
             type(uint64).max
         );
 
         uint256 amount = uint256(type(uint64).max) + 1;
-        token18.mint(alice, amount);
+        token9.mint(alice, amount);
         vm.startPrank(alice);
-        token18.approve(address(bridge), amount);
+        token9.approve(address(bridge), amount);
         vm.expectRevert(
             abi.encodeWithSelector(
                 EthereumZekoBridge.AmountExceedsZekoUInt64.selector,
@@ -845,7 +1081,7 @@ contract EthereumZekoBridgeTest is Test {
             )
         );
         bridge.submitDeposit(
-            address(token18),
+            address(token9),
             amount,
             ZekoAddressLib.pack(0x01020304, false)
         );
@@ -856,32 +1092,30 @@ contract EthereumZekoBridgeTest is Test {
         public
     {
         uint64 depositCap = 2_000_000;
-        bridge.registerToken(
-            address(token18),
+        _activateCanonicalToken(
+            token6,
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
-            18,
-            18,
             depositCap
         );
 
         vm.startPrank(alice);
-        token18.approve(address(bridge), uint256(depositCap) + 1);
+        token6.approve(address(bridge), uint256(depositCap) + 1);
         bridge.submitDeposit(
-            address(token18),
+            address(token6),
             depositCap,
             ZekoAddressLib.pack(0x01020304, false)
         );
         vm.expectRevert(
             abi.encodeWithSelector(
                 EthereumZekoBridge.TokenDepositCapExceeded.selector,
-                address(token18),
+                address(token6),
                 uint256(depositCap),
                 uint256(depositCap) + 1
             )
         );
         bridge.submitDeposit(
-            address(token18),
+            address(token6),
             1,
             ZekoAddressLib.pack(0x01020304, false)
         );
@@ -889,26 +1123,24 @@ contract EthereumZekoBridgeTest is Test {
     }
 
     function test_CanonicalTokenCannotEnterThroughLegacyDeposit() public {
-        bridge.registerToken(
-            address(token18),
+        _activateCanonicalToken(
+            token9,
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
-            18,
-            18,
             type(uint64).max
         );
 
         vm.startPrank(alice);
-        token18.approve(address(bridge), 2 ether);
+        token9.approve(address(bridge), 2 * 10 ** 9);
         vm.expectRevert(
             abi.encodeWithSelector(
                 EthereumZekoBridge.CanonicalTokenRequiresSubmitDeposit.selector,
-                address(token18)
+                address(token9)
             )
         );
         bridge.deposit(
-            address(token18),
-            2 ether,
+            address(token9),
+            2 * 10 ** 9,
             ZekoAddressLib.pack(0x01020304, false),
             100
         );
@@ -1055,77 +1287,133 @@ contract EthereumZekoBridgeTest is Test {
     function test_ClaimERC20WithdrawalUsesAssetBoundSettlementLeaf() public {
         bytes32 zekoTokenOwner = bytes32(uint256(0x123456));
         bytes32 zekoTokenId = keccak256("zeko fungible token id");
-        bridge.registerToken(
-            address(token18),
+        (, bytes32 recordCommitment) = _activateCanonicalToken(
+            token9,
             zekoTokenOwner,
             zekoTokenId,
-            18,
-            18,
             type(uint64).max
         );
 
-        uint64 amount = 2 ether;
+        uint64 amount = 2 * 10 ** 9;
         vm.startPrank(alice);
-        token18.approve(address(bridge), amount);
+        token9.approve(address(bridge), amount);
         bridge.submitDeposit(
-            address(token18),
+            address(token9),
             amount,
             ZekoAddressLib.pack(0x1234, false)
         );
         vm.stopPrank();
 
         // Disabling new deposits must not strand already-backed withdrawals.
-        bridge.setTokenAllowed(address(token18), false);
+        registry.setAssetStatus(address(token9), AssetStatus.Paused);
         bridge.setWithdrawalDelaySlots(5);
         uint64 sequence = 4;
         uint32 startIndex = 11;
         bytes32 actionFieldsHash = keccak256("asset-bound action fields");
         bytes32 leaf = bridge.computeERC20WithdrawalLeaf(
             startIndex,
-            address(token18),
-            bridge.assetIdByToken(address(token18)),
+            address(token9),
+            0,
+            recordCommitment,
+            bridge.assetIdByToken(address(token9)),
             bob,
             amount,
             actionFieldsHash
         );
         (bytes32 root, bytes32[16] memory proof) = _singleInnerActionTree(leaf);
-        settlement.setInnerActionBatch(sequence, root, startIndex, 1, 100);
         settlement.setVirtualSlot(105);
 
-        uint256 bobBefore = token18.balanceOf(bob);
+        bytes32 wrongIndexLeaf = bridge.computeERC20WithdrawalLeaf(
+            startIndex,
+            address(token9),
+            1,
+            recordCommitment,
+            bridge.assetIdByToken(address(token9)),
+            bob,
+            amount,
+            actionFieldsHash
+        );
+        (bytes32 wrongIndexRoot, bytes32[16] memory wrongIndexProof) =
+            _singleInnerActionTree(wrongIndexLeaf);
+        settlement.setInnerActionBatch(
+            sequence,
+            wrongIndexRoot,
+            startIndex,
+            1,
+            100
+        );
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
         bridge.claimERC20Withdrawal(
             sequence,
             0,
-            address(token18),
+            address(token9),
+            bob,
+            amount,
+            actionFieldsHash,
+            wrongIndexProof
+        );
+
+        bytes32 wrongCommitmentLeaf = bridge.computeERC20WithdrawalLeaf(
+            startIndex,
+            address(token9),
+            0,
+            bytes32(uint256(recordCommitment) + 1),
+            bridge.assetIdByToken(address(token9)),
+            bob,
+            amount,
+            actionFieldsHash
+        );
+        (bytes32 wrongCommitmentRoot, bytes32[16] memory wrongCommitmentProof) =
+            _singleInnerActionTree(wrongCommitmentLeaf);
+        settlement.setInnerActionBatch(
+            sequence,
+            wrongCommitmentRoot,
+            startIndex,
+            1,
+            100
+        );
+        vm.expectRevert(EthereumZekoBridge.InvalidWithdrawProof.selector);
+        bridge.claimERC20Withdrawal(
+            sequence,
+            0,
+            address(token9),
+            bob,
+            amount,
+            actionFieldsHash,
+            wrongCommitmentProof
+        );
+
+        settlement.setInnerActionBatch(sequence, root, startIndex, 1, 100);
+        uint256 bobBefore = token9.balanceOf(bob);
+        bridge.claimERC20Withdrawal(
+            sequence,
+            0,
+            address(token9),
             bob,
             amount,
             actionFieldsHash,
             proof
         );
 
-        assertEq(token18.balanceOf(bob) - bobBefore, amount);
-        assertEq(bridge.escrowLiabilityByToken(address(token18)), 0);
+        assertEq(token9.balanceOf(bob) - bobBefore, amount);
+        assertEq(bridge.escrowLiabilityByToken(address(token9)), 0);
         assertEq(
-            bridge.nextTokenWithdrawalIndex(address(token18), bob),
+            bridge.nextTokenWithdrawalIndex(address(token9), bob),
             startIndex + 1
         );
     }
 
     function test_ClaimERC20WithdrawalRejectsCrossAssetReplay() public {
-        bridge.registerToken(
-            address(token18),
+        (, bytes32 token9Commitment) = _activateCanonicalToken(
+            token9,
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id 18"),
-            18,
-            18,
             type(uint64).max
         );
-        bridge.registerToken(
-            address(token6),
+        _activateCanonicalToken(
+            token6,
             bytes32(uint256(0x654321)),
             keccak256("zeko fungible token id 6"),
-            6,
-            6,
             type(uint64).max
         );
 
@@ -1142,16 +1430,18 @@ contract EthereumZekoBridgeTest is Test {
         uint64 sequence = 5;
         uint32 startIndex = 12;
         bytes32 actionFieldsHash = keccak256("asset-bound action fields");
-        bytes32 token18Leaf = bridge.computeERC20WithdrawalLeaf(
+        bytes32 token9Leaf = bridge.computeERC20WithdrawalLeaf(
             startIndex,
-            address(token18),
-            bridge.assetIdByToken(address(token18)),
+            address(token9),
+            0,
+            token9Commitment,
+            bridge.assetIdByToken(address(token9)),
             bob,
             amount,
             actionFieldsHash
         );
         (bytes32 root, bytes32[16] memory proof) = _singleInnerActionTree(
-            token18Leaf
+            token9Leaf
         );
         settlement.setInnerActionBatch(sequence, root, startIndex, 1, 100);
         bridge.setWithdrawalDelaySlots(0);
@@ -1170,27 +1460,25 @@ contract EthereumZekoBridgeTest is Test {
     }
 
     function test_EmergencyWithdrawCannotDrainCanonicalERC20Liability() public {
-        bridge.registerToken(
-            address(token18),
+        _activateCanonicalToken(
+            token9,
             bytes32(uint256(0x123456)),
             keccak256("zeko fungible token id"),
-            18,
-            18,
             type(uint64).max
         );
 
-        uint64 amount = 2 ether;
+        uint64 amount = 2 * 10 ** 9;
         vm.startPrank(alice);
-        token18.approve(address(bridge), amount);
+        token9.approve(address(bridge), amount);
         bridge.submitDeposit(
-            address(token18),
+            address(token9),
             amount,
             ZekoAddressLib.pack(0x1234, false)
         );
         vm.stopPrank();
 
         vm.expectRevert();
-        bridge.emergencyWithdrawToken(address(token18), owner, 1);
+        bridge.emergencyWithdrawToken(address(token9), owner, 1);
     }
 
     function test_DepositETH_RevertsWhenPrecisionDoesNotFitZekoDecimals()
@@ -2095,7 +2383,9 @@ contract EthereumZekoBridgeTest is Test {
 
     function _twoAssetRecordBatch(
         bytes32 firstRecordHash,
-        bytes32 secondRecordHash
+        bytes32 firstRecordCommitment,
+        bytes32 secondRecordHash,
+        bytes32 secondRecordCommitment
     )
         private
         view
@@ -2108,14 +2398,16 @@ contract EthereumZekoBridgeTest is Test {
         bytes32[256] memory nodes;
         nodes[0] = keccak256(
             abi.encodePacked(
-                registryModule.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
-                firstRecordHash
+                registryModule.ASSET_RECORD_BATCH_LEAF_V2_DOMAIN(),
+                firstRecordHash,
+                firstRecordCommitment
             )
         );
         nodes[1] = keccak256(
             abi.encodePacked(
-                registryModule.ASSET_RECORD_BATCH_LEAF_V1_DOMAIN(),
-                secondRecordHash
+                registryModule.ASSET_RECORD_BATCH_LEAF_V2_DOMAIN(),
+                secondRecordHash,
+                secondRecordCommitment
             )
         );
         uint256 width = 256;

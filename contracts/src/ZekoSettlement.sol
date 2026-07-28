@@ -30,7 +30,7 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     uint8 public constant DA_MODE_MULTISIG = 1;
     uint256 public constant PUBLIC_VALUES_LENGTH = 768;
     uint256 public constant PUBLIC_VALUES_V2_LENGTH = 828;
-    uint256 public constant PUBLIC_VALUES_V3_LENGTH = 900;
+    uint256 public constant PUBLIC_VALUES_V3_LENGTH = 932;
     uint256 public constant PUBLIC_VALUES_V4_LENGTH = 904;
     uint32 public constant ASSET_REGISTRY_CAPACITY = 256;
     uint256 private constant STATE_ARRAY_LENGTH = 8;
@@ -113,6 +113,9 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
 
     mapping(uint64 => AssetRegistryRecordBatch) public assetRegistryRecordBatch;
 
+    // Registry action identity. Appended after all V4 storage for UUPS compatibility.
+    mapping(bytes32 => bytes32) public settledAssetRecordCommitment;
+
     struct DecodedPublicValues {
         uint16 version;
         uint8 daMode;
@@ -140,6 +143,7 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         uint32 assetRegistryCount;
         uint32 assetRegistrySchemaVersion;
         bytes32 assetRecordHash;
+        bytes32 assetRecordCommitment;
         bytes32 assetRecordBatchRoot;
         uint32 assetRecordBatchCount;
     }
@@ -179,6 +183,7 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         uint32 count,
         uint32 schemaVersion,
         bytes32 indexed recordHash,
+        bytes32 recordCommitment,
         uint64 indexed batchSequence
     );
     event AssetRegistryBatchCheckpointAccepted(
@@ -529,7 +534,8 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
                 decoded.assetRegistryCount != assetRegistryCount + 1 ||
                 decoded.assetRegistryCount > ASSET_REGISTRY_CAPACITY ||
                 decoded.assetRegistrySchemaVersion != 1 ||
-                decoded.assetRecordHash == bytes32(0)
+                decoded.assetRecordHash == bytes32(0) ||
+                decoded.assetRecordCommitment == bytes32(0)
             ) {
                 revert InvalidAssetRegistryCheckpoint(
                     decoded.assetRegistryRoot,
@@ -542,11 +548,15 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
             assetRegistryCount = decoded.assetRegistryCount;
             assetRegistrySchemaVersion = decoded.assetRegistrySchemaVersion;
             settledAssetRecord[decoded.assetRecordHash] = true;
+            settledAssetRecordCommitment[
+                decoded.assetRecordHash
+            ] = decoded.assetRecordCommitment;
             emit AssetRegistryCheckpointAccepted(
                 decoded.assetRegistryRoot,
                 decoded.assetRegistryCount,
                 decoded.assetRegistrySchemaVersion,
                 decoded.assetRecordHash,
+                decoded.assetRecordCommitment,
                 decoded.batchSequence
             );
         }
@@ -720,6 +730,8 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
             );
             cursor += 4;
             decoded.assetRecordHash = _readBytes32(publicValues, cursor);
+            cursor += 32;
+            decoded.assetRecordCommitment = _readBytes32(publicValues, cursor);
             cursor += 32;
         }
         if (version == PUBLIC_VALUES_V4_VERSION) {

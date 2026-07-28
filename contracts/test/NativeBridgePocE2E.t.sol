@@ -178,6 +178,8 @@ contract NativeBridgePocE2ETest is Test {
     }
 
     function test_ERC20DepositWitnessToDelayedAssetWithdrawal() public {
+        bridge.setLegacyDepositEnabled(true);
+        bridge.setLegacyWithdrawEnabled(true);
         ERC20BridgePocToken token = new ERC20BridgePocToken();
         bytes32 tokenOwner = bytes32(uint256(0x123456));
         bytes32 tokenId = keccak256("wrapped BPT token id");
@@ -215,7 +217,7 @@ contract NativeBridgePocE2ETest is Test {
         bytes32 actionFieldsHash = keccak256(
             "real asset-bound inner action fields"
         );
-        bytes32 withdrawalLeaf = bridge.computeERC20WithdrawalLeaf(
+        bytes32 withdrawalLeaf = bridge.computeLegacyERC20WithdrawalLeaf(
             0,
             address(token),
             bridge.assetIdByToken(address(token)),

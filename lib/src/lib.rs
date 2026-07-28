@@ -116,8 +116,10 @@ pub const SETTLEMENT_PUBLIC_VALUES_V3_VERSION: u16 = 3;
 pub const SETTLEMENT_PUBLIC_VALUES_V4_VERSION: u16 = 4;
 pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_LENGTH: usize = 828;
-pub const SETTLEMENT_PUBLIC_VALUES_V3_LENGTH: usize = 900;
+pub const SETTLEMENT_PUBLIC_VALUES_V3_LENGTH: usize = 932;
 pub const SETTLEMENT_PUBLIC_VALUES_V4_LENGTH: usize = 904;
+pub const ERC20_ACTION_ENCODING_V1: u32 = 1;
+pub const ERC20_ACTION_ENCODING_V2: u32 = 2;
 
 /// Mina network domain used when hashing the account-update body that is the
 /// first field of the verified Zkapp statement.
@@ -296,6 +298,15 @@ pub struct NativeWithdrawalV2 {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenWithdrawalV3 {
+    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
+    /// universal-registry withdrawals must use V2.
+    #[serde(default = "default_erc20_action_encoding")]
+    pub encoding_version: u32,
+    #[serde(default)]
+    pub registry_index: u32,
+    /// Mina Poseidon commitment to the complete canonical registry record.
+    #[serde(default, with = "serde_bytes32")]
+    pub record_commitment: Bytes32,
     #[serde(with = "serde_address")]
     pub token: Address,
     #[serde(with = "serde_bytes32")]
@@ -554,6 +565,9 @@ pub struct SettlementPublicValuesV3 {
     pub asset_registry_count: u32,
     pub asset_registry_schema_version: u32,
     pub asset_record_hash: Bytes32,
+    /// Mina Poseidon commitment to the same record authenticated by
+    /// `asset_record_hash`.
+    pub asset_record_commitment: Bytes32,
 }
 
 /// V4 extends the V2 receipt with a settled L2 asset-registry checkpoint and a
@@ -659,6 +673,7 @@ impl SettlementPublicValuesV3 {
             &self.asset_registry_schema_version.to_be_bytes(),
         );
         write_bytes(&mut output, &mut cursor, &self.asset_record_hash);
+        write_bytes(&mut output, &mut cursor, &self.asset_record_commitment);
         debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
         output
     }
@@ -691,6 +706,7 @@ impl SettlementPublicValuesV3 {
         let asset_registry_count = u32::from_be_bytes(read_array(input, &mut cursor));
         let asset_registry_schema_version = u32::from_be_bytes(read_array(input, &mut cursor));
         let asset_record_hash = read_array(input, &mut cursor);
+        let asset_record_commitment = read_array(input, &mut cursor);
         debug_assert_eq!(cursor, input.len());
 
         Ok(Self {
@@ -699,6 +715,7 @@ impl SettlementPublicValuesV3 {
             asset_registry_count,
             asset_registry_schema_version,
             asset_record_hash,
+            asset_record_commitment,
         })
     }
 }
@@ -826,6 +843,15 @@ pub struct BridgeDeposit {
     /// Canonical registry identity. Native ETH uses zero for compatibility.
     #[serde(default, with = "serde_bytes32")]
     pub asset_id: Bytes32,
+    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
+    /// universal-registry deposits must use V2.
+    #[serde(default = "default_erc20_action_encoding")]
+    pub encoding_version: u32,
+    #[serde(default)]
+    pub registry_index: u32,
+    /// Mina Poseidon commitment to the complete canonical registry record.
+    #[serde(default, with = "serde_bytes32")]
+    pub record_commitment: Bytes32,
     /// Raw Ethereum custody amount. Native ETH uses wei; canonical ERC-20s use
     /// the identical base unit configured on the Mina fungible token.
     #[serde(with = "serde_bytes32")]
@@ -842,6 +868,10 @@ pub struct BridgeDeposit {
 
 fn default_bridge_timeout() -> u64 {
     u32::MAX as u64
+}
+
+fn default_erc20_action_encoding() -> u32 {
+    ERC20_ACTION_ENCODING_V1
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1422,6 +1452,7 @@ mod tests {
             asset_registry_count: 3,
             asset_registry_schema_version: 1,
             asset_record_hash: [0xbb; 32],
+            asset_record_commitment: [0xcc; 32],
         };
         let encoded = values.encode();
         assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);

@@ -65,6 +65,8 @@ sol! {
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
         function assetIdByToken(address token) external view returns (bytes32);
+        function registryIndexByToken(address token) external view returns (uint32);
+        function recordCommitmentByToken(address token) external view returns (bytes32);
         function submitBridgeTransition(bytes publicValues, bytes proofBytes) external;
         function submitWithdrawTransition(bytes publicValues, bytes proofBytes) external;
         event BridgeDeposit(
@@ -460,10 +462,13 @@ impl Ethereum {
             .collect()
     }
 
-    pub async fn erc20_asset_id(&self, token: Address) -> Result<B256> {
+    pub async fn erc20_asset_identity(&self, token: Address) -> Result<(B256, u32, B256)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-        Ok(contract.assetIdByToken(token).call().await?)
+        let asset_id = contract.assetIdByToken(token).call().await?;
+        let registry_index = contract.registryIndexByToken(token).call().await?;
+        let record_commitment = contract.recordCommitmentByToken(token).call().await?;
+        Ok((asset_id, registry_index, record_commitment))
     }
 
     pub async fn settlement_accepted_logs(

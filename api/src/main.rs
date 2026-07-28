@@ -818,6 +818,7 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     let settlement = state.ethereum.settlement_state().await?;
     let rows = sqlx::query(
         "SELECT nonce, old_deposit_state, new_deposit_state, token, asset_id,
+                action_encoding_version, registry_index, record_commitment,
                 zeko_recipient, ethereum_amount::text AS ethereum_amount,
                 zeko_amount::text AS zeko_amount, timeout
          FROM gateway_bridge_deposits deposits
@@ -870,12 +871,18 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
         let ethereum_amount =
             U256::from_str_radix(&row.try_get::<String, _>("ethereum_amount")?, 10)?;
         let zeko_amount = U256::from_str_radix(&row.try_get::<String, _>("zeko_amount")?, 10)?;
-        let (asset_id, zeko_amount_u64) = if token.is_zero() {
+        let action_encoding_version =
+            u32::try_from(row.try_get::<i32, _>("action_encoding_version")?)?;
+        let (asset_id, registry_index, record_commitment, zeko_amount_u64) = if token.is_zero() {
             anyhow::ensure!(
                 ethereum_amount == zeko_amount * U256::from(1_000_000_000u64),
                 "indexed native amount normalization mismatch"
             );
-            (B256::ZERO, u64::try_from(zeko_amount)?)
+            anyhow::ensure!(
+                action_encoding_version == 0,
+                "indexed native deposit has an ERC20 action version"
+            );
+            (B256::ZERO, 0, B256::ZERO, u64::try_from(zeko_amount)?)
         } else {
             anyhow::ensure!(
                 ethereum_amount == zeko_amount,
@@ -887,7 +894,29 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .parse::<B256>()
                 .context("indexed ERC20 asset id is invalid")?;
             anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
-            (asset_id, u64::try_from(zeko_amount)?)
+            match action_encoding_version {
+                1 => (asset_id, 0, B256::ZERO, u64::try_from(zeko_amount)?),
+                2 => {
+                    let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
+                    let record_commitment = row
+                        .try_get::<String, _>("record_commitment")?
+                        .parse::<B256>()
+                        .context("indexed ERC20 record commitment is invalid")?;
+                    anyhow::ensure!(
+                        !record_commitment.is_zero(),
+                        "indexed ERC20 record commitment is zero"
+                    );
+                    (
+                        asset_id,
+                        registry_index,
+                        record_commitment,
+                        u64::try_from(zeko_amount)?,
+                    )
+                }
+                version => {
+                    anyhow::bail!("unsupported indexed ERC20 action encoding version {version}")
+                }
+            }
         };
         let recipient: alloy::primitives::B256 = row
             .try_get::<String, _>("zeko_recipient")?
@@ -899,6 +928,9 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .try_into()
                 .expect("Ethereum address length"),
             asset_id: asset_id.0,
+            encoding_version: action_encoding_version,
+            registry_index,
+            record_commitment: record_commitment.0,
             amount: ethereum_amount.to_be_bytes(),
             zeko_amount: Some(zeko_amount_u64),
             zeko_recipient: recipient.0,

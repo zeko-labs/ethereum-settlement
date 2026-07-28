@@ -95,6 +95,9 @@ contract EthereumZekoBridge is
     error NativeTransferFailed();
     error TokenAlreadyAdded(address token);
     error TokenNotAdded(address token);
+    error CanonicalRegistrationRequiresRegistry();
+    error CanonicalRecordNotBound(address token);
+    error CanonicalTokenStatusRequiresRegistry(address token);
     error InvalidZekoTokenId(bytes32 tokenId);
     error TokenDecimalsMustMatch(uint8 zekoDecimals, uint8 ethereumDecimals);
     error AmountExceedsZekoUInt64(uint256 amount);
@@ -165,6 +168,8 @@ contract EthereumZekoBridge is
 
     bytes32 public constant ERC20_DEPOSIT_LEAF_V2_DOMAIN =
         keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V2");
+    bytes32 public constant ERC20_DEPOSIT_LEAF_V3_DOMAIN =
+        keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V3");
 
     bytes32 public constant WITHDRAW_LEAF_DOMAIN =
         keccak256("ZEKO_BRIDGE_WITHDRAW_LEAF_V1");
@@ -183,6 +188,8 @@ contract EthereumZekoBridge is
 
     bytes32 public constant ERC20_WITHDRAWAL_LEAF_V3_DOMAIN =
         keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3");
+    bytes32 public constant ERC20_WITHDRAWAL_LEAF_V4_DOMAIN =
+        keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V4");
 
     bytes32 public constant INNER_ACTION_NODE_V2_DOMAIN =
         keccak256("ZEKO_INNER_ACTION_NODE_V2");
@@ -200,6 +207,7 @@ contract EthereumZekoBridge is
 
     uint8 public constant MAX_ZEKO_DECIMALS = 9;
     uint8 public constant NATIVE_ETHEREUM_DECIMALS = 18;
+    uint32 public constant ERC20_ACTION_ENCODING_V2 = 2;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant PROVER_ROLE = keccak256("PROVER_ROLE");
@@ -317,6 +325,8 @@ contract EthereumZekoBridge is
     mapping(address => mapping(address => uint32))
         public nextTokenWithdrawalIndex;
     mapping(address => uint64) public depositCapByToken;
+    mapping(address => uint32) public registryIndexByToken;
+    mapping(address => bytes32) public recordCommitmentByToken;
 
     /// @notice Registry facet used by this implementation.
     /// @dev Immutable on the implementation, so upgrades select their facet
@@ -353,6 +363,20 @@ contract EthereumZekoBridge is
         ZekoAddress zekoRecipient,
         uint64 amount,
         uint64 timeout
+    );
+    event ERC20DepositSubmittedV2(
+        uint64 indexed nonce,
+        bytes32 indexed assetId,
+        bytes32 indexed depositLeaf,
+        bytes32 newDepositState,
+        address token,
+        address sender,
+        ZekoAddress zekoRecipient,
+        uint64 amount,
+        uint64 timeout,
+        uint32 encodingVersion,
+        uint32 registryIndex,
+        bytes32 recordCommitment
     );
 
     event BridgeDeposit(
@@ -420,6 +444,17 @@ contract EthereumZekoBridge is
         uint32 indexed globalActionIndex,
         address indexed token,
         bytes32 assetId,
+        address recipient,
+        uint64 amount,
+        bytes32 actionFieldsHash
+    );
+    event ERC20WithdrawalClaimedV2(
+        uint64 indexed settlementSequence,
+        uint32 indexed globalActionIndex,
+        address indexed token,
+        bytes32 assetId,
+        uint32 registryIndex,
+        bytes32 recordCommitment,
         address recipient,
         uint64 amount,
         bytes32 actionFieldsHash
@@ -530,6 +565,12 @@ contract EthereumZekoBridge is
         address token,
         bool allowed
     ) external onlyRole(ADMIN_ROLE) {
+        if (
+            canonicalTokenRegistered[token] &&
+            recordCommitmentByToken[token] != bytes32(0)
+        ) {
+            revert CanonicalTokenStatusRequiresRegistry(token);
+        }
         TokenConfig memory existingConfig = allowedToken[token];
         if (existingConfig.ethereumDecimals == 0) revert TokenNotAdded(token);
 
@@ -542,9 +583,9 @@ contract EthereumZekoBridge is
         );
     }
 
-    /// @notice Registers the immutable L1 ERC-20 to L2 Mina token-ID mapping
-    /// used by the canonical proof-backed bridge path.
-    /// @dev Canonical ERC-20 assets use identical base units on both chains.
+    /// @notice Retained pre-registry one-token registration for fixtures only.
+    /// @dev It is available only while legacy deposits are explicitly enabled
+    /// and never writes universal registry index/commitment state.
     function registerToken(
         address token,
         bytes32 zekoTokenOwner,
@@ -553,6 +594,9 @@ contract EthereumZekoBridge is
         uint8 ethereumDecimals,
         uint64 depositCap
     ) external onlyRole(ADMIN_ROLE) {
+        if (!legacyDepositEnabled) {
+            revert CanonicalRegistrationRequiresRegistry();
+        }
         if (token == address(0)) revert ZeroAddress();
         if (zekoTokenId == bytes32(0)) {
             revert InvalidZekoTokenId(zekoTokenId);
@@ -606,17 +650,26 @@ contract EthereumZekoBridge is
     /// @notice Applies a proof-checked registry record to bridge custody state.
     /// @dev Called only by the registry facet through the proxy itself.
     function activateAssetRecordFromRegistry(
-        AssetRecord calldata record
+        AssetRecord calldata record,
+        bytes32 recordCommitment
     ) external {
         if (msg.sender != address(this)) {
             revert UnauthorizedAssetRegistryModule(msg.sender);
         }
         address token = record.ethereumToken;
+        if (canonicalTokenRegistered[token]) {
+            revert TokenAlreadyAdded(token);
+        }
+        if (recordCommitment == bytes32(0)) {
+            revert CanonicalRecordNotBound(token);
+        }
         canonicalTokenRegistered[token] = true;
         zekoTokenOwnerByToken[token] = record.tokenOwnerL2;
         zekoTokenIdByToken[token] = record.tokenIdL2;
         assetIdByToken[token] = record.assetId;
         depositCapByToken[token] = record.inventoryCap;
+        registryIndexByToken[token] = record.registryIndex;
+        recordCommitmentByToken[token] = recordCommitment;
         allowedToken[token] = TokenConfig({
             zekoDecimals: record.decimals,
             ethereumDecimals: record.decimals,
@@ -771,6 +824,11 @@ contract EthereumZekoBridge is
         if (!canonicalTokenRegistered[token]) {
             revert TokenNotAdded(token);
         }
+        bytes32 recordCommitment = recordCommitmentByToken[token];
+        bool legacyEncoding = recordCommitment == bytes32(0);
+        if (legacyEncoding && !legacyDepositEnabled) {
+            revert LegacyDepositPathDisabled();
+        }
         TokenConfig memory config = allowedToken[token];
         if (!config.allowed) revert TokenNotAllowed(token);
         if (amount == 0) revert ZeroAmount();
@@ -792,7 +850,14 @@ contract EthereumZekoBridge is
             revert FeeOnTransferTokenNotSupported();
         }
 
-        return _recordERC20Deposit(token, uint64(amount), zekoRecipient);
+        return
+            legacyEncoding
+                ? _recordLegacyERC20Deposit(
+                    token,
+                    uint64(amount),
+                    zekoRecipient
+                )
+                : _recordERC20Deposit(token, uint64(amount), zekoRecipient);
     }
 
     /// @notice Deposits native ETH and appends a deposit leaf to the bridge accumulator.
@@ -911,7 +976,8 @@ contract EthereumZekoBridge is
             );
     }
 
-    function computeERC20DepositLeaf(
+    /// @notice Retained V1 one-token leaf for historical fixtures only.
+    function computeLegacyERC20DepositLeaf(
         address token,
         bytes32 assetId,
         ZekoAddress zekoRecipient,
@@ -927,6 +993,36 @@ contract EthereumZekoBridge is
                     block.chainid,
                     address(this),
                     token,
+                    assetId,
+                    zekoRecipient,
+                    amount,
+                    timeout,
+                    nonce
+                )
+            );
+    }
+
+    function computeERC20DepositLeaf(
+        address token,
+        uint32 registryIndex,
+        bytes32 recordCommitment,
+        bytes32 assetId,
+        ZekoAddress zekoRecipient,
+        uint64 amount,
+        uint64 timeout,
+        uint64 nonce
+    ) public view returns (bytes32) {
+        zekoRecipient.unpack();
+        return
+            keccak256(
+                abi.encode(
+                    ERC20_DEPOSIT_LEAF_V3_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    token,
+                    ERC20_ACTION_ENCODING_V2,
+                    registryIndex,
+                    recordCommitment,
                     assetId,
                     zekoRecipient,
                     amount,
@@ -1495,6 +1591,11 @@ contract EthereumZekoBridge is
         if (!canonicalTokenRegistered[token]) {
             revert TokenNotAdded(token);
         }
+        bytes32 recordCommitment = recordCommitmentByToken[token];
+        bool legacyEncoding = recordCommitment == bytes32(0);
+        if (legacyEncoding && !legacyWithdrawEnabled) {
+            revert LegacyWithdrawPathDisabled();
+        }
         if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
@@ -1528,14 +1629,26 @@ contract EthereumZekoBridge is
         }
 
         bytes32 assetId = assetIdByToken[token];
-        bytes32 leaf = computeERC20WithdrawalLeaf(
-            globalActionIndex,
-            token,
-            assetId,
-            recipient,
-            amount,
-            actionFieldsHash
-        );
+        uint32 registryIndex = registryIndexByToken[token];
+        bytes32 leaf = legacyEncoding
+            ? computeLegacyERC20WithdrawalLeaf(
+                globalActionIndex,
+                token,
+                assetId,
+                recipient,
+                amount,
+                actionFieldsHash
+            )
+            : computeERC20WithdrawalLeaf(
+                globalActionIndex,
+                token,
+                registryIndex,
+                recordCommitment,
+                assetId,
+                recipient,
+                amount,
+                actionFieldsHash
+            );
         if (!_verifyInnerActionMerkleProof(leaf, offset, merkleProof, root)) {
             revert InvalidWithdrawProof();
         }
@@ -1568,6 +1681,19 @@ contract EthereumZekoBridge is
             amount,
             actionFieldsHash
         );
+        if (!legacyEncoding) {
+            emit ERC20WithdrawalClaimedV2(
+                settlementSequence,
+                globalActionIndex,
+                token,
+                assetId,
+                registryIndex,
+                recordCommitment,
+                recipient,
+                amount,
+                actionFieldsHash
+            );
+        }
     }
 
     function computeNativeWithdrawalLeaf(
@@ -1590,7 +1716,8 @@ contract EthereumZekoBridge is
             );
     }
 
-    function computeERC20WithdrawalLeaf(
+    /// @notice Retained V1 one-token leaf for historical fixtures only.
+    function computeLegacyERC20WithdrawalLeaf(
         uint32 globalActionIndex,
         address token,
         bytes32 assetId,
@@ -1606,6 +1733,35 @@ contract EthereumZekoBridge is
                     address(this),
                     globalActionIndex,
                     token,
+                    assetId,
+                    recipient,
+                    amount,
+                    actionFieldsHash
+                )
+            );
+    }
+
+    function computeERC20WithdrawalLeaf(
+        uint32 globalActionIndex,
+        address token,
+        uint32 registryIndex,
+        bytes32 recordCommitment,
+        bytes32 assetId,
+        address recipient,
+        uint64 amount,
+        bytes32 actionFieldsHash
+    ) public view returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    ERC20_WITHDRAWAL_LEAF_V4_DOMAIN,
+                    block.chainid,
+                    address(this),
+                    globalActionIndex,
+                    token,
+                    ERC20_ACTION_ENCODING_V2,
+                    registryIndex,
+                    recordCommitment,
                     assetId,
                     recipient,
                     amount,
@@ -1725,8 +1881,82 @@ contract EthereumZekoBridge is
         nonce = depositNonce + 1;
         uint64 timeout = type(uint32).max;
         bytes32 assetId = assetIdByToken[token];
+        uint32 registryIndex = registryIndexByToken[token];
+        bytes32 recordCommitment = recordCommitmentByToken[token];
+        if (recordCommitment == bytes32(0)) {
+            revert CanonicalRecordNotBound(token);
+        }
         bytes32 oldDepositState = currentDepositState;
         depositLeaf = computeERC20DepositLeaf(
+            token,
+            registryIndex,
+            recordCommitment,
+            assetId,
+            zekoRecipient,
+            amount,
+            timeout,
+            nonce
+        );
+        newDepositState = computeNextDepositState(oldDepositState, depositLeaf);
+
+        depositNonce = nonce;
+        currentDepositState = newDepositState;
+        depositStateByNonce[nonce] = newDepositState;
+        totalDepositedByToken[token] += amount;
+        escrowLiabilityByToken[token] += amount;
+
+        emit BridgeDeposit({
+            nonce: nonce,
+            depositLeaf: depositLeaf,
+            newDepositState: newDepositState,
+            oldDepositState: oldDepositState,
+            token: token,
+            sender: msg.sender,
+            zekoRecipient: zekoRecipient,
+            amount: amount,
+            zekoAmount: amount,
+            timeout: timeout
+        });
+        emit ERC20DepositSubmitted({
+            nonce: nonce,
+            assetId: assetId,
+            depositLeaf: depositLeaf,
+            newDepositState: newDepositState,
+            token: token,
+            sender: msg.sender,
+            zekoRecipient: zekoRecipient,
+            amount: amount,
+            timeout: timeout
+        });
+        emit ERC20DepositSubmittedV2({
+            nonce: nonce,
+            assetId: assetId,
+            depositLeaf: depositLeaf,
+            newDepositState: newDepositState,
+            token: token,
+            sender: msg.sender,
+            zekoRecipient: zekoRecipient,
+            amount: amount,
+            timeout: timeout,
+            encodingVersion: ERC20_ACTION_ENCODING_V2,
+            registryIndex: registryIndex,
+            recordCommitment: recordCommitment
+        });
+    }
+
+    function _recordLegacyERC20Deposit(
+        address token,
+        uint64 amount,
+        ZekoAddress zekoRecipient
+    )
+        internal
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
+    {
+        nonce = depositNonce + 1;
+        uint64 timeout = type(uint32).max;
+        bytes32 assetId = assetIdByToken[token];
+        bytes32 oldDepositState = currentDepositState;
+        depositLeaf = computeLegacyERC20DepositLeaf(
             token,
             assetId,
             zekoRecipient,

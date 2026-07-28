@@ -63,6 +63,7 @@ interface IZekoAssetRegistry {
         bytes32 indexed recordHash,
         uint32 indexed registryIndex,
         address indexed token,
+        bytes32 recordCommitment,
         bytes32 registryRoot,
         uint32 registryCount,
         uint32 registrySchemaVersion
@@ -74,7 +75,12 @@ interface IZekoAssetRegistry {
 
     function activateAsset(address token, bytes32 expectedRegistryRoot, uint32 expectedRegistryCount) external;
 
-    function activateAssetFromBatch(address token, uint64 settlementSequence, bytes32[8] calldata siblings) external;
+    function activateAssetFromBatch(
+        address token,
+        uint64 settlementSequence,
+        bytes32 recordCommitment,
+        bytes32[8] calldata siblings
+    ) external;
 
     function setAssetStatus(address token, AssetStatus newStatus) external;
 
@@ -109,7 +115,7 @@ interface IZekoAssetRegistryHost {
 
     function settlementVerifier() external view returns (address);
 
-    function activateAssetRecordFromRegistry(AssetRecord calldata record) external;
+    function activateAssetRecordFromRegistry(AssetRecord calldata record, bytes32 recordCommitment) external;
 
     function setAssetAllowedFromRegistry(address token, bool allowed) external;
 }
@@ -122,6 +128,8 @@ interface IZekoAssetRegistrySettlement {
     function assetRegistrySchemaVersion() external view returns (uint32);
 
     function settledAssetRecord(bytes32 recordHash) external view returns (bool);
+
+    function settledAssetRecordCommitment(bytes32 recordHash) external view returns (bytes32);
 
     function assetRegistryRecordBatch(uint64 sequence)
         external
@@ -164,7 +172,7 @@ library ZekoAssetRegistryStorage {
 contract ZekoAssetRegistry is IZekoAssetRegistry {
     bytes32 public constant ERC20_ASSET_V1_DOMAIN = keccak256("ZEKO_ERC20_ASSET_V1");
     bytes32 public constant ERC20_ASSET_RECORD_V1_DOMAIN = keccak256("ZEKO_ERC20_ASSET_RECORD_V1");
-    bytes32 public constant ASSET_RECORD_BATCH_LEAF_V1_DOMAIN = keccak256("ZEKO_ASSET_RECORD_BATCH_LEAF_V1");
+    bytes32 public constant ASSET_RECORD_BATCH_LEAF_V2_DOMAIN = keccak256("ZEKO_ASSET_RECORD_BATCH_LEAF_V2");
     bytes32 public constant ASSET_RECORD_BATCH_NODE_V1_DOMAIN = keccak256("ZEKO_ASSET_RECORD_BATCH_NODE_V1");
 
     uint256 public constant ASSET_REGISTRY_TREE_DEPTH = 8;
@@ -251,6 +259,10 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
         if (!settlement.settledAssetRecord(recordHash)) {
             revert AssetRecordNotSettled(recordHash);
         }
+        bytes32 recordCommitment = settlement.settledAssetRecordCommitment(recordHash);
+        if (recordCommitment == bytes32(0)) {
+            revert AssetRecordNotSettled(recordHash);
+        }
 
         bytes32 actualRoot = settlement.assetRegistryRoot();
         uint32 actualCount = settlement.assetRegistryCount();
@@ -263,10 +275,15 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
                 expectedRegistryRoot, expectedRegistryCount, record.schemaVersion, actualRoot, actualCount, actualSchema
             );
         }
-        _activate(record, recordHash, actualRoot, actualCount, actualSchema);
+        _activate(record, recordHash, recordCommitment, actualRoot, actualCount, actualSchema);
     }
 
-    function activateAssetFromBatch(address token, uint64 settlementSequence, bytes32[8] calldata siblings)
+    function activateAssetFromBatch(
+        address token,
+        uint64 settlementSequence,
+        bytes32 recordCommitment,
+        bytes32[8] calldata siblings
+    )
         external
         onlyBridgeAdmin
     {
@@ -280,7 +297,8 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
             bool valid
         ) = _settlement().assetRegistryRecordBatch(settlementSequence);
         if (
-            !valid || recordBatchRoot == bytes32(0) || recordBatchCount == 0 || registrySchema != record.schemaVersion
+            !valid || recordBatchRoot == bytes32(0) || recordBatchCount == 0
+                || recordCommitment == bytes32(0) || registrySchema != record.schemaVersion
                 || record.registryIndex >= registryCount
         ) {
             revert RegistryCheckpointMismatch(
@@ -288,7 +306,8 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
             );
         }
 
-        bytes32 computed = keccak256(abi.encodePacked(ASSET_RECORD_BATCH_LEAF_V1_DOMAIN, recordHash));
+        bytes32 computed =
+            keccak256(abi.encodePacked(ASSET_RECORD_BATCH_LEAF_V2_DOMAIN, recordHash, recordCommitment));
         uint256 index = record.registryIndex;
         for (uint256 level = 0; level < ASSET_REGISTRY_TREE_DEPTH; level++) {
             computed = (index & 1) == 0
@@ -299,7 +318,7 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
         if (computed != recordBatchRoot) {
             revert InvalidAssetRecordBatch(recordBatchRoot, computed, settlementSequence);
         }
-        _activate(record, recordHash, registryRoot, registryCount, registrySchema);
+        _activate(record, recordHash, recordCommitment, registryRoot, registryCount, registrySchema);
     }
 
     function setAssetStatus(address token, AssetStatus newStatus) external onlyBridgeAdmin {
@@ -358,14 +377,21 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
     function _activate(
         AssetRecord memory record,
         bytes32 recordHash,
+        bytes32 recordCommitment,
         bytes32 registryRoot,
         uint32 registryCount,
         uint32 registrySchema
     ) private {
         ZekoAssetRegistryStorage.registryStorage().assetStatusByToken[record.ethereumToken] = AssetStatus.Active;
-        IZekoAssetRegistryHost(address(this)).activateAssetRecordFromRegistry(record);
+        IZekoAssetRegistryHost(address(this)).activateAssetRecordFromRegistry(record, recordCommitment);
         emit AssetRegistrationActivated(
-            recordHash, record.registryIndex, record.ethereumToken, registryRoot, registryCount, registrySchema
+            recordHash,
+            record.registryIndex,
+            record.ethereumToken,
+            recordCommitment,
+            registryRoot,
+            registryCount,
+            registrySchema
         );
     }
 

@@ -475,31 +475,46 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
-        let asset_id = if deposit.token.is_zero() {
-            None
-        } else {
-            let asset_id = ethereum.erc20_asset_id(deposit.token).await?;
-            anyhow::ensure!(
-                !asset_id.is_zero(),
-                "ERC20 deposit references an unregistered bridge asset"
-            );
-            Some(asset_id.to_string())
-        };
+        let (asset_id, action_encoding_version, registry_index, record_commitment) =
+            if deposit.token.is_zero() {
+                (None, 0i32, None, None)
+            } else {
+                let (asset_id, registry_index, record_commitment) =
+                    ethereum.erc20_asset_identity(deposit.token).await?;
+                anyhow::ensure!(
+                    !asset_id.is_zero(),
+                    "ERC20 deposit references an unregistered bridge asset"
+                );
+                if record_commitment.is_zero() {
+                    (Some(asset_id.to_string()), 1, None, None)
+                } else {
+                    (
+                        Some(asset_id.to_string()),
+                        2,
+                        Some(i64::from(registry_index)),
+                        Some(record_commitment.to_string()),
+                    )
+                }
+            };
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
-                 token, asset_id, sender, zeko_recipient, ethereum_amount,
+                 token, asset_id, action_encoding_version, registry_index,
+                 record_commitment, sender, zeko_recipient, ethereum_amount,
                  zeko_amount, timeout, ethereum_block_number,
                  ethereum_block_hash, ethereum_tx_hash, ethereum_log_index,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric,
-                     $10::numeric, $11, $12, $13, $14, $15, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::numeric,
+                     $13::numeric, $14, $15, $16, $17, $18, FALSE)
              ON CONFLICT (nonce) DO UPDATE SET
                  deposit_leaf = EXCLUDED.deposit_leaf,
                  old_deposit_state = EXCLUDED.old_deposit_state,
                  new_deposit_state = EXCLUDED.new_deposit_state,
                  token = EXCLUDED.token,
                  asset_id = EXCLUDED.asset_id,
+                 action_encoding_version = EXCLUDED.action_encoding_version,
+                 registry_index = EXCLUDED.registry_index,
+                 record_commitment = EXCLUDED.record_commitment,
                  sender = EXCLUDED.sender,
                  zeko_recipient = EXCLUDED.zeko_recipient,
                  ethereum_amount = EXCLUDED.ethereum_amount,
@@ -517,6 +532,9 @@ async fn index_bridge_deposits(
         .bind(deposit.new_deposit_state.to_string())
         .bind(deposit.token.to_string())
         .bind(asset_id)
+        .bind(action_encoding_version)
+        .bind(registry_index)
+        .bind(record_commitment)
         .bind(deposit.sender.to_string())
         .bind(deposit.zeko_recipient.to_string())
         .bind(deposit.amount.to_string())
@@ -1373,6 +1391,9 @@ async fn store_inner_action_leaves(
                 batch.bridge_address,
                 global_index,
                 withdrawal.token,
+                withdrawal.encoding_version,
+                withdrawal.registry_index,
+                withdrawal.record_commitment,
                 withdrawal.asset_id,
                 withdrawal.recipient,
                 withdrawal.amount,
@@ -1395,34 +1416,49 @@ async fn store_inner_action_leaves(
     );
 
     for (offset, global_index, action, action_fields_hash, leaf) in rows {
-        let (token, asset_id, recipient, amount) =
-            match (&action.withdrawal, &action.token_withdrawal) {
-                (Some(withdrawal), None) => (
-                    None,
-                    None,
-                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
-                    Some(withdrawal.amount.to_string()),
-                ),
-                (None, Some(withdrawal)) => (
-                    Some(format!("0x{}", hex::encode(withdrawal.token))),
-                    Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
-                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
-                    Some(withdrawal.amount.to_string()),
-                ),
-                (None, None) => (None, None, None, None),
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("inner action has multiple withdrawal preimages")
-                }
-            };
+        let (
+            token,
+            asset_id,
+            action_encoding_version,
+            registry_index,
+            record_commitment,
+            recipient,
+            amount,
+        ) = match (&action.withdrawal, &action.token_withdrawal) {
+            (Some(withdrawal), None) => (
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                Some(withdrawal.amount.to_string()),
+            ),
+            (None, Some(withdrawal)) => (
+                Some(format!("0x{}", hex::encode(withdrawal.token))),
+                Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                Some(i32::try_from(withdrawal.encoding_version)?),
+                (withdrawal.encoding_version == 2).then_some(i64::from(withdrawal.registry_index)),
+                (withdrawal.encoding_version == 2)
+                    .then(|| format!("0x{}", hex::encode(withdrawal.record_commitment))),
+                Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                Some(withdrawal.amount.to_string()),
+            ),
+            (None, None) => (None, None, None, None, None, None, None),
+            (Some(_), Some(_)) => {
+                anyhow::bail!("inner action has multiple withdrawal preimages")
+            }
+        };
         sqlx::query(
             "INSERT INTO gateway_inner_action_leaves
                 (settlement_sequence, action_offset, global_action_index,
                  action_fields, action_fields_hash, leaf, token, asset_id,
+                 action_encoding_version, registry_index, record_commitment,
                  recipient, zeko_amount, inner_action_root, commit_slot_upper,
                  ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::numeric, $11,
-                     $12, $13, $14, $15, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13::numeric, $14, $15, $16, $17, $18, FALSE)
              ON CONFLICT (settlement_sequence, action_offset) DO UPDATE SET
                  global_action_index = EXCLUDED.global_action_index,
                  action_fields = EXCLUDED.action_fields,
@@ -1430,6 +1466,9 @@ async fn store_inner_action_leaves(
                  leaf = EXCLUDED.leaf,
                  token = EXCLUDED.token,
                  asset_id = EXCLUDED.asset_id,
+                 action_encoding_version = EXCLUDED.action_encoding_version,
+                 registry_index = EXCLUDED.registry_index,
+                 record_commitment = EXCLUDED.record_commitment,
                  recipient = EXCLUDED.recipient,
                  zeko_amount = EXCLUDED.zeko_amount,
                  inner_action_root = EXCLUDED.inner_action_root,
@@ -1447,6 +1486,9 @@ async fn store_inner_action_leaves(
         .bind(format!("0x{}", hex::encode(leaf)))
         .bind(token)
         .bind(asset_id)
+        .bind(action_encoding_version)
+        .bind(registry_index)
+        .bind(record_commitment)
         .bind(recipient)
         .bind(amount)
         .bind(format!("0x{}", hex::encode(receipt.inner_action_root)))
@@ -1494,17 +1536,29 @@ pub(crate) fn hash_erc20_withdrawal_leaf(
     bridge: Address,
     global_index: u32,
     token: Address,
+    encoding_version: u32,
+    registry_index: u32,
+    record_commitment: Bytes32,
     asset_id: Bytes32,
     recipient: Address,
     amount: u64,
     action_fields_hash: Bytes32,
 ) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(288);
-    encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3").0);
+    let mut encoded = Vec::with_capacity(384);
+    match encoding_version {
+        1 => encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3").0),
+        2 => encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V4").0),
+        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
+    }
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge));
     encoded.extend_from_slice(&u32_word(global_index));
     encoded.extend_from_slice(&address_word(token));
+    if encoding_version == 2 {
+        encoded.extend_from_slice(&u32_word(encoding_version));
+        encoded.extend_from_slice(&u32_word(registry_index));
+        encoded.extend_from_slice(&record_commitment);
+    }
     encoded.extend_from_slice(&asset_id);
     encoded.extend_from_slice(&address_word(recipient));
     encoded.extend_from_slice(&u64_word(amount));

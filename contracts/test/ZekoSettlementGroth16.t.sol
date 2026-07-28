@@ -163,6 +163,7 @@ contract ZekoSettlementV1Test is Test {
         settlement.setBridgeContract(bridgeAddress);
         bytes32 registryRoot = keccak256("Poseidon registry root");
         bytes32 recordHash = keccak256("canonical asset record");
+        bytes32 recordCommitment = bytes32(uint256(991));
         bytes memory values = _buildPublicValuesV3(
             _afterState(),
             bridgeAddress,
@@ -172,7 +173,8 @@ contract ZekoSettlementV1Test is Test {
             registryRoot,
             1,
             1,
-            recordHash
+            recordHash,
+            recordCommitment
         );
 
         settlement.verifyAndUpdateRoot(values, hex"1234");
@@ -181,6 +183,10 @@ contract ZekoSettlementV1Test is Test {
         assertEq(settlement.assetRegistryCount(), 1);
         assertEq(settlement.assetRegistrySchemaVersion(), 1);
         assertTrue(settlement.settledAssetRecord(recordHash));
+        assertEq(
+            settlement.settledAssetRecordCommitment(recordHash),
+            recordCommitment
+        );
     }
 
     function test_V4StoresTwoRecordRegistryBatch() public {
@@ -520,7 +526,8 @@ contract ZekoSettlementV1Test is Test {
         bytes32 registryRoot,
         uint32 registryCount,
         uint32 schemaVersion,
-        bytes32 recordHash
+        bytes32 recordHash,
+        bytes32 recordCommitment
     ) private view returns (bytes memory values) {
         bytes memory v2 = _buildPublicValuesV2(
             afterState,
@@ -529,7 +536,7 @@ contract ZekoSettlementV1Test is Test {
             startIndex,
             innerCount
         );
-        values = new bytes(900);
+        values = new bytes(932);
         for (uint256 i = 0; i < v2.length; i++) {
             values[i] = v2[i];
         }
@@ -538,6 +545,7 @@ contract ZekoSettlementV1Test is Test {
         _writeUint32(values, 860, registryCount);
         _writeUint32(values, 864, schemaVersion);
         _writeBytes32(values, 868, recordHash);
+        _writeBytes32(values, 900, recordCommitment);
     }
 
     function _buildPublicValuesV4(

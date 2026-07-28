@@ -9,7 +9,8 @@ use zeko_sp1_lib::{
     Bytes32, CallForestNodeV3, CanonicalAssetRecordV1, ChunkedRandomOracleInputV1,
     InnerActionBatchWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2, OuterStateV1,
     SettlementDaMode, SettlementPublicValuesV1, SettlementPublicValuesV2, SettlementPublicValuesV3,
-    SettlementPublicValuesV4, SettlementWitnessV1, TokenWithdrawalV3,
+    SettlementPublicValuesV4, SettlementWitnessV1, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V1,
+    ERC20_ACTION_ENCODING_V2,
 };
 
 const BODY_UPDATE_STATE_START: usize = 2;
@@ -28,10 +29,11 @@ const ACCOUNT_UPDATE_CONS_PREFIX: &str = "MinaAcctUpdateCons**";
 
 const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
 const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
-const ERC20_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
+const ERC20_WITHDRAWAL_LEAF_V1_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
+const ERC20_WITHDRAWAL_LEAF_V2_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V4";
 const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
 const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
-const ASSET_RECORD_BATCH_LEAF_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_LEAF_V1";
+const ASSET_RECORD_BATCH_LEAF_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_LEAF_V2";
 const ASSET_RECORD_BATCH_NODE_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_NODE_V1";
 // Must match Zeko's Pickles-bound sequencer child call-data commitment.
 const ASSET_REGISTRY_CHECKPOINT_DOMAIN: &str = "Zeko registry checkpoint V1";
@@ -83,21 +85,24 @@ pub fn derive_receipt_bytes(
                 asset_registry_count: checkpoint.count,
                 asset_registry_schema_version: checkpoint.schema_version,
                 asset_record_hash: checkpoint.record_hash,
+                asset_record_commitment: field_to_bytes(hash_registry_record_leaf(
+                    &checkpoint.record,
+                )),
             }
             .encode()
             .to_vec()
         }
         (Some(batch), None, Some(checkpoint)) => {
-            let record_hashes =
+            let record_identities =
                 validate_registry_batch(&checkpoint, chain_id, batch.bridge_address);
-            let asset_record_batch_root = asset_record_batch_root(&record_hashes);
+            let asset_record_batch_root = asset_record_batch_root(&record_identities);
             SettlementPublicValuesV4 {
                 settlement: derive_v2_receipt(v1, batch),
                 asset_registry_root: checkpoint.root,
                 asset_registry_count: checkpoint.count,
                 asset_registry_schema_version: checkpoint.schema_version,
                 asset_record_batch_root,
-                asset_record_batch_count: u32::try_from(record_hashes.len())
+                asset_record_batch_count: u32::try_from(record_identities.len())
                     .expect("asset record batch length fits u32"),
             }
             .encode()
@@ -116,7 +121,7 @@ fn validate_registry_batch(
     checkpoint: &AssetRegistryBatchCheckpointV4,
     chain_id: u64,
     bridge_address: Address,
-) -> Vec<(u32, Bytes32)> {
+) -> Vec<(u32, Bytes32, Bytes32)> {
     assert_eq!(
         checkpoint.schema_version, 1,
         "unsupported asset registry schema"
@@ -146,7 +151,7 @@ fn validate_registry_batch(
     );
 
     let mut running_root = checkpoint.old_root;
-    let mut record_hashes = Vec::with_capacity(checkpoint.appends.len());
+    let mut record_identities = Vec::with_capacity(checkpoint.appends.len());
     for (offset, append) in checkpoint.appends.iter().enumerate() {
         let expected_index = checkpoint
             .old_count
@@ -160,13 +165,17 @@ fn validate_registry_batch(
             chain_id,
             bridge_address,
         );
-        record_hashes.push((expected_index, hash_canonical_asset_record(&append.record)));
+        record_identities.push((
+            expected_index,
+            hash_canonical_asset_record(&append.record),
+            field_to_bytes(hash_registry_record_leaf(&append.record)),
+        ));
     }
     assert_eq!(
         running_root, checkpoint.root,
         "registry appends do not produce the settled root"
     );
-    record_hashes
+    record_identities
 }
 
 fn validate_registry_append(
@@ -307,9 +316,9 @@ fn validate_canonical_asset_record(
     );
 }
 
-fn asset_record_batch_root(record_hashes: &[(u32, Bytes32)]) -> Bytes32 {
+fn asset_record_batch_root(record_identities: &[(u32, Bytes32, Bytes32)]) -> Bytes32 {
     let mut level = vec![[0u8; 32]; MAX_ASSET_RECORDS];
-    for (index, record_hash) in record_hashes {
+    for (index, record_hash, record_commitment) in record_identities {
         let index = usize::try_from(*index).expect("asset registry index fits usize");
         assert!(
             index < MAX_ASSET_RECORDS,
@@ -319,9 +328,10 @@ fn asset_record_batch_root(record_hashes: &[(u32, Bytes32)]) -> Bytes32 {
             level[index], [0u8; 32],
             "duplicate asset record batch index"
         );
-        let mut leaf = Vec::with_capacity(64);
+        let mut leaf = Vec::with_capacity(96);
         leaf.extend_from_slice(&keccak256(ASSET_RECORD_BATCH_LEAF_DOMAIN.as_bytes()).0);
         leaf.extend_from_slice(record_hash);
+        leaf.extend_from_slice(record_commitment);
         level[index] = keccak256(leaf).0;
     }
     for _ in 0..ASSET_REGISTRY_TREE_DEPTH {
@@ -567,13 +577,53 @@ fn assert_erc20_withdrawal_preimage(fields: &[StepField], withdrawal: &TokenWith
     asset_high[16..].copy_from_slice(&withdrawal.asset_id[..16]);
     let mut asset_low = [0u8; 32];
     asset_low[16..].copy_from_slice(&withdrawal.asset_id[16..]);
+    let (asset_offset, prefix) = match withdrawal.encoding_version {
+        ERC20_ACTION_ENCODING_V1 => {
+            assert_eq!(
+                withdrawal.registry_index, 0,
+                "legacy ERC20 withdrawal has a registry index"
+            );
+            assert_eq!(
+                withdrawal.record_commitment, [0u8; 32],
+                "legacy ERC20 withdrawal has a record commitment"
+            );
+            (0, "Ethereum ERC20 withdrawal V1")
+        }
+        ERC20_ACTION_ENCODING_V2 => {
+            assert!(
+                params.len() >= 9,
+                "registry ERC20 withdrawal parameter preimage is truncated"
+            );
+            assert_ne!(
+                withdrawal.record_commitment, [0u8; 32],
+                "registry ERC20 withdrawal record commitment is zero"
+            );
+            assert_eq!(
+                params[0],
+                StepField::from(ERC20_ACTION_ENCODING_V2),
+                "ERC20 withdrawal encoding version mismatch"
+            );
+            assert_eq!(
+                params[1],
+                StepField::from(withdrawal.registry_index),
+                "ERC20 withdrawal registry index mismatch"
+            );
+            assert_eq!(
+                params[2],
+                field_from_bytes(&withdrawal.record_commitment),
+                "ERC20 withdrawal record commitment mismatch"
+            );
+            (3, "Ethereum ERC20 withdrawal V2")
+        }
+        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
+    };
     assert_eq!(
-        params[0],
+        params[asset_offset],
         field_from_bytes(&asset_high),
         "ERC20 withdrawal asset high limb mismatch"
     );
     assert_eq!(
-        params[1],
+        params[asset_offset + 1],
         field_from_bytes(&asset_low),
         "ERC20 withdrawal asset low limb mismatch"
     );
@@ -595,7 +645,7 @@ fn assert_erc20_withdrawal_preimage(fields: &[StepField], withdrawal: &TokenWith
         "ERC20 withdrawal recipient parity must be even"
     );
 
-    let expected_aux = hash_with_prefix("Ethereum ERC20 withdrawal V1", &params);
+    let expected_aux = hash_with_prefix(prefix, &params);
     assert_eq!(
         fields[1], expected_aux,
         "ERC20 withdrawal preimage does not match action aux"
@@ -639,12 +689,22 @@ fn hash_erc20_withdrawal_leaf(
     withdrawal: &TokenWithdrawalV3,
     action_fields_hash: Bytes32,
 ) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(32 * 9);
-    encoded.extend_from_slice(&keccak256(ERC20_WITHDRAWAL_LEAF_DOMAIN.as_bytes()).0);
+    let mut encoded = Vec::with_capacity(32 * 12);
+    let domain = match withdrawal.encoding_version {
+        ERC20_ACTION_ENCODING_V1 => ERC20_WITHDRAWAL_LEAF_V1_DOMAIN,
+        ERC20_ACTION_ENCODING_V2 => ERC20_WITHDRAWAL_LEAF_V2_DOMAIN,
+        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
+    };
+    encoded.extend_from_slice(&keccak256(domain.as_bytes()).0);
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge_address));
     encoded.extend_from_slice(&u32_word(global_index));
     encoded.extend_from_slice(&address_word(withdrawal.token));
+    if withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2 {
+        encoded.extend_from_slice(&u32_word(withdrawal.encoding_version));
+        encoded.extend_from_slice(&u32_word(withdrawal.registry_index));
+        encoded.extend_from_slice(&withdrawal.record_commitment);
+    }
     encoded.extend_from_slice(&withdrawal.asset_id);
     encoded.extend_from_slice(&address_word(withdrawal.recipient));
     encoded.extend_from_slice(&u64_word(withdrawal.amount));
@@ -1296,7 +1356,12 @@ mod tests {
         high[16..].copy_from_slice(&asset_id[..16]);
         let mut low = [0u8; 32];
         low[16..].copy_from_slice(&asset_id[16..]);
+        let registry_index = 7u32;
+        let record_commitment = encoded(991);
         let params = vec![
+            field(ERC20_ACTION_ENCODING_V2.into()),
+            field(u64::from(registry_index)),
+            field_from_bytes(&record_commitment),
             field_from_bytes(&high),
             field_from_bytes(&low),
             field(0),
@@ -1313,17 +1378,12 @@ mod tests {
             field_from_address(recipient),
             field(0),
         ];
-        let aux = hash_with_prefix("Ethereum ERC20 withdrawal V1", &params);
-        assert_eq!(
-            field_to_bytes(aux),
-            [
-                0x24, 0xc5, 0x50, 0xad, 0x1d, 0x37, 0xbd, 0x87, 0x11, 0x14, 0x8b, 0x1b, 0x4a, 0xd5,
-                0xf1, 0x72, 0x4c, 0x52, 0x1a, 0x62, 0xae, 0xc4, 0xb9, 0x78, 0xa1, 0xa1, 0x9a, 0x76,
-                0x29, 0xbd, 0x59, 0xcf,
-            ]
-        );
+        let aux = hash_with_prefix("Ethereum ERC20 withdrawal V2", &params);
         let fields = vec![field(0), aux, field(777)];
         let withdrawal = TokenWithdrawalV3 {
+            encoding_version: ERC20_ACTION_ENCODING_V2,
+            registry_index,
+            record_commitment,
             token: [0x33; 20],
             asset_id,
             recipient,
@@ -1337,6 +1397,18 @@ mod tests {
         other_asset.asset_id = [0x12; 32];
         let relabelled = hash_erc20_withdrawal_leaf(31337, [0x44; 20], 5, &other_asset, [0x55; 32]);
         assert_ne!(original, relabelled);
+        let mut other_index = withdrawal.clone();
+        other_index.registry_index += 1;
+        assert_ne!(
+            original,
+            hash_erc20_withdrawal_leaf(31337, [0x44; 20], 5, &other_index, [0x55; 32])
+        );
+        let mut other_commitment = withdrawal;
+        other_commitment.record_commitment = encoded(992);
+        assert_ne!(
+            original,
+            hash_erc20_withdrawal_leaf(31337, [0x44; 20], 5, &other_commitment, [0x55; 32])
+        );
     }
 
     #[test]
@@ -1550,6 +1622,8 @@ mod tests {
         ));
         let first_hash = hash_canonical_asset_record(&first);
         let second_hash = hash_canonical_asset_record(&second);
+        let first_commitment = field_to_bytes(hash_registry_record_leaf(&first));
+        let second_commitment = field_to_bytes(hash_registry_record_leaf(&second));
         let checkpoint = AssetRegistryBatchCheckpointV4 {
             registry_public_key: field_to_bytes(StepField::from(206u64)),
             root: second_root,
@@ -1569,9 +1643,15 @@ mod tests {
             ],
         };
 
-        let hashes = validate_registry_batch(&checkpoint, chain_id, bridge_address);
-        assert_eq!(hashes, vec![(0, first_hash), (1, second_hash)]);
-        assert_ne!(asset_record_batch_root(&hashes), [0u8; 32]);
+        let identities = validate_registry_batch(&checkpoint, chain_id, bridge_address);
+        assert_eq!(
+            identities,
+            vec![
+                (0, first_hash, first_commitment),
+                (1, second_hash, second_commitment)
+            ]
+        );
+        assert_ne!(asset_record_batch_root(&identities), [0u8; 32]);
         assert_ne!(first_root, checkpoint.old_root);
 
         let mut swapped = checkpoint;
