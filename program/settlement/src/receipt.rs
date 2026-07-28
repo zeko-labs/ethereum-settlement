@@ -4,6 +4,12 @@ use mina_poseidon::constants::PlonkSpongeConstantsKimchi;
 use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use pickles_verifier::types::{StepField, VerifiableProof};
+use zeko_sp1_lib::inner_action_commitment::{
+    action_fields_hash as hash_action_fields, erc20_withdrawal_leaf as hash_erc20_withdrawal_leaf,
+    native_withdrawal_leaf as hash_native_withdrawal_leaf,
+    raw_inner_action_leaf as hash_raw_inner_action_leaf, root as compute_inner_action_root,
+    MAX_LEAVES as MAX_INNER_ACTIONS,
+};
 use zeko_sp1_lib::{
     Address, AssetRegistryAppendV1, AssetRegistryBatchCheckpointV4, AssetRegistryCheckpointV3,
     Bytes32, CallForestNodeV3, CanonicalAssetRecordV1, ChunkedRandomOracleInputV1,
@@ -20,19 +26,11 @@ const BODY_PRECONDITION_STATE_START: usize = 28;
 const BODY_PRECONDITION_ACTION_STATE: usize = 36;
 const OUTER_COMMIT_ACTION_FIELDS: usize = 8;
 const INNER_ACTION_FIELDS: usize = 3;
-const INNER_ACTION_TREE_DEPTH: usize = 16;
-const MAX_INNER_ACTIONS: usize = 1 << INNER_ACTION_TREE_DEPTH;
 const ASSET_REGISTRY_TREE_DEPTH: usize = 8;
 const MAX_ASSET_RECORDS: usize = 1 << ASSET_REGISTRY_TREE_DEPTH;
 const ACCOUNT_UPDATE_NODE_PREFIX: &str = "MinaAcctUpdateNode**";
 const ACCOUNT_UPDATE_CONS_PREFIX: &str = "MinaAcctUpdateCons**";
 
-const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
-const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
-const ERC20_WITHDRAWAL_LEAF_V1_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
-const ERC20_WITHDRAWAL_LEAF_V2_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V4";
-const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
-const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
 const ASSET_RECORD_BATCH_LEAF_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_LEAF_V2";
 const ASSET_RECORD_BATCH_NODE_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_NODE_V1";
 // Must match Zeko's Pickles-bound sequencer child call-data commitment.
@@ -650,119 +648,6 @@ fn assert_erc20_withdrawal_preimage(fields: &[StepField], withdrawal: &TokenWith
         fields[1], expected_aux,
         "ERC20 withdrawal preimage does not match action aux"
     );
-}
-
-fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
-    encoded.extend_from_slice(&keccak256(ACTION_FIELDS_DOMAIN.as_bytes()).0);
-    encoded.extend_from_slice(&u32_word(
-        u32::try_from(fields.len()).expect("field count fits u32"),
-    ));
-    for field in fields {
-        encoded.extend_from_slice(field);
-    }
-    keccak256(encoded).0
-}
-
-fn hash_native_withdrawal_leaf(
-    chain_id: u64,
-    bridge_address: Address,
-    global_index: u32,
-    withdrawal: &NativeWithdrawalV2,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(32 * 7);
-    encoded.extend_from_slice(&keccak256(NATIVE_WITHDRAWAL_LEAF_DOMAIN.as_bytes()).0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge_address));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(withdrawal.recipient));
-    encoded.extend_from_slice(&u64_word(withdrawal.amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-fn hash_erc20_withdrawal_leaf(
-    chain_id: u64,
-    bridge_address: Address,
-    global_index: u32,
-    withdrawal: &TokenWithdrawalV3,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(32 * 12);
-    let domain = match withdrawal.encoding_version {
-        ERC20_ACTION_ENCODING_V1 => ERC20_WITHDRAWAL_LEAF_V1_DOMAIN,
-        ERC20_ACTION_ENCODING_V2 => ERC20_WITHDRAWAL_LEAF_V2_DOMAIN,
-        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
-    };
-    encoded.extend_from_slice(&keccak256(domain.as_bytes()).0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge_address));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(withdrawal.token));
-    if withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2 {
-        encoded.extend_from_slice(&u32_word(withdrawal.encoding_version));
-        encoded.extend_from_slice(&u32_word(withdrawal.registry_index));
-        encoded.extend_from_slice(&withdrawal.record_commitment);
-    }
-    encoded.extend_from_slice(&withdrawal.asset_id);
-    encoded.extend_from_slice(&address_word(withdrawal.recipient));
-    encoded.extend_from_slice(&u64_word(withdrawal.amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-fn hash_raw_inner_action_leaf(
-    chain_id: u64,
-    bridge_address: Address,
-    global_index: u32,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(32 * 5);
-    encoded.extend_from_slice(&keccak256(RAW_INNER_ACTION_LEAF_DOMAIN.as_bytes()).0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge_address));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-fn compute_inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
-    let zero_hashes = compute_zero_hashes();
-    if leaves.is_empty() {
-        return zero_hashes[INNER_ACTION_TREE_DEPTH];
-    }
-    let mut nodes = leaves.to_vec();
-    for level in 0..INNER_ACTION_TREE_DEPTH {
-        let mut parents = Vec::with_capacity(nodes.len().div_ceil(2));
-        for pair in nodes.chunks(2) {
-            let right = if pair.len() == 2 {
-                pair[1]
-            } else {
-                zero_hashes[level]
-            };
-            parents.push(hash_inner_action_node(pair[0], right));
-        }
-        nodes = parents;
-    }
-    assert_eq!(nodes.len(), 1, "invalid inner action tree");
-    nodes[0]
-}
-
-fn compute_zero_hashes() -> [Bytes32; INNER_ACTION_TREE_DEPTH + 1] {
-    let mut zero_hashes = [[0u8; 32]; INNER_ACTION_TREE_DEPTH + 1];
-    for level in 0..INNER_ACTION_TREE_DEPTH {
-        zero_hashes[level + 1] = hash_inner_action_node(zero_hashes[level], zero_hashes[level]);
-    }
-    zero_hashes
-}
-
-fn hash_inner_action_node(left: Bytes32, right: Bytes32) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(96);
-    encoded.extend_from_slice(&keccak256(INNER_ACTION_NODE_DOMAIN.as_bytes()).0);
-    encoded.extend_from_slice(&left);
-    encoded.extend_from_slice(&right);
-    keccak256(encoded).0
 }
 
 fn field_from_address(address: Address) -> StepField {

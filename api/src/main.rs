@@ -1,4 +1,4 @@
-use alloy::primitives::{keccak256, Address, B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, Query, State},
@@ -21,8 +21,8 @@ use tower_http::{
 };
 use uuid::Uuid;
 use zeko_sp1_lib::{
-    BridgeDeposit, BridgeTransitionInput, EthereumBridgeState, SettlementContextV1,
-    SettlementPublicValues, WithdrawTransitionInput, ZekoBridgeState,
+    inner_action_commitment, BridgeDeposit, BridgeTransitionInput, EthereumBridgeState,
+    SettlementContextV1, SettlementPublicValues, WithdrawTransitionInput, ZekoBridgeState,
 };
 use zkapp_script::SettlementProofBundle;
 
@@ -1410,7 +1410,8 @@ async fn load_native_withdrawal_proof_at(
                 .0)
         })
         .collect::<Result<Vec<_>>>()?;
-    let siblings = inner_action_merkle_proof(&leaves, usize::try_from(offset)?)
+    let siblings = inner_action_commitment::merkle_proof(&leaves, usize::try_from(offset)?)
+        .context("withdrawal proof target is outside the inner-action tree")?
         .into_iter()
         .map(|hash| format!("0x{}", hex::encode(hash)))
         .collect();
@@ -1513,7 +1514,8 @@ async fn load_token_withdrawal_proof(
                 .0)
         })
         .collect::<Result<Vec<_>>>()?;
-    let siblings = inner_action_merkle_proof(&leaves, usize::try_from(offset)?)
+    let siblings = inner_action_commitment::merkle_proof(&leaves, usize::try_from(offset)?)
+        .context("withdrawal proof target is outside the inner-action tree")?
         .into_iter()
         .map(|hash| format!("0x{}", hex::encode(hash)))
         .collect();
@@ -1573,40 +1575,6 @@ fn withdrawal_progress(
     } else {
         ("claimable", claim_action)
     }
-}
-
-fn inner_action_merkle_proof(leaves: &[[u8; 32]], target: usize) -> [[u8; 32]; 16] {
-    let zero_hashes = inner_action_zero_hashes();
-    let mut proof = [[0u8; 32]; 16];
-    let mut nodes = leaves.to_vec();
-    let mut index = target;
-    for level in 0..16 {
-        proof[level] = nodes.get(index ^ 1).copied().unwrap_or(zero_hashes[level]);
-        nodes = nodes
-            .chunks(2)
-            .map(|pair| {
-                hash_inner_action_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level]))
-            })
-            .collect();
-        index >>= 1;
-    }
-    proof
-}
-
-fn inner_action_zero_hashes() -> [[u8; 32]; 17] {
-    let mut hashes = [[0u8; 32]; 17];
-    for level in 0..16 {
-        hashes[level + 1] = hash_inner_action_node(hashes[level], hashes[level]);
-    }
-    hashes
-}
-
-fn hash_inner_action_node(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
-    let mut encoded = Vec::with_capacity(96);
-    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_NODE_V2").0);
-    encoded.extend_from_slice(&left);
-    encoded.extend_from_slice(&right);
-    keccak256(encoded).0
 }
 
 async fn create_withdraw(
@@ -2791,39 +2759,18 @@ mod tests {
 
     #[test]
     fn withdrawal_proof_uses_fixed_depth_and_preserves_offsets() {
-        let leaves = [
-            keccak256("first").0,
-            keccak256("second").0,
-            keccak256("third").0,
-        ];
+        let leaves = [[0x11; 32], [0x22; 32], [0x33; 32]];
+        let root = inner_action_commitment::root(&leaves);
         for target in 0..leaves.len() {
-            let proof = inner_action_merkle_proof(&leaves, target);
-            let mut computed = leaves[target];
-            let mut index = target;
-            for sibling in proof {
-                computed = if index & 1 == 0 {
-                    hash_inner_action_node(computed, sibling)
-                } else {
-                    hash_inner_action_node(sibling, computed)
-                };
-                index >>= 1;
-            }
-
-            let zero_hashes = inner_action_zero_hashes();
-            let mut nodes = leaves.to_vec();
-            for level in 0..16 {
-                nodes = nodes
-                    .chunks(2)
-                    .map(|pair| {
-                        hash_inner_action_node(
-                            pair[0],
-                            pair.get(1).copied().unwrap_or(zero_hashes[level]),
-                        )
-                    })
-                    .collect();
-            }
-            assert_eq!(computed, nodes[0]);
+            let proof = inner_action_commitment::merkle_proof(&leaves, target).unwrap();
+            assert!(inner_action_commitment::verify_merkle_proof(
+                leaves[target],
+                target,
+                &proof,
+                root
+            ));
         }
+        assert!(inner_action_commitment::merkle_proof(&leaves, leaves.len()).is_none());
     }
 
     #[test]
@@ -2867,8 +2814,7 @@ mod tests {
         );
 
         let record_commitment = format!("0x{}", "11".repeat(32));
-        let registry =
-            decode_action_identity(2, Some(7), Some(record_commitment.clone())).unwrap();
+        let registry = decode_action_identity(2, Some(7), Some(record_commitment.clone())).unwrap();
         assert_eq!(
             serde_json::to_value(registry).unwrap(),
             serde_json::json!({

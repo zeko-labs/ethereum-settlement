@@ -1,4 +1,3 @@
-use alloy::primitives::keccak256;
 use anyhow::{Context, Result};
 use sqlx::{PgPool, Row};
 use std::time::Duration;
@@ -6,9 +5,14 @@ use tokio::time::sleep;
 
 use crate::ethereum::{BlockRef, Ethereum};
 use serde_json::{json, Value};
+use zeko_sp1_lib::inner_action_commitment::{
+    action_fields_hash as hash_action_fields, erc20_withdrawal_leaf as hash_erc20_withdrawal_leaf,
+    native_withdrawal_leaf as hash_native_withdrawal_leaf,
+    raw_inner_action_leaf as hash_raw_inner_action_leaf, root as inner_action_root,
+};
 use zeko_sp1_lib::{
-    Address, BridgeTransitionPublicValuesV2, Bytes32, InnerActionBatchWitnessV2,
-    SettlementPublicValues, SettlementPublicValuesV1, SettlementPublicValuesV2,
+    BridgeTransitionPublicValuesV2, Bytes32, InnerActionBatchWitnessV2, SettlementPublicValues,
+    SettlementPublicValuesV1, SettlementPublicValuesV2,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -885,6 +889,12 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
     Ok(())
 }
 
+fn u32_word(value: u32) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[28..].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
 async fn recovered_settlement_input(
     pool: &PgPool,
     config: &Config,
@@ -1366,21 +1376,14 @@ async fn store_inner_action_leaves(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
-                withdrawal.recipient,
-                withdrawal.amount,
+                withdrawal,
                 action_fields_hash,
             ),
             (None, Some(withdrawal)) => hash_erc20_withdrawal_leaf(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
-                withdrawal.token,
-                withdrawal.encoding_version,
-                withdrawal.registry_index,
-                withdrawal.record_commitment,
-                withdrawal.asset_id,
-                withdrawal.recipient,
-                withdrawal.amount,
+                withdrawal,
                 action_fields_hash,
             ),
             (None, None) => hash_raw_inner_action_leaf(
@@ -1484,136 +1487,6 @@ async fn store_inner_action_leaves(
         .await?;
     }
     Ok(())
-}
-
-pub(crate) fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
-    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_FIELDS_V2").0);
-    encoded.extend_from_slice(&u32_word(fields.len() as u32));
-    for field in fields {
-        encoded.extend_from_slice(field);
-    }
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_native_withdrawal_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    recipient: Address,
-    amount: u64,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(224);
-    encoded.extend_from_slice(&keccak256("ZEKO_NATIVE_WITHDRAWAL_LEAF_V2").0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(recipient));
-    encoded.extend_from_slice(&u64_word(amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_erc20_withdrawal_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    token: Address,
-    encoding_version: u32,
-    registry_index: u32,
-    record_commitment: Bytes32,
-    asset_id: Bytes32,
-    recipient: Address,
-    amount: u64,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(384);
-    match encoding_version {
-        1 => encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3").0),
-        2 => encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V4").0),
-        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
-    }
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(token));
-    if encoding_version == 2 {
-        encoded.extend_from_slice(&u32_word(encoding_version));
-        encoded.extend_from_slice(&u32_word(registry_index));
-        encoded.extend_from_slice(&record_commitment);
-    }
-    encoded.extend_from_slice(&asset_id);
-    encoded.extend_from_slice(&address_word(recipient));
-    encoded.extend_from_slice(&u64_word(amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_raw_inner_action_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(160);
-    encoded.extend_from_slice(&keccak256("ZEKO_RAW_INNER_ACTION_LEAF_V2").0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
-    let zero_hashes = inner_action_zero_hashes();
-    if leaves.is_empty() {
-        return zero_hashes[16];
-    }
-    let mut nodes = leaves.to_vec();
-    for level in 0..16 {
-        nodes = nodes
-            .chunks(2)
-            .map(|pair| {
-                hash_inner_action_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level]))
-            })
-            .collect();
-    }
-    nodes[0]
-}
-
-fn inner_action_zero_hashes() -> [Bytes32; 17] {
-    let mut hashes = [[0u8; 32]; 17];
-    for level in 0..16 {
-        hashes[level + 1] = hash_inner_action_node(hashes[level], hashes[level]);
-    }
-    hashes
-}
-
-fn hash_inner_action_node(left: Bytes32, right: Bytes32) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(96);
-    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_NODE_V2").0);
-    encoded.extend_from_slice(&left);
-    encoded.extend_from_slice(&right);
-    keccak256(encoded).0
-}
-
-fn u64_word(value: u64) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[24..].copy_from_slice(&value.to_be_bytes());
-    word
-}
-
-fn u32_word(value: u32) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[28..].copy_from_slice(&value.to_be_bytes());
-    word
-}
-
-fn address_word(value: Address) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[12..].copy_from_slice(&value);
-    word
 }
 
 async fn update_outer_account(

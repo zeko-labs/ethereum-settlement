@@ -194,6 +194,18 @@ struct ERC20DepositMetadata {
     record_commitment: Option<B256>,
 }
 
+fn bridge_deposit_filter(bridge_address: Address, from_block: u64, to_block: u64) -> Filter {
+    Filter::new()
+        .address(bridge_address)
+        .event_signature(vec![
+            IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH,
+            IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH,
+            IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH,
+        ])
+        .from_block(from_block)
+        .to_block(to_block)
+}
+
 #[derive(Clone, Debug)]
 pub struct SettlementAcceptedLog {
     pub batch_sequence: u64,
@@ -461,13 +473,35 @@ impl Ethereum {
         to_block: u64,
     ) -> Result<Vec<BridgeDepositLog>> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let erc20_filter = Filter::new()
-            .address(self.bridge_address)
-            .event_signature(IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH)
-            .from_block(from_block)
-            .to_block(to_block);
+        let filter = bridge_deposit_filter(self.bridge_address, from_block, to_block);
+        let mut bridge_logs = Vec::new();
+        let mut erc20_logs = Vec::new();
+        let mut erc20_v2_logs = Vec::new();
+        for log in provider.get_logs(&filter).await? {
+            match log.topic0().copied() {
+                Some(signature)
+                    if signature == IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH =>
+                {
+                    bridge_logs.push(log)
+                }
+                Some(signature)
+                    if signature == IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH =>
+                {
+                    erc20_logs.push(log)
+                }
+                Some(signature)
+                    if signature
+                        == IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH =>
+                {
+                    erc20_v2_logs.push(log)
+                }
+                Some(signature) => anyhow::bail!("unexpected bridge deposit event {signature}"),
+                None => anyhow::bail!("bridge deposit event is missing topic zero"),
+            }
+        }
+
         let mut metadata = HashMap::new();
-        for log in provider.get_logs(&erc20_filter).await? {
+        for log in erc20_logs {
             let decoded = log
                 .log_decode_validate::<IEthereumZekoBridge::ERC20DepositSubmitted>()
                 .context("decode ERC20DepositSubmitted log")?;
@@ -497,12 +531,7 @@ impl Ethereum {
             anyhow::ensure!(previous.is_none(), "duplicate ERC20 deposit identity event");
         }
 
-        let erc20_v2_filter = Filter::new()
-            .address(self.bridge_address)
-            .event_signature(IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH)
-            .from_block(from_block)
-            .to_block(to_block);
-        for log in provider.get_logs(&erc20_v2_filter).await? {
+        for log in erc20_v2_logs {
             let decoded = log
                 .log_decode_validate::<IEthereumZekoBridge::ERC20DepositSubmittedV2>()
                 .context("decode ERC20DepositSubmittedV2 log")?;
@@ -540,13 +569,8 @@ impl Ethereum {
             identity.record_commitment = Some(data.recordCommitment);
         }
 
-        let bridge_filter = Filter::new()
-            .address(self.bridge_address)
-            .event_signature(IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH)
-            .from_block(from_block)
-            .to_block(to_block);
         let mut deposits = Vec::new();
-        for log in provider.get_logs(&bridge_filter).await? {
+        for log in bridge_logs {
             let decoded = log
                 .log_decode_validate::<IEthereumZekoBridge::BridgeDeposit>()
                 .context("decode BridgeDeposit log")?;
@@ -563,8 +587,8 @@ impl Ethereum {
                     );
                     (None, 0, None, None)
                 } else {
-                    let identity =
-                        identity.context("ERC20 deposit is missing its immutable identity event")?;
+                    let identity = identity
+                        .context("ERC20 deposit is missing its immutable identity event")?;
                     anyhow::ensure!(
                         identity.deposit_leaf == data.depositLeaf
                             && identity.new_deposit_state == data.newDepositState
@@ -965,6 +989,18 @@ mod tests {
                 "ERC20DepositSubmittedV2(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint64,uint64,uint32,uint32,bytes32)"
             )
         );
+    }
+
+    #[test]
+    fn bridge_deposit_filter_uses_one_topic_zero_or_set() {
+        let filter = bridge_deposit_filter(Address::ZERO, 7, 9);
+        assert_eq!(filter.topics[0].len(), 3);
+        assert!(filter.topics[0].contains(&IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH));
+        assert!(
+            filter.topics[0].contains(&IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH)
+        );
+        assert!(filter.topics[0]
+            .contains(&IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH));
     }
 
     #[test]

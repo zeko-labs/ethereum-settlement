@@ -9666,6 +9666,7 @@ dependencies = [
 name = "zeko_sp1_lib"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives 0.8.20",
  "bincode",
  "serde",
  "serde_json",

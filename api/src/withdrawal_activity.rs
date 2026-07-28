@@ -5,9 +5,9 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
 use std::time::Duration;
 use tokio::time::sleep;
-use zeko_sp1_lib::{Address, Bytes32};
+use zeko_sp1_lib::{inner_action_commitment, Address, Bytes32, NativeWithdrawalV2};
 
-use crate::{indexer, AppState};
+use crate::AppState;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveInnerAction {
@@ -394,17 +394,19 @@ async fn recover_batch(
                 action.global_action_index == expected_index,
                 "archive inner actions are not contiguous"
             );
-            let action_fields_hash = indexer::hash_action_fields(&action.fields);
+            let action_fields_hash = inner_action_commitment::action_fields_hash(&action.fields);
             let leaf = match &action.withdrawal {
-                Some(withdrawal) => indexer::hash_native_withdrawal_leaf(
+                Some(withdrawal) => inner_action_commitment::native_withdrawal_leaf(
                     chain_id,
                     bridge,
                     action.global_action_index,
-                    withdrawal.recipient,
-                    withdrawal.amount,
+                    &NativeWithdrawalV2 {
+                        recipient: withdrawal.recipient,
+                        amount: withdrawal.amount,
+                    },
                     action_fields_hash,
                 ),
-                None => indexer::hash_raw_inner_action_leaf(
+                None => inner_action_commitment::raw_inner_action_leaf(
                     chain_id,
                     bridge,
                     action.global_action_index,
@@ -416,7 +418,7 @@ async fn recover_batch(
         .collect::<Result<Vec<_>>>()?;
     let leaves = rows.iter().map(|row| row.3).collect::<Vec<_>>();
     anyhow::ensure!(
-        indexer::inner_action_root(&leaves) == expected_root,
+        inner_action_commitment::root(&leaves) == expected_root,
         "archive actions do not reproduce the Ethereum-accepted inner-action root"
     );
 

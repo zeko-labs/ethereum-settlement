@@ -190,20 +190,28 @@ The bridge public output includes:
 - Zeko action-state length before/after
 - every exact five-field action and its intermediate action-state checkpoint
 
-The native path accepts ETH only, requires 1 gwei granularity, fixes the timeout
-to `UInt32.max`, and rejects an empty batch. Arbitrary-timeout and ERC20 deposit
-entry points are disabled by default because the current OCaml PoC cannot safely
-consume or cancel them.
+The native path requires 1 gwei granularity, fixes the timeout to `UInt32.max`,
+and rejects an empty batch. Arbitrary-timeout and arbitrary-token compatibility
+entry points remain disabled by default. The explicit legacy one-token ERC-20
+path retains action encoding V1 behind its compatibility switch. Universal
+registry assets use encoding V2 and bind the stable registry index plus the
+canonical Mina Poseidon record commitment in both deposit and withdrawal
+actions.
 
-## Native Bridge PoC
+The exact versioned wires and settlement receipts are documented in
+[deposits](docs/content/protocol/deposit-bridge.md),
+[withdrawals](docs/content/protocol/withdrawals.md), and
+[settlement](docs/content/protocol/settlement.md).
+
+## Native and ERC-20 Bridge PoC
 
 Settlement public values V2 bind the exact ordered inner actions to the
 proof-verified inner action-state transition. SP1 emits a depth-16 Keccak root,
 the global start index, count, bridge address, and the normal settlement
 receipt. Solidity records that root only while accepting the corresponding
-settlement transition. A native withdrawal claim supplies an ordinary Merkle
-proof, amount, recipient, and action-fields hash; it does not require the user
-to generate a SNARK.
+settlement transition. Native and registered ERC-20 withdrawal claims supply
+ordinary Merkle proofs and proof-bound preimages; users do not generate another
+SNARK.
 
 The OCaml Ethereum deposit rule recognizes one additional synthetic holder key:
 `x = uint160(EthereumZekoBridge)` and `is_odd = false`. Its circuit configuration
