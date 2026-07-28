@@ -34,7 +34,8 @@ const ACCOUNT_UPDATE_CONS_PREFIX: &str = "MinaAcctUpdateCons**";
 const ASSET_RECORD_BATCH_LEAF_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_LEAF_V2";
 const ASSET_RECORD_BATCH_NODE_DOMAIN: &str = "ZEKO_ASSET_RECORD_BATCH_NODE_V1";
 // Must match Zeko's Pickles-bound sequencer child call-data commitment.
-const ASSET_REGISTRY_CHECKPOINT_DOMAIN: &str = "Zeko registry checkpoint V1";
+const ASSET_REGISTRY_CHECKPOINT_VERSION: u32 = 2;
+const ASSET_REGISTRY_CHECKPOINT_DOMAIN: &str = "Zeko registry checkpoint V2";
 
 pub fn derive_receipt(
     proof: &VerifiableProof,
@@ -720,6 +721,10 @@ fn derive_receipt_for_app_state(
         );
     }
     if let Some(checkpoint) = registry_checkpoint {
+        assert_eq!(
+            checkpoint.checkpoint_version, ASSET_REGISTRY_CHECKPOINT_VERSION,
+            "unsupported registry checkpoint commitment version"
+        );
         let matching_registry_calls = count_registry_checkpoint_calls(
             &binding.call_forest,
             checkpoint.registry_public_key,
@@ -733,6 +738,10 @@ fn derive_receipt_for_app_state(
         );
     }
     if let Some(checkpoint) = registry_batch {
+        assert_eq!(
+            checkpoint.checkpoint_version, ASSET_REGISTRY_CHECKPOINT_VERSION,
+            "unsupported registry checkpoint commitment version"
+        );
         let matching_registry_calls = count_registry_checkpoint_calls(
             &binding.call_forest,
             checkpoint.registry_public_key,
@@ -928,15 +937,8 @@ fn count_registry_checkpoint_calls(
     // Mina L1 account precondition. The signed sequencer child commits this
     // digest in inert call data, and the verified call-forest hash authenticates
     // the child body.
-    let expected_call_data = field_to_bytes(hash_with_prefix(
-        ASSET_REGISTRY_CHECKPOINT_DOMAIN,
-        &[
-            field_from_bytes(&registry_public_key),
-            field_from_bytes(&root),
-            StepField::from(count),
-            StepField::from(schema_version),
-        ],
-    ));
+    let expected_call_data =
+        registry_checkpoint_call_data(registry_public_key, root, count, schema_version);
     forest
         .iter()
         .map(|node| {
@@ -953,6 +955,31 @@ fn count_registry_checkpoint_calls(
                 )
         })
         .sum()
+}
+
+fn registry_checkpoint_call_data(
+    registry_public_key: Bytes32,
+    root: Bytes32,
+    count: u32,
+    schema_version: u32,
+) -> Bytes32 {
+    let (registry_x, registry_is_odd) = unpack_registry_public_key(registry_public_key);
+    field_to_bytes(hash_with_prefix(
+        ASSET_REGISTRY_CHECKPOINT_DOMAIN,
+        &[
+            registry_x,
+            StepField::from(u8::from(registry_is_odd)),
+            field_from_bytes(&root),
+            StepField::from(count),
+            StepField::from(schema_version),
+        ],
+    ))
+}
+
+fn unpack_registry_public_key(mut packed: Bytes32) -> (StepField, bool) {
+    let is_odd = packed[0] & 0x80 != 0;
+    packed[0] &= 0x7f;
+    (field_from_bytes(&packed), is_odd)
 }
 
 fn field_from_bytes(bytes: &Bytes32) -> StepField {
@@ -1315,19 +1342,12 @@ mod tests {
     #[test]
     fn registry_checkpoint_is_bound_to_the_verified_child_call_digest() {
         let (mut app_state, mut witness) = fixture();
-        let registry_key = field_to_bytes(StepField::from(991u64));
+        let mut registry_key = field_to_bytes(StepField::from(991u64));
+        registry_key[0] |= 0x80;
         let root = field_to_bytes(StepField::from(992u64));
         let mut child_fields = vec![[0u8; 32]; BODY_PRECONDITION_ACTION_STATE + 1];
         child_fields[0] = encoded(777);
-        child_fields[BODY_CALL_DATA] = field_to_bytes(hash_with_prefix(
-            ASSET_REGISTRY_CHECKPOINT_DOMAIN,
-            &[
-                field_from_bytes(&registry_key),
-                field_from_bytes(&root),
-                StepField::from(1u32),
-                StepField::from(1u32),
-            ],
-        ));
+        child_fields[BODY_CALL_DATA] = registry_checkpoint_call_data(registry_key, root, 1, 1);
         witness.binding.call_forest = vec![CallForestNodeV3 {
             account_update_body: ChunkedRandomOracleInputV1 {
                 field_elements: child_fields,
@@ -1336,6 +1356,7 @@ mod tests {
             calls: Vec::new(),
         }];
         witness.asset_registry_checkpoint = Some(AssetRegistryCheckpointV3 {
+            checkpoint_version: ASSET_REGISTRY_CHECKPOINT_VERSION,
             registry_public_key: registry_key,
             root,
             count: 1,
@@ -1362,6 +1383,17 @@ mod tests {
 
         let _receipt = derive_receipt_for_app_state(&app_state, witness.clone(), [0x55; 32]);
 
+        let mut wrong_version = witness.clone();
+        wrong_version
+            .asset_registry_checkpoint
+            .as_mut()
+            .expect("checkpoint")
+            .checkpoint_version = 1;
+        assert!(std::panic::catch_unwind(|| {
+            derive_receipt_for_app_state(&app_state, wrong_version, [0x55; 32])
+        })
+        .is_err());
+
         witness
             .asset_registry_checkpoint
             .as_mut()
@@ -1371,6 +1403,19 @@ mod tests {
             derive_receipt_for_app_state(&app_state, witness, [0x55; 32])
         })
         .is_err());
+    }
+
+    #[test]
+    fn registry_checkpoint_distinguishes_public_key_parity() {
+        let even_key = field_to_bytes(StepField::from(991u64));
+        let mut odd_key = even_key;
+        odd_key[0] |= 0x80;
+        let root = field_to_bytes(StepField::from(992u64));
+
+        assert_ne!(
+            registry_checkpoint_call_data(even_key, root, 1, 1),
+            registry_checkpoint_call_data(odd_key, root, 1, 1)
+        );
     }
 
     #[test]
@@ -1393,6 +1438,7 @@ mod tests {
         };
         record.asset_id = compute_asset_id(&record, chain_id, bridge_address);
         let checkpoint = AssetRegistryCheckpointV3 {
+            checkpoint_version: ASSET_REGISTRY_CHECKPOINT_VERSION,
             registry_public_key: field_to_bytes(StepField::from(106u64)),
             root: field_to_bytes(registry_implied_root(
                 hash_registry_record_leaf(&record),
@@ -1510,6 +1556,7 @@ mod tests {
         let first_commitment = field_to_bytes(hash_registry_record_leaf(&first));
         let second_commitment = field_to_bytes(hash_registry_record_leaf(&second));
         let checkpoint = AssetRegistryBatchCheckpointV4 {
+            checkpoint_version: ASSET_REGISTRY_CHECKPOINT_VERSION,
             registry_public_key: field_to_bytes(StepField::from(206u64)),
             root: second_root,
             count: 2,

@@ -400,8 +400,11 @@ pub struct SettlementWitnessV1 {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetRegistryCheckpointV3 {
-    /// Mina field encoding of the configured registry account public-key x
-    /// coordinate. The guest uses it to select the authenticated child call.
+    /// Version of the Pickles-bound registry checkpoint commitment.
+    pub checkpoint_version: u32,
+    /// Packed Mina compressed public key for the configured registry account.
+    /// The most-significant bit carries the y-coordinate parity and the
+    /// remaining 255 bits carry the canonical x-coordinate.
     #[serde(with = "serde_bytes32")]
     pub registry_public_key: Bytes32,
     #[serde(with = "serde_bytes32")]
@@ -423,8 +426,11 @@ pub struct AssetRegistryCheckpointV3 {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetRegistryBatchCheckpointV4 {
-    /// Mina field encoding of the configured registry account public-key x
-    /// coordinate. The guest uses it to select the authenticated child call.
+    /// Version of the Pickles-bound registry checkpoint commitment.
+    pub checkpoint_version: u32,
+    /// Packed Mina compressed public key for the configured registry account.
+    /// The most-significant bit carries the y-coordinate parity and the
+    /// remaining 255 bits carry the canonical x-coordinate.
     #[serde(with = "serde_bytes32")]
     pub registry_public_key: Bytes32,
     #[serde(with = "serde_bytes32")]

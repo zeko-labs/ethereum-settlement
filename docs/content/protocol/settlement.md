@@ -42,6 +42,11 @@ The settlement guest is built against the exact exported verifier index. It:
 9. for V3/V4, verifies the registry transition and derives its checkpoint and
    record attestation
 
+Registry checkpoint inputs use commitment version 2. The guest decodes the
+packed Mina registry public key into its canonical x-coordinate and parity bit,
+then authenticates both fields together with root, count, and schema version
+against the Pickles-bound child call data.
+
 Mutating the application statement, deferred values, bulletproof challenges,
 accumulator point, feature flags, previous evaluations, body, or actions causes
 verification to fail.
