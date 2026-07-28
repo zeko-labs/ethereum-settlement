@@ -39,7 +39,7 @@ static NATIVE_SETTLEMENT_VK_CANONICAL: OnceLock<String> = OnceLock::new();
 /// large program even after successful execution.
 pub fn execute_minimal(elf: Elf, stdin: SP1Stdin) -> Result<(Vec<u8>, u64)> {
     let program = Arc::new(
-        Program::from(&*elf).map_err(|error| anyhow::anyhow!("disassemble program: {error}"))?,
+        Program::from(&elf).map_err(|error| anyhow::anyhow!("disassemble program: {error}"))?,
     );
     let mut executor = MinimalExecutorRunner::simple(program);
     for input in stdin.buffer {

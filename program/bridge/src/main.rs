@@ -241,6 +241,7 @@ fn compute_ethereum_state(previous_state: Bytes32, deposit_leaf: Bytes32) -> Byt
     keccak256(encoded).0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_ethereum_erc20_deposit_leaf_v1(
     chain_id: u64,
     bridge_address: Address,

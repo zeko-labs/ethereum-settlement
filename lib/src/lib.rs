@@ -223,10 +223,10 @@ pub mod inner_action_commitment {
             return zero_hashes[TREE_DEPTH];
         }
         let mut nodes = leaves.to_vec();
-        for level in 0..TREE_DEPTH {
+        for zero_hash in zero_hashes.iter().take(TREE_DEPTH) {
             nodes = nodes
                 .chunks(2)
-                .map(|pair| hash_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level])))
+                .map(|pair| hash_node(pair[0], pair.get(1).copied().unwrap_or(*zero_hash)))
                 .collect();
         }
         assert_eq!(nodes.len(), 1, "invalid inner action tree");
@@ -1550,7 +1550,7 @@ fn parse_hex_fixed<const N: usize>(hex: &str) -> Result<[u8; N], String> {
             _ => unreachable!(),
         };
         let byte_index = nibble_index / 2;
-        if nibble_index % 2 == 0 {
+        if nibble_index.is_multiple_of(2) {
             out[byte_index] = nibble << 4;
         } else {
             out[byte_index] |= nibble;

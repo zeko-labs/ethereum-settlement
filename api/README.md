@@ -2,9 +2,9 @@
 
 The gateway is the compatibility and proving service between the OCaml Zeko
 sequencer and Ethereum. It exposes the subset of Mina GraphQL used by
-`gql_client.ml`, validates an OCaml proof export by executing SP1 locally,
-requests the EVM proof from the Succinct Network, submits it to Ethereum, and
-waits for configurable finality.
+`gql_client.ml`, validates an OCaml proof export with the pinned native Pickles
+verifier and shared receipt derivation, requests the EVM proof from the Succinct
+Network, submits it to Ethereum, and waits for configurable finality.
 
 ## Interfaces
 
