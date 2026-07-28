@@ -3,14 +3,14 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::time::sleep;
 use zeko_sp1_lib::{
     inner_action_commitment, Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3,
     ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2,
 };
 
-use crate::AppState;
+use crate::{ethereum::TokenWithdrawalIdentity, AppState};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveInnerAction {
@@ -406,6 +406,16 @@ async fn recover_batch(
     settlement: &sqlx::postgres::PgRow,
 ) -> Result<()> {
     let expected_root = parse_hex_bytes32(settlement.try_get("inner_action_root")?)?;
+    let identities = unique_token_withdrawal_identities(actions.iter().filter_map(|action| {
+        match action.withdrawal.as_ref() {
+            Some(ArchiveWithdrawal::Token(withdrawal)) => Some(withdrawal),
+            Some(ArchiveWithdrawal::Native(_)) | None => None,
+        }
+    }));
+    let resolved_tokens = state
+        .ethereum
+        .resolve_token_withdrawal_identities(&identities)
+        .await?;
     let mut rows = Vec::with_capacity(actions.len());
     for (offset, action) in actions.iter().enumerate() {
         let expected_index = start
@@ -418,15 +428,9 @@ async fn recover_batch(
         let action_fields_hash = inner_action_commitment::action_fields_hash(&action.fields);
         let token = match &action.withdrawal {
             Some(ArchiveWithdrawal::Token(withdrawal)) => Some(
-                state
-                    .ethereum
-                    .resolve_token_withdrawal_identity(
-                        withdrawal.encoding_version,
-                        withdrawal.registry_index,
-                        withdrawal.record_commitment.into(),
-                        withdrawal.asset_id.into(),
-                    )
-                    .await?
+                resolved_tokens
+                    .get(&token_withdrawal_identity(withdrawal))
+                    .context("archived ERC20 identity was not resolved")?
                     .into_array(),
             ),
             Some(ArchiveWithdrawal::Native(_)) | None => None,
@@ -547,6 +551,26 @@ async fn recover_batch(
         "recovered settlement inner-action leaves from archive and Ethereum"
     );
     Ok(())
+}
+
+fn token_withdrawal_identity(withdrawal: &ArchiveTokenWithdrawal) -> TokenWithdrawalIdentity {
+    TokenWithdrawalIdentity {
+        encoding_version: withdrawal.encoding_version,
+        registry_index: withdrawal.registry_index,
+        record_commitment: withdrawal.record_commitment.into(),
+        asset_id: withdrawal.asset_id.into(),
+    }
+}
+
+fn unique_token_withdrawal_identities<'a>(
+    withdrawals: impl IntoIterator<Item = &'a ArchiveTokenWithdrawal>,
+) -> Vec<TokenWithdrawalIdentity> {
+    let mut seen = HashSet::new();
+    withdrawals
+        .into_iter()
+        .map(token_withdrawal_identity)
+        .filter(|identity| seen.insert(*identity))
+        .collect()
 }
 
 fn archive_action_leaf(
@@ -824,5 +848,36 @@ mod tests {
         assert_eq!(withdrawal.encoding_version, ERC20_ACTION_ENCODING_V1);
         assert_eq!(withdrawal.registry_index, 0);
         assert_eq!(withdrawal.record_commitment, [0u8; 32]);
+    }
+
+    #[test]
+    fn recovery_deduplicates_complete_token_identities() {
+        let legacy = ArchiveTokenWithdrawal {
+            encoding_version: ERC20_ACTION_ENCODING_V1,
+            registry_index: 0,
+            record_commitment: [0u8; 32],
+            asset_id: [0x11; 32],
+            recipient: [0x22; 20],
+            amount: 5,
+        };
+        let registry = ArchiveTokenWithdrawal {
+            encoding_version: ERC20_ACTION_ENCODING_V2,
+            registry_index: 7,
+            record_commitment: [0x33; 32],
+            asset_id: [0x44; 32],
+            recipient: [0x55; 20],
+            amount: 9,
+        };
+        let actions = [legacy.clone(), legacy, registry.clone(), registry];
+
+        let identities = unique_token_withdrawal_identities(actions.iter());
+
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].encoding_version, ERC20_ACTION_ENCODING_V1);
+        assert_eq!(identities[0].asset_id, [0x11u8; 32]);
+        assert_eq!(identities[1].encoding_version, ERC20_ACTION_ENCODING_V2);
+        assert_eq!(identities[1].registry_index, 7);
+        assert_eq!(identities[1].record_commitment, [0x33u8; 32]);
+        assert_eq!(identities[1].asset_id, [0x44u8; 32]);
     }
 }

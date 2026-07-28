@@ -134,6 +134,31 @@ struct TokenWithdrawalProof {
     next_action: String,
 }
 
+#[derive(Debug, FromRow)]
+struct InnerActionLeafRow {
+    action_offset: i32,
+    global_action_index: i64,
+    action_fields_hash: String,
+    leaf: String,
+    token: Option<String>,
+    asset_id: Option<String>,
+    action_encoding_version: Option<i32>,
+    registry_index: Option<i64>,
+    record_commitment: Option<String>,
+    recipient: Option<String>,
+    zeko_amount: Option<String>,
+    inner_action_root: String,
+    commit_slot_upper: i64,
+}
+
+#[derive(Debug)]
+struct InnerActionBatchProof {
+    target: InnerActionLeafRow,
+    siblings: Vec<String>,
+    global_action_index: u32,
+    commit_slot_upper: u32,
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct ActionIdentity {
@@ -1373,51 +1398,24 @@ async fn load_native_withdrawal_proof_at(
     current_slot: u64,
     delay: u32,
 ) -> Result<NativeWithdrawalProof> {
-    let rows = sqlx::query(
-        "SELECT action_offset, global_action_index, action_fields_hash, leaf,
-                token, recipient, zeko_amount::text AS zeko_amount,
-                inner_action_root, commit_slot_upper
-         FROM gateway_inner_action_leaves
-         WHERE settlement_sequence = $1 AND NOT removed
-         ORDER BY action_offset",
-    )
-    .bind(i64::try_from(sequence)?)
-    .fetch_all(&state.pool)
-    .await?;
-    anyhow::ensure!(!rows.is_empty(), "settlement inner-action batch not found");
-    let target = rows
-        .get(usize::try_from(offset)?)
-        .context("withdrawal offset is outside the batch")?;
-    anyhow::ensure!(
-        target.try_get::<i32, _>("action_offset")? == i32::try_from(offset)?,
-        "inner-action batch is not contiguous"
-    );
-    ensure_native_withdrawal_kind(target.try_get("token")?)?;
+    let InnerActionBatchProof {
+        target,
+        siblings,
+        global_action_index,
+        commit_slot_upper,
+    } = load_inner_action_batch_proof(&state.pool, sequence, offset).await?;
+    ensure_native_withdrawal_kind(target.token.clone())?;
     let recipient: String = target
-        .try_get::<Option<String>, _>("recipient")?
+        .recipient
+        .clone()
         .context("inner action is not a claimable native withdrawal")?;
     let amount = target
-        .try_get::<Option<String>, _>("zeko_amount")?
+        .zeko_amount
+        .clone()
         .context("withdrawal amount missing")?;
     amount
         .parse::<u64>()
         .context("withdrawal amount is outside the supported native range")?;
-    let leaves = rows
-        .iter()
-        .map(|row| -> Result<[u8; 32]> {
-            Ok(row
-                .try_get::<String, _>("leaf")?
-                .parse::<alloy::primitives::B256>()?
-                .0)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let siblings = inner_action_commitment::merkle_proof(&leaves, usize::try_from(offset)?)
-        .context("withdrawal proof target is outside the inner-action tree")?
-        .into_iter()
-        .map(|hash| format!("0x{}", hex::encode(hash)))
-        .collect();
-    let commit_slot_upper = u32::try_from(target.try_get::<i64, _>("commit_slot_upper")?)?;
-    let global_action_index = u32::try_from(target.try_get::<i64, _>("global_action_index")?)?;
     let recipient_address = recipient
         .parse::<Address>()
         .context("indexed withdrawal recipient is invalid")?;
@@ -1440,9 +1438,9 @@ async fn load_native_withdrawal_proof_at(
         global_action_index,
         recipient,
         amount,
-        action_fields_hash: target.try_get("action_fields_hash")?,
+        action_fields_hash: target.action_fields_hash,
         siblings,
-        inner_action_root: target.try_get("inner_action_root")?,
+        inner_action_root: target.inner_action_root,
         commit_slot_upper,
         claimable_slot,
         current_virtual_slot: current_slot,
@@ -1467,69 +1465,43 @@ async fn load_token_withdrawal_proof(
 ) -> Result<TokenWithdrawalProof> {
     let current_slot = state.ethereum.current_virtual_slot().await?;
     let delay = state.ethereum.withdrawal_delay_slots().await?;
-    let rows = sqlx::query(
-        "SELECT action_offset, global_action_index, action_fields_hash, leaf,
-                token, asset_id, action_encoding_version, registry_index,
-                record_commitment, recipient, zeko_amount::text AS zeko_amount,
-                inner_action_root, commit_slot_upper
-         FROM gateway_inner_action_leaves
-         WHERE settlement_sequence = $1 AND NOT removed
-         ORDER BY action_offset",
-    )
-    .bind(i64::try_from(sequence)?)
-    .fetch_all(&state.pool)
-    .await?;
-    anyhow::ensure!(!rows.is_empty(), "settlement inner-action batch not found");
-    let target = rows
-        .get(usize::try_from(offset)?)
-        .context("withdrawal offset is outside the batch")?;
-    anyhow::ensure!(
-        target.try_get::<i32, _>("action_offset")? == i32::try_from(offset)?,
-        "inner-action batch is not contiguous"
-    );
+    let InnerActionBatchProof {
+        target,
+        siblings,
+        global_action_index,
+        commit_slot_upper,
+    } = load_inner_action_batch_proof(&state.pool, sequence, offset).await?;
     let token: String = target
-        .try_get::<Option<String>, _>("token")?
+        .token
+        .clone()
         .context("inner action is not a claimable ERC20 withdrawal")?;
     let asset_id: String = target
-        .try_get::<Option<String>, _>("asset_id")?
+        .asset_id
+        .clone()
         .context("ERC20 withdrawal asset id missing")?;
     let action_identity = decode_action_identity(
         target
-            .try_get::<Option<i32>, _>("action_encoding_version")?
+            .action_encoding_version
             .context("ERC20 withdrawal action encoding version missing")?,
-        target.try_get("registry_index")?,
-        target.try_get("record_commitment")?,
+        target.registry_index,
+        target.record_commitment.clone(),
     )?;
     anyhow::ensure!(
         action_identity.encoding_version != 0,
         "ERC20 withdrawal uses the native action encoding"
     );
     let recipient: String = target
-        .try_get::<Option<String>, _>("recipient")?
+        .recipient
+        .clone()
         .context("ERC20 withdrawal recipient missing")?;
     let amount = target
-        .try_get::<Option<String>, _>("zeko_amount")?
+        .zeko_amount
+        .clone()
         .context("ERC20 withdrawal amount missing")?;
     amount
         .parse::<u64>()
         .context("withdrawal amount is outside the supported UInt64 range")?;
 
-    let leaves = rows
-        .iter()
-        .map(|row| -> Result<[u8; 32]> {
-            Ok(row
-                .try_get::<String, _>("leaf")?
-                .parse::<alloy::primitives::B256>()?
-                .0)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let siblings = inner_action_commitment::merkle_proof(&leaves, usize::try_from(offset)?)
-        .context("withdrawal proof target is outside the inner-action tree")?
-        .into_iter()
-        .map(|hash| format!("0x{}", hex::encode(hash)))
-        .collect();
-    let commit_slot_upper = u32::try_from(target.try_get::<i64, _>("commit_slot_upper")?)?;
-    let global_action_index = u32::try_from(target.try_get::<i64, _>("global_action_index")?)?;
     let token_address = token
         .parse::<Address>()
         .context("indexed withdrawal token is invalid")?;
@@ -1558,15 +1530,96 @@ async fn load_token_withdrawal_proof(
         action_identity,
         recipient,
         amount,
-        action_fields_hash: target.try_get("action_fields_hash")?,
+        action_fields_hash: target.action_fields_hash,
         siblings,
-        inner_action_root: target.try_get("inner_action_root")?,
+        inner_action_root: target.inner_action_root,
         commit_slot_upper,
         claimable_slot,
         current_virtual_slot: current_slot,
         recipient_cursor,
         status: status.to_owned(),
         next_action: next_action.to_owned(),
+    })
+}
+
+async fn load_inner_action_batch_proof(
+    pool: &PgPool,
+    sequence: u64,
+    offset: u32,
+) -> Result<InnerActionBatchProof> {
+    let rows = sqlx::query_as::<_, InnerActionLeafRow>(
+        "SELECT action_offset, global_action_index, action_fields_hash, leaf,
+                token, asset_id, action_encoding_version, registry_index,
+                record_commitment, recipient, zeko_amount::text AS zeko_amount,
+                inner_action_root, commit_slot_upper
+         FROM gateway_inner_action_leaves
+         WHERE settlement_sequence = $1 AND NOT removed
+         ORDER BY action_offset",
+    )
+    .bind(i64::try_from(sequence)?)
+    .fetch_all(pool)
+    .await?;
+    build_inner_action_batch_proof(rows, offset)
+}
+
+fn build_inner_action_batch_proof(
+    rows: Vec<InnerActionLeafRow>,
+    offset: u32,
+) -> Result<InnerActionBatchProof> {
+    anyhow::ensure!(!rows.is_empty(), "settlement inner-action batch not found");
+    anyhow::ensure!(
+        rows.len() <= inner_action_commitment::MAX_LEAVES,
+        "inner-action batch exceeds proof tree capacity"
+    );
+    let start_index = u32::try_from(rows[0].global_action_index)?;
+    let expected_root = rows[0]
+        .inner_action_root
+        .parse::<B256>()
+        .context("indexed inner-action root is invalid")?;
+    let commit_slot_upper = u32::try_from(rows[0].commit_slot_upper)?;
+    let mut leaves = Vec::with_capacity(rows.len());
+    for (expected_offset, row) in rows.iter().enumerate() {
+        let expected_offset = u32::try_from(expected_offset)?;
+        anyhow::ensure!(
+            row.action_offset == i32::try_from(expected_offset)?
+                && u32::try_from(row.global_action_index)?
+                    == start_index
+                        .checked_add(expected_offset)
+                        .context("inner action index overflow")?,
+            "inner-action batch is not contiguous"
+        );
+        anyhow::ensure!(
+            row.inner_action_root.parse::<B256>()? == expected_root
+                && u32::try_from(row.commit_slot_upper)? == commit_slot_upper,
+            "inner-action batch metadata is inconsistent"
+        );
+        leaves.push(
+            row.leaf
+                .parse::<B256>()
+                .context("indexed inner-action leaf is invalid")?
+                .0,
+        );
+    }
+    anyhow::ensure!(
+        inner_action_commitment::root(&leaves) == expected_root.0,
+        "indexed inner actions do not reproduce their settlement root"
+    );
+    let target_index = usize::try_from(offset)?;
+    let siblings = inner_action_commitment::merkle_proof(&leaves, target_index)
+        .context("withdrawal offset is outside the batch")?
+        .into_iter()
+        .map(|hash| format!("0x{}", hex::encode(hash)))
+        .collect();
+    let target = rows
+        .into_iter()
+        .nth(target_index)
+        .context("withdrawal offset is outside the batch")?;
+    let global_action_index = u32::try_from(target.global_action_index)?;
+    Ok(InnerActionBatchProof {
+        target,
+        siblings,
+        global_action_index,
+        commit_slot_upper,
     })
 }
 
@@ -2868,6 +2921,58 @@ mod tests {
         assert!(ensure_native_withdrawal_kind(Some(
             "0x1111111111111111111111111111111111111111".into()
         ))
+        .is_err());
+    }
+
+    fn inner_action_row(
+        offset: i32,
+        leaf: [u8; 32],
+        inner_action_root: [u8; 32],
+    ) -> InnerActionLeafRow {
+        InnerActionLeafRow {
+            action_offset: offset,
+            global_action_index: i64::from(offset) + 20,
+            action_fields_hash: format!("0x{}", hex::encode([0x66; 32])),
+            leaf: format!("0x{}", hex::encode(leaf)),
+            token: None,
+            asset_id: None,
+            action_encoding_version: None,
+            registry_index: None,
+            record_commitment: None,
+            recipient: Some("0x1111111111111111111111111111111111111111".into()),
+            zeko_amount: Some("5".into()),
+            inner_action_root: format!("0x{}", hex::encode(inner_action_root)),
+            commit_slot_upper: 31,
+        }
+    }
+
+    #[test]
+    fn shared_withdrawal_batch_loader_builds_and_validates_proofs() {
+        let leaves = [[0x11; 32], [0x22; 32], [0x33; 32]];
+        let inner_action_root = inner_action_commitment::root(&leaves);
+        let proof = build_inner_action_batch_proof(
+            leaves
+                .into_iter()
+                .enumerate()
+                .map(|(offset, leaf)| {
+                    inner_action_row(i32::try_from(offset).unwrap(), leaf, inner_action_root)
+                })
+                .collect(),
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(proof.target.action_offset, 1);
+        assert_eq!(proof.global_action_index, 21);
+        assert_eq!(proof.commit_slot_upper, 31);
+        assert_eq!(proof.siblings.len(), inner_action_commitment::TREE_DEPTH);
+        assert!(build_inner_action_batch_proof(
+            vec![
+                inner_action_row(0, leaves[0], inner_action_root),
+                inner_action_row(2, leaves[1], inner_action_root)
+            ],
+            1
+        )
         .is_err());
     }
 }

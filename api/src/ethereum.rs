@@ -10,7 +10,10 @@ use alloy::{
     sol_types::{SolCall, SolEvent},
 };
 use anyhow::{Context, Result};
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
 use zeko_sp1_lib::{ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2};
 
 sol! {
@@ -169,6 +172,14 @@ pub struct BridgeState {
     pub bridged_deposit_nonce: u64,
     pub action_state_processed: Option<bool>,
     pub paused: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TokenWithdrawalIdentity {
+    pub encoding_version: u32,
+    pub registry_index: u32,
+    pub record_commitment: B256,
+    pub asset_id: B256,
 }
 
 #[derive(Clone, Debug)]
@@ -895,77 +906,95 @@ impl Ethereum {
             .await?)
     }
 
-    pub async fn resolve_token_withdrawal_identity(
+    pub async fn resolve_token_withdrawal_identities(
         &self,
-        encoding_version: u32,
-        registry_index: u32,
-        record_commitment: B256,
-        asset_id: B256,
-    ) -> Result<Address> {
+        identities: &[TokenWithdrawalIdentity],
+    ) -> Result<HashMap<TokenWithdrawalIdentity, Address>> {
+        let identities = identities.iter().copied().collect::<HashSet<_>>();
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IEthereumZekoBridge::new(self.bridge_address, &provider);
-        let token = match encoding_version {
-            ERC20_ACTION_ENCODING_V1 => {
-                let head = provider.get_block_number().await?;
-                let filter = Filter::new()
-                    .address(self.bridge_address)
-                    .event_signature(IEthereumZekoBridge::TokenRegistered::SIGNATURE_HASH)
-                    .topic2(asset_id)
-                    .from_block(0)
-                    .to_block(head);
-                let mut token = None;
-                for log in provider.get_logs(&filter).await? {
-                    let decoded = log
-                        .log_decode_validate::<IEthereumZekoBridge::TokenRegistered>()
-                        .context("decode TokenRegistered log")?;
-                    let candidate = decoded.data().token;
+        let legacy_assets = identities
+            .iter()
+            .filter(|identity| identity.encoding_version == ERC20_ACTION_ENCODING_V1)
+            .map(|identity| identity.asset_id)
+            .collect::<HashSet<_>>();
+        let mut legacy_tokens = HashMap::new();
+        if !legacy_assets.is_empty() {
+            let head = provider.get_block_number().await?;
+            let filter = Filter::new()
+                .address(self.bridge_address)
+                .event_signature(IEthereumZekoBridge::TokenRegistered::SIGNATURE_HASH)
+                .from_block(0)
+                .to_block(head);
+            for log in provider.get_logs(&filter).await? {
+                let decoded = log
+                    .log_decode_validate::<IEthereumZekoBridge::TokenRegistered>()
+                    .context("decode TokenRegistered log")?;
+                let data = decoded.data();
+                if legacy_assets.contains(&data.assetId) {
                     anyhow::ensure!(
-                        token.is_none_or(|current| current == candidate),
+                        legacy_tokens
+                            .insert(data.assetId, data.token)
+                            .is_none_or(|current| current == data.token),
                         "multiple tokens are registered for the archived ERC20 asset"
                     );
-                    token = Some(candidate);
                 }
-                token.context("archived ERC20 asset is not registered on Ethereum")?
             }
-            ERC20_ACTION_ENCODING_V2 => {
-                contract
-                    .assetTokenByRegistryIndex(registry_index)
-                    .call()
-                    .await?
-            }
-            version => anyhow::bail!("unsupported ERC20 withdrawal encoding version {version}"),
-        };
-        anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
-        anyhow::ensure!(
-            contract.canonicalTokenRegistered(token).call().await?,
-            "archived ERC20 token is not canonically registered"
-        );
-        anyhow::ensure!(
-            contract.assetIdByToken(token).call().await? == asset_id,
-            "archived ERC20 asset id does not match Ethereum"
-        );
-        let actual_registry_index = contract.registryIndexByToken(token).call().await?;
-        let actual_record_commitment = contract.recordCommitmentByToken(token).call().await?;
-        match encoding_version {
-            ERC20_ACTION_ENCODING_V1 => {
-                anyhow::ensure!(
-                    registry_index == 0
-                        && record_commitment.is_zero()
-                        && actual_record_commitment.is_zero(),
-                    "legacy ERC20 withdrawal has registry identity"
-                );
-            }
-            ERC20_ACTION_ENCODING_V2 => {
-                anyhow::ensure!(
-                    actual_registry_index == registry_index
-                        && actual_record_commitment == record_commitment
-                        && !record_commitment.is_zero(),
-                    "archived ERC20 registry identity does not match Ethereum"
-                );
-            }
-            _ => unreachable!(),
         }
-        Ok(token)
+
+        let mut resolved = HashMap::with_capacity(identities.len());
+        for identity in identities {
+            let token = match identity.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => *legacy_tokens
+                    .get(&identity.asset_id)
+                    .context("archived ERC20 asset is not registered on Ethereum")?,
+                ERC20_ACTION_ENCODING_V2 => {
+                    contract
+                        .assetTokenByRegistryIndex(identity.registry_index)
+                        .call()
+                        .await?
+                }
+                version => {
+                    anyhow::bail!("unsupported ERC20 withdrawal encoding version {version}")
+                }
+            };
+            anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
+            anyhow::ensure!(
+                contract.canonicalTokenRegistered(token).call().await?,
+                "archived ERC20 token is not canonically registered"
+            );
+            anyhow::ensure!(
+                contract.assetIdByToken(token).call().await? == identity.asset_id,
+                "archived ERC20 asset id does not match Ethereum"
+            );
+            match identity.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => {
+                    anyhow::ensure!(
+                        identity.registry_index == 0
+                            && identity.record_commitment.is_zero()
+                            && contract
+                                .recordCommitmentByToken(token)
+                                .call()
+                                .await?
+                                .is_zero(),
+                        "legacy ERC20 withdrawal has registry identity"
+                    );
+                }
+                ERC20_ACTION_ENCODING_V2 => {
+                    anyhow::ensure!(
+                        contract.registryIndexByToken(token).call().await?
+                            == identity.registry_index
+                            && contract.recordCommitmentByToken(token).call().await?
+                                == identity.record_commitment
+                            && !identity.record_commitment.is_zero(),
+                        "archived ERC20 registry identity does not match Ethereum"
+                    );
+                }
+                _ => unreachable!(),
+            }
+            resolved.insert(identity, token);
+        }
+        Ok(resolved)
     }
 
     pub async fn l2_action_state_info(&self, action_state: B256) -> Result<(u64, bool)> {
