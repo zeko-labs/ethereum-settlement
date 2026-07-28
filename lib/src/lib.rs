@@ -820,6 +820,15 @@ impl SettlementPublicValues {
             Self::V4(values) => &values.settlement.settlement,
         }
     }
+
+    pub fn inner_action_batch(&self) -> Option<&SettlementPublicValuesV2> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(values) => Some(values),
+            Self::V3(values) => Some(&values.settlement),
+            Self::V4(values) => Some(&values.settlement),
+        }
+    }
 }
 
 fn write_bytes<const N: usize>(output: &mut [u8], cursor: &mut usize, bytes: &[u8; N]) {
@@ -1457,10 +1466,9 @@ mod tests {
         let encoded = values.encode();
         assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
         assert_eq!(SettlementPublicValuesV3::decode(&encoded).unwrap(), values);
-        assert!(matches!(
-            SettlementPublicValues::decode(&encoded).unwrap(),
-            SettlementPublicValues::V3(_)
-        ));
+        let decoded = SettlementPublicValues::decode(&encoded).unwrap();
+        assert!(matches!(&decoded, SettlementPublicValues::V3(_)));
+        assert_eq!(decoded.inner_action_batch(), Some(&values.settlement));
     }
 
     #[test]
@@ -1482,10 +1490,9 @@ mod tests {
         let encoded = values.encode();
         assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V4_LENGTH);
         assert_eq!(SettlementPublicValuesV4::decode(&encoded).unwrap(), values);
-        assert!(matches!(
-            SettlementPublicValues::decode(&encoded).unwrap(),
-            SettlementPublicValues::V4(_)
-        ));
+        let decoded = SettlementPublicValues::decode(&encoded).unwrap();
+        assert!(matches!(&decoded, SettlementPublicValues::V4(_)));
+        assert_eq!(decoded.inner_action_batch(), Some(&values.settlement));
     }
 
     #[test]

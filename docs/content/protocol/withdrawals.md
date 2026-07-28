@@ -1,4 +1,4 @@
-# Native withdrawals
+# Native and ERC-20 withdrawals
 
 The current withdrawal path is settlement-bound and does not ask the user to
 produce a Mina proof or an SP1 proof. The sequencer proves the L2 transition
@@ -41,9 +41,22 @@ Leaves are placed in their original order in a depth-16 tree using the
 index, and count. SP1 replays every Mina action and refuses to emit the root
 unless the sequence reaches the Pickles-bound inner action state and length.
 
-`ZekoSettlement` records this root only while accepting the matching V2
-settlement. The bridge reads it directly from the settlement contract; no
-administrator can submit a separate withdrawal root.
+`ZekoSettlement` records this root only while accepting the matching V2, V3,
+or V4 settlement. The bridge reads it directly from the settlement contract;
+no administrator can submit a separate withdrawal root.
+
+## Registry ERC-20 withdrawals
+
+The legacy one-token encoding V1 uses the
+`ZEKO_ERC20_WITHDRAWAL_LEAF_V3` domain and binds the token and asset ID. The
+universal registry encoding V2 uses `ZEKO_ERC20_WITHDRAWAL_LEAF_V4` and also
+binds `encoding_version = 2`, the registry index, and the canonical Mina
+Poseidon record commitment.
+
+`GET /v1/bridge/token-withdrawals/:sequence/:offset` returns that immutable
+identity as `encodingVersion`, `registryIndex`, and `recordCommitment` together
+with the fixed-depth proof. Its claimable `nextAction` is
+`claimERC20Withdrawal`.
 
 ## Gateway discovery
 

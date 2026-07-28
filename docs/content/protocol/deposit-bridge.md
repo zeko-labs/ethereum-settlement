@@ -44,11 +44,49 @@ matching nine-or-fewer decimals on both chains, exact transfer custody, a
 positive UInt64 amount, and remaining registered capacity. Its timeout is fixed
 to `UInt32.max`.
 
-The bridge guest verifies the V2 asset-bound deposit leaf and emits the same
-five-field outer Witness shape as native deposits. Its auxiliary value is:
+The one-token compatibility path is action encoding V1. It keeps the
+`ZEKO_ERC20_DEPOSIT_LEAF_V2` Keccak leaf and this auxiliary value:
 
 ```text
 Poseidon("Ethereum ERC20 deposit V1", [
+  asset_id_high,
+  asset_id_low,
+  empty_call_forest,
+  bridge_address_as_field,
+  false,
+  amount,
+  recipient_x,
+  recipient_is_odd,
+  UInt32.max
+])
+```
+
+The universal registry path is action encoding V2. Its
+`ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak preimage is:
+
+```text
+[
+  chain_id,
+  bridge_address,
+  token,
+  encoding_version = 2,
+  registry_index,
+  record_commitment,
+  asset_id,
+  zeko_recipient,
+  amount,
+  UInt32.max,
+  nonce
+]
+```
+
+The guest uses the same immutable identity in the Mina action:
+
+```text
+Poseidon("Ethereum ERC20 deposit V2", [
+  encoding_version = 2,
+  registry_index,
+  record_commitment,
   asset_id_high,
   asset_id_low,
   empty_call_forest,
@@ -147,7 +185,23 @@ processed-deposit cursor.
 ## User-facing status
 
 `GET /v1/bridge/deposits/:nonce` reports Ethereum finality, bridge proof job,
-exact outer action, synchronized settlement, and the next action:
+exact outer action, synchronized settlement, and the next action. Every
+response also carries the immutable action identity:
+
+```json
+{
+  "assetId": "0x...",
+  "encodingVersion": 2,
+  "registryIndex": 7,
+  "recordCommitment": "0x..."
+}
+```
+
+Native deposits use encoding version `0`; legacy ERC-20 V1 deposits use
+encoding version `1`. Both return `null` for `registryIndex` and
+`recordCommitment`. Registry V2 deposits return the values emitted with that
+specific deposit, rather than values inferred from the registry's current
+state.
 
 ```text
 waitForEthereumFinality

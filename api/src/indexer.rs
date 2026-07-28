@@ -475,27 +475,10 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
-        let (asset_id, action_encoding_version, registry_index, record_commitment) =
-            if deposit.token.is_zero() {
-                (None, 0i32, None, None)
-            } else {
-                let (asset_id, registry_index, record_commitment) =
-                    ethereum.erc20_asset_identity(deposit.token).await?;
-                anyhow::ensure!(
-                    !asset_id.is_zero(),
-                    "ERC20 deposit references an unregistered bridge asset"
-                );
-                if record_commitment.is_zero() {
-                    (Some(asset_id.to_string()), 1, None, None)
-                } else {
-                    (
-                        Some(asset_id.to_string()),
-                        2,
-                        Some(i64::from(registry_index)),
-                        Some(record_commitment.to_string()),
-                    )
-                }
-            };
+        let asset_id = deposit.asset_id.map(|value| value.to_string());
+        let action_encoding_version = i32::try_from(deposit.action_encoding_version)?;
+        let registry_index = deposit.registry_index.map(i64::from);
+        let record_commitment = deposit.record_commitment.map(|value| value.to_string());
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
@@ -1175,17 +1158,18 @@ pub(crate) async fn apply_confirmed_settlement(
         .execute(&mut *tx)
         .await?;
     if input.pointer("/proof/innerActionBatch").is_some() {
-        if let SettlementPublicValues::V2(v2) = &decoded {
-            store_inner_action_leaves(
-                &mut tx,
-                input,
-                v2,
-                block_number,
-                block_hash,
-                transaction_hash,
-            )
-            .await?;
-        }
+        let inner_action_batch = decoded
+            .inner_action_batch()
+            .context("settlement receipt does not bind an inner-action batch")?;
+        store_inner_action_leaves(
+            &mut tx,
+            input,
+            inner_action_batch,
+            block_number,
+            block_hash,
+            transaction_hash,
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok(())

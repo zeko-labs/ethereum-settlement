@@ -119,6 +119,8 @@ struct TokenWithdrawalProof {
     global_action_index: u32,
     token: String,
     asset_id: String,
+    #[serde(flatten)]
+    action_identity: ActionIdentity,
     recipient: String,
     amount: String,
     action_fields_hash: String,
@@ -132,12 +134,22 @@ struct TokenWithdrawalProof {
     next_action: String,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ActionIdentity {
+    encoding_version: u32,
+    registry_index: Option<u32>,
+    record_commitment: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeDepositStatus {
     nonce: u64,
     token: String,
     asset_id: Option<String>,
+    #[serde(flatten)]
+    action_identity: ActionIdentity,
     sender: String,
     zeko_recipient: String,
     ethereum_amount: String,
@@ -988,6 +1000,8 @@ async fn get_token_withdrawal_proof(
 async fn get_native_deposit(State(state): State<AppState>, Path(nonce): Path<u64>) -> Response {
     let row = sqlx::query(
         "SELECT deposits.nonce, deposits.token, deposits.asset_id,
+                deposits.action_encoding_version, deposits.registry_index,
+                deposits.record_commitment,
                 deposits.sender,
                 deposits.zeko_recipient,
                 deposits.ethereum_amount::text AS ethereum_amount,
@@ -1048,6 +1062,8 @@ async fn list_native_deposits(
     let limit = query.limit.unwrap_or(20).clamp(1, 100);
     let rows = sqlx::query(
         "SELECT deposits.nonce, deposits.token, deposits.asset_id,
+                deposits.action_encoding_version, deposits.registry_index,
+                deposits.record_commitment,
                 deposits.sender,
                 deposits.zeko_recipient,
                 deposits.ethereum_amount::text AS ethereum_amount,
@@ -1113,6 +1129,11 @@ fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositSt
         nonce: u64::try_from(row.try_get::<i64, _>("nonce")?)?,
         token: row.try_get("token")?,
         asset_id: row.try_get("asset_id")?,
+        action_identity: decode_action_identity(
+            row.try_get("action_encoding_version")?,
+            row.try_get("registry_index")?,
+            row.try_get("record_commitment")?,
+        )?,
         sender: row.try_get("sender")?,
         zeko_recipient: row.try_get("zeko_recipient")?,
         ethereum_amount: row.try_get("ethereum_amount")?,
@@ -1127,6 +1148,42 @@ fn native_deposit_from_row(row: sqlx::postgres::PgRow) -> Result<NativeDepositSt
         synchronized_settlement_sequence,
         status: status.to_owned(),
         next_action: next_action.to_owned(),
+    })
+}
+
+fn decode_action_identity(
+    encoding_version: i32,
+    registry_index: Option<i64>,
+    record_commitment: Option<String>,
+) -> Result<ActionIdentity> {
+    let encoding_version = u32::try_from(encoding_version)?;
+    let (registry_index, record_commitment) = match encoding_version {
+        0 | 1 => {
+            anyhow::ensure!(
+                registry_index.is_none() && record_commitment.is_none(),
+                "legacy action has registry identity"
+            );
+            (None, None)
+        }
+        2 => {
+            let registry_index =
+                u32::try_from(registry_index.context("registry action is missing its index")?)?;
+            let record_commitment = record_commitment
+                .context("registry action is missing its record commitment")?
+                .parse::<B256>()
+                .context("registry action record commitment is invalid")?;
+            anyhow::ensure!(
+                !record_commitment.is_zero(),
+                "registry action record commitment is zero"
+            );
+            (Some(registry_index), Some(record_commitment.to_string()))
+        }
+        version => anyhow::bail!("unsupported action encoding version {version}"),
+    };
+    Ok(ActionIdentity {
+        encoding_version,
+        registry_index,
+        record_commitment,
     })
 }
 
@@ -1367,11 +1424,12 @@ async fn load_native_withdrawal_proof_at(
         .next_withdrawal_index(recipient_address)
         .await?;
     let claimable_slot = u64::from(commit_slot_upper) + u64::from(delay);
-    let (status, next_action) = native_withdrawal_progress(
+    let (status, next_action) = withdrawal_progress(
         global_action_index,
         recipient_cursor,
         current_slot,
         claimable_slot,
+        "claimNativeWithdrawal",
     );
 
     Ok(NativeWithdrawalProof {
@@ -1401,7 +1459,8 @@ async fn load_token_withdrawal_proof(
     let delay = state.ethereum.withdrawal_delay_slots().await?;
     let rows = sqlx::query(
         "SELECT action_offset, global_action_index, action_fields_hash, leaf,
-                token, asset_id, recipient, zeko_amount::text AS zeko_amount,
+                token, asset_id, action_encoding_version, registry_index,
+                record_commitment, recipient, zeko_amount::text AS zeko_amount,
                 inner_action_root, commit_slot_upper
          FROM gateway_inner_action_leaves
          WHERE settlement_sequence = $1 AND NOT removed
@@ -1424,6 +1483,17 @@ async fn load_token_withdrawal_proof(
     let asset_id: String = target
         .try_get::<Option<String>, _>("asset_id")?
         .context("ERC20 withdrawal asset id missing")?;
+    let action_identity = decode_action_identity(
+        target
+            .try_get::<Option<i32>, _>("action_encoding_version")?
+            .context("ERC20 withdrawal action encoding version missing")?,
+        target.try_get("registry_index")?,
+        target.try_get("record_commitment")?,
+    )?;
+    anyhow::ensure!(
+        action_identity.encoding_version != 0,
+        "ERC20 withdrawal uses the native action encoding"
+    );
     let recipient: String = target
         .try_get::<Option<String>, _>("recipient")?
         .context("ERC20 withdrawal recipient missing")?;
@@ -1460,11 +1530,12 @@ async fn load_token_withdrawal_proof(
         .next_token_withdrawal_index(token_address, recipient_address)
         .await?;
     let claimable_slot = u64::from(commit_slot_upper) + u64::from(delay);
-    let (status, next_action) = native_withdrawal_progress(
+    let (status, next_action) = withdrawal_progress(
         global_action_index,
         recipient_cursor,
         current_slot,
         claimable_slot,
+        "claimERC20Withdrawal",
     );
 
     Ok(TokenWithdrawalProof {
@@ -1473,6 +1544,7 @@ async fn load_token_withdrawal_proof(
         global_action_index,
         token,
         asset_id,
+        action_identity,
         recipient,
         amount,
         action_fields_hash: target.try_get("action_fields_hash")?,
@@ -1487,18 +1559,19 @@ async fn load_token_withdrawal_proof(
     })
 }
 
-fn native_withdrawal_progress(
+fn withdrawal_progress(
     global_action_index: u32,
     recipient_cursor: u32,
     current_slot: u64,
     claimable_slot: u64,
+    claim_action: &'static str,
 ) -> (&'static str, &'static str) {
     if global_action_index < recipient_cursor {
         ("processed", "none")
     } else if current_slot < claimable_slot {
         ("waitingForDelay", "waitForWithdrawalDelay")
     } else {
-        ("claimable", "claimNativeWithdrawal")
+        ("claimable", claim_action)
     }
 }
 
@@ -2782,18 +2855,50 @@ mod tests {
     }
 
     #[test]
+    fn action_identity_serializes_legacy_and_registry_response_fields() {
+        let legacy = decode_action_identity(1, None, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap(),
+            serde_json::json!({
+                "encodingVersion": 1,
+                "registryIndex": null,
+                "recordCommitment": null
+            })
+        );
+
+        let record_commitment = format!("0x{}", "11".repeat(32));
+        let registry =
+            decode_action_identity(2, Some(7), Some(record_commitment.clone())).unwrap();
+        assert_eq!(
+            serde_json::to_value(registry).unwrap(),
+            serde_json::json!({
+                "encodingVersion": 2,
+                "registryIndex": 7,
+                "recordCommitment": record_commitment
+            })
+        );
+
+        assert!(decode_action_identity(1, Some(7), None).is_err());
+        assert!(decode_action_identity(2, None, None).is_err());
+    }
+
+    #[test]
     fn withdrawal_progress_observes_recipient_cursor_before_delay() {
         assert_eq!(
-            native_withdrawal_progress(9, 10, 100, 90),
+            withdrawal_progress(9, 10, 100, 90, "claimNativeWithdrawal"),
             ("processed", "none")
         );
         assert_eq!(
-            native_withdrawal_progress(10, 10, 89, 90),
+            withdrawal_progress(10, 10, 89, 90, "claimNativeWithdrawal"),
             ("waitingForDelay", "waitForWithdrawalDelay")
         );
         assert_eq!(
-            native_withdrawal_progress(10, 10, 90, 90),
+            withdrawal_progress(10, 10, 90, 90, "claimNativeWithdrawal"),
             ("claimable", "claimNativeWithdrawal")
+        );
+        assert_eq!(
+            withdrawal_progress(10, 10, 90, 90, "claimERC20Withdrawal"),
+            ("claimable", "claimERC20Withdrawal")
         );
     }
 }

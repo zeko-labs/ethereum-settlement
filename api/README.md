@@ -14,16 +14,20 @@ waits for configurable finality.
   header.
 - `POST /v1/settlements` and `POST /v1/proofs/settlement`
 - `POST /v1/proofs/bridge`
-- `POST /v1/bridge/deposits/prove` — builds a native-deposit proof job from
-  the next contiguous finalized `BridgeDeposit` logs; callers cannot supply
-  deposit contents
+- `POST /v1/bridge/deposits/prove` — builds a deposit proof job from the next
+  contiguous finalized `BridgeDeposit` logs; callers cannot supply deposit
+  contents
 - `POST /v1/proofs/withdraw`
-- `GET /v1/bridge/deposits/:nonce` — reports Ethereum finality, the exact
-  bridge-proved outer action, synchronization, and the next user action
+- `GET /v1/bridge/deposits/:nonce` — reports immutable action encoding and
+  registry identity, Ethereum finality, the exact bridge-proved outer action,
+  synchronization, and the next user action
 - `GET /v1/bridge/withdrawals?recipient=0x...&after=<index>` — discovers
   settlement-bound native withdrawals and returns their ordinary Merkle paths
 - `GET /v1/bridge/withdrawals/:sequence/:offset` — returns the ordinary
   Keccak Merkle proof, delay/cursor status, and claim data for one withdrawal
+- `GET /v1/bridge/token-withdrawals/:sequence/:offset` — returns the
+  registry-bound ERC-20 claim identity, proof, delay/cursor status, and claim
+  data
 - `GET /v1/proofs` and `GET /v1/proofs/:id`
 - `GET /v1/proofs/:id/quote` — reads current auction parameters without
   creating a proof request
@@ -146,15 +150,16 @@ confirmed bridge receipts. The indexer decodes every exact five-field outer
 Witness action from the SP1 receipt, checks each intermediate Poseidon action
 state, and exposes those same fields through Mina-compatible `actions` reads.
 
-For the native bridge PoC, the gateway also indexes canonical bridge deposits
-and settlement V2 inner-action batches. Deposit proof jobs are constructed only
-from contiguous finalized logs beginning at the bridge contract's proven
-nonce. A confirmed bridge receipt binds each deposit nonce to its exact outer
-action sequence; a later settlement marks only the covered synchronized
-sequences. Settlement confirmation also stores the ordered inner-action leaves.
-The public withdrawal endpoints return depth-16 Keccak proofs and read the live
-virtual slot plus per-recipient cursor, so a user can discover and claim on
-Ethereum without generating a Mina or SP1 proof.
+The gateway indexes canonical native and ERC-20 bridge deposits and settlement
+V2/V3/V4 inner-action batches. Deposit proof jobs are constructed only from
+contiguous finalized logs beginning at the bridge contract's proven nonce. A
+confirmed bridge receipt binds each deposit nonce to its exact outer action
+sequence; a later settlement marks only the covered synchronized sequences.
+Settlement confirmation also stores the ordered inner-action leaves and
+immutable registry identity. The public withdrawal endpoints return depth-16
+Keccak proofs and read the live virtual slot plus per-recipient cursor, so a
+user can discover and claim on Ethereum without generating a Mina or SP1
+proof.
 
 The worker records `cycleCount` when a local zkVM execution occurred,
 `proverGas`, the network base/max prices, actual PROVE deduction after refund,

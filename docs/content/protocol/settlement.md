@@ -15,8 +15,10 @@ DA, obtains the Pickles proof from the OCaml prover, and exports:
 - the single eight-field outer `Commit` action
 - all eight source outer-state fields
 - the Mina tracking transaction hash and virtual account metadata
-- for V2, the exact ordered inner actions and available native-withdrawal
-  preimages
+- for V2 through V4, the exact ordered inner actions and available native or
+  ERC-20 withdrawal preimages
+- for V3/V4, the proof-bound registry checkpoint and exact record identity or
+  ordered record batch
 
 The gateway adds only live Ethereum context: chain ID, settlement address, next
 batch sequence, Mina tracking hash, and current outer action-state length. It
@@ -35,8 +37,10 @@ The settlement guest is built against the exact exported verifier index. It:
 6. recomputes the action hash and decodes the proof-bound outer commit
 7. derives the next eight-field outer state, action states and lengths, synchronized
    checkpoint, and slot range
-8. for V2, replays the exact inner actions to the proof-bound state and creates
-   the Keccak claim tree
+8. for V2 through V4, replays the exact inner actions to the proof-bound state
+   and creates the Keccak claim tree
+9. for V3/V4, verifies the registry transition and derives its checkpoint and
+   record attestation
 
 Mutating the application statement, deferred values, bulletproof challenges,
 accumulator point, feature flags, previous evaluations, body, or actions causes
@@ -50,6 +54,8 @@ The byte layouts are fixed and use big-endian integers.
 | --- | ---: | --- |
 | V1 (`ZKST`, version 1) | 768 bytes | Multisig DA mode, Ethereum domain, batch/VK/statement identifiers, state before/after, outer and synchronized action checkpoints, and slot bounds. |
 | V2 (`ZKST`, version 2) | 828 bytes | The V1 fields plus bridge address, depth-16 inner-action root, global start index, and action count. |
+| V3 (`ZKST`, version 3) | 932 bytes | The V2 fields plus registry root, count, schema version, record hash, and canonical Mina record commitment. |
+| V4 (`ZKST`, version 4) | 904 bytes | The V2 fields plus registry root, count, schema version, ordered record-batch root, and record count. |
 
 The eight outer-state fields are the OCaml `Rollup_state.Outer_state` layout:
 
@@ -85,10 +91,13 @@ configured program vkey. It then requires:
 On success it stores the complete next outer state, records the new outer and
 inner checkpoints, and emits `SettlementAccepted`.
 
-For V2 it additionally checks the configured bridge address and that the inner
-action count equals the proof-bound length delta. The root is stored under the
-accepted settlement sequence and cannot be installed independently from that
-settlement.
+For V2 through V4 it additionally checks the configured bridge address and that
+the inner action count equals the proof-bound length delta. The root is stored
+under the accepted settlement sequence and cannot be installed independently
+from that settlement. V3 records one exact registry record hash and canonical
+Mina Poseidon commitment. V4 records a depth-8 Keccak batch root over ordered
+`(recordHash, recordCommitment)` leaves so pending Solidity proposals can be
+activated only with the settled pair.
 
 ## 5. Gateway lifecycle
 

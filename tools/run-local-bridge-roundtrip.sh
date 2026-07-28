@@ -487,11 +487,14 @@ if [[ $BRIDGE_ASSET == erc20 ]]; then
 
   for index in 0 1; do
     address_var=ERC20_TOKEN_${index}_ADDRESS
+    record_commitment=$(jq -er --argjson index "$index" \
+      '.[ $index ].recordCommitment' "$ASSET_BATCH_OUTPUT")
+    [[ $record_commitment =~ ^0x[0-9a-fA-F]{64}$ ]]
     proof=$(jq -r --argjson index "$index" \
       '.[ $index ].proof | "[" + join(",") + "]"' "$ASSET_BATCH_OUTPUT")
     "$CAST" send "$BRIDGE_CONTRACT_ADDRESS" \
-      'activateAssetFromBatch(address,uint64,bytes32[8])' \
-      "${!address_var}" "$registration_sequence" "$proof" \
+      'activateAssetFromBatch(address,uint64,bytes32,bytes32[8])' \
+      "${!address_var}" "$registration_sequence" "$record_commitment" "$proof" \
       --private-key "$PRIVATE_KEY" --rpc-url "$RPC_URL" >/dev/null
     [[ $("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
       'assetStatusByToken(address)(uint8)' "${!address_var}" \
@@ -548,6 +551,16 @@ for index in "${!deposit_nonces[@]}"; do
       "${!asset_var}" ]]
     [[ $(jq -r '.token | ascii_downcase' <<<"$deposit") == \
       "${!address_var}" ]]
+    expected_registry_index=$(jq -er --argjson index "$index" \
+      '.ethereumAssets[$index].record.registryIndex' \
+      "$FIXTURE_ROOT/bridge-scenario.json")
+    expected_record_commitment=$(jq -er --argjson index "$index" \
+      '.[ $index ].recordCommitment | ascii_downcase' "$ASSET_BATCH_OUTPUT")
+    [[ $(jq -r '.encodingVersion' <<<"$deposit") == 2 ]]
+    [[ $(jq -r '.registryIndex' <<<"$deposit") == \
+      "$expected_registry_index" ]]
+    [[ $(jq -r '.recordCommitment | ascii_downcase' <<<"$deposit") == \
+      "$expected_record_commitment" ]]
     custody=$("$CAST" call "${!address_var}" \
       'balanceOf(address)(uint256)' "$BRIDGE_CONTRACT_ADDRESS" \
       --rpc-url "$RPC_URL" | awk '{print $1}')
@@ -617,6 +630,16 @@ else
       "${!address_var}" ]]
     [[ $(jq -r '.assetId | ascii_downcase' <<<"$withdrawal") == \
       "${!asset_var}" ]]
+    expected_registry_index=$(jq -er --argjson index "$index" \
+      '.ethereumAssets[$index].record.registryIndex' \
+      "$FIXTURE_ROOT/bridge-scenario.json")
+    expected_record_commitment=$(jq -er --argjson index "$index" \
+      '.[ $index ].recordCommitment | ascii_downcase' "$ASSET_BATCH_OUTPUT")
+    [[ $(jq -r '.encodingVersion' <<<"$withdrawal") == 2 ]]
+    [[ $(jq -r '.registryIndex' <<<"$withdrawal") == \
+      "$expected_registry_index" ]]
+    [[ $(jq -r '.recordCommitment | ascii_downcase' <<<"$withdrawal") == \
+      "$expected_record_commitment" ]]
     withdrawals+=("$(jq -c '.' <<<"$withdrawal")")
   done
 fi
@@ -650,6 +673,11 @@ for index in "${!withdrawals[@]}"; do
       | jq -e '.')
   fi
   [[ $(jq -r '.status' <<<"$withdrawal") == claimable ]]
+  if [[ $BRIDGE_ASSET == native ]]; then
+    [[ $(jq -r '.nextAction' <<<"$withdrawal") == claimNativeWithdrawal ]]
+  else
+    [[ $(jq -r '.nextAction' <<<"$withdrawal") == claimERC20Withdrawal ]]
+  fi
   amount=$(jq -r '.amount' <<<"$withdrawal")
   withdrawal_amounts+=("$amount")
 
