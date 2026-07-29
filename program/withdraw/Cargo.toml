@@ -4,17 +4,17 @@ name = "withdraw-program"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm         = "6.1.0"
+sp1-zkvm         = { workspace = true }
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 ark-ff           = { workspace = true }
 ark-serialize    = { workspace = true }
-mina-curves      = { workspace = true }
+mina-curves      = { workspace = true, features = ["sp1"] }
 mina-poseidon    = { workspace = true, features =[] }
 serde            = { workspace = true }
 zeko_sp1_lib     = { path = "../../lib" }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
-sp1-lib  = "6.1.0"
+sp1-lib  = { workspace = true }
 bytemuck = "1"
 
 [dev-dependencies]

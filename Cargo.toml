@@ -35,18 +35,32 @@ opt-level      = 3
 
 [workspace.dependencies]
 # ark
-ark-ec          = { version = "0.5.0", features = ["std"] }
-ark-ff          = { version = "0.5.0", features = ["std"] }
-ark-serialize   = { version = "0.5.0", features = ["std"] }
-ark-poly        = { version = "0.5.0", features = ["std"] }
+ark-ec          = { version = "0.5.0", default-features = false }
+ark-ff          = { version = "0.5.0", default-features = false }
+ark-serialize   = { version = "0.5.0", default-features = false }
+ark-poly        = { version = "0.5.0", default-features = false }
 
-# proof-systems — local SP1 PoC patches
-kimchi          = { path = "vendor/proof-systems/kimchi" }
-mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-o1-utils        = { path = "vendor/proof-systems/utils" }
-poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
-groupmap        = { path = "vendor/proof-systems/groupmap" }
+# proof-systems — upstream o1-labs, branch `sp1-on-master` (NOT merged into
+# master: the SP1 work is maintained on top of it). The `sys_bigint` precompile
+# lives in mina-curves' `sp1` feature there, so no arkworks fork is needed.
+# The exact commit is pinned in Cargo.lock (versioned), so builds stay
+# reproducible; `cargo update` is what moves us to the branch's head.
+kimchi          = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+mina-curves     = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+mina-poseidon   = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+o1-utils        = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+poly-commitment = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+groupmap        = { git = "https://github.com/o1-labs/proof-systems", branch = "sp1-on-master", default-features = false }
+
+# SP1 — one source of truth. Must match what proof-systems@sp1-on-master pins:
+# crates.io and git are distinct crates to cargo even at the same version, and
+# two sp1-zkvm copies each register a `#[global_allocator]`.
+sp1-zkvm                 = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
+sp1-lib                  = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
+sp1-sdk                  = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
+sp1-build                = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
+sp1-core-executor        = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
+sp1-core-executor-runner = { git = "https://github.com/succinctlabs/sp1", tag = "v6.2.2" }
 
 # misc
 alloy-sol-types = "1.0"
@@ -57,29 +71,5 @@ hex             = "0.4.3"
 serde           = { version = "1", features = ["derive", "rc"] }
 serde_json      = "1.0.107"
 
-[patch."https://github.com/o1-labs/proof-systems"]
-kimchi          = { path = "vendor/proof-systems/kimchi" }
-mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-o1-utils        = { path = "vendor/proof-systems/utils" }
-poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
-
-[patch."https://github.com/zeko-labs/proof-systems"]
-kimchi          = { path = "vendor/proof-systems/kimchi" }
-mina-curves     = { path = "vendor/proof-systems/curves" }
-mina-poseidon   = { path = "vendor/proof-systems/poseidon" }
-o1-utils        = { path = "vendor/proof-systems/utils" }
-poly-commitment = { path = "vendor/proof-systems/poly-commitment" }
-
-[patch."https://github.com/zeko-labs/algebra"]
-ark-ff        = { path = "vendor/algebra/ff" }
-ark-ec        = { path = "vendor/algebra/ec" }
-ark-serialize = { path = "vendor/algebra/serialize" }
-ark-poly      = { path = "vendor/algebra/poly" }
-
 [patch.crates-io]
 crypto-bigint = { git = "https://github.com/sp1-patches/RustCrypto-bigint", tag = "patch-0.5.5-sp1-6.0.0" }
-ark-ff        = { path = "vendor/algebra/ff" }
-ark-ec        = { path = "vendor/algebra/ec" }
-ark-serialize = { path = "vendor/algebra/serialize" }
-ark-poly      = { path = "vendor/algebra/poly" }

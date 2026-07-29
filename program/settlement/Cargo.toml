@@ -4,7 +4,8 @@ name = "settlement-program"
 edition = "2021"
 
 [dependencies]
-sp1-zkvm = "6.1.0"
+mina-curves = { workspace = true, features = ["sp1"] }
+sp1-zkvm = { workspace = true }
 pickles-verifier = { path = "../../crates/pickles-verifier", default-features = false }
 zeko_sp1_lib = { path = "../../lib" }
 ark-ff = { workspace = true }
@@ -12,7 +13,7 @@ mina-poseidon = { workspace = true }
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 
 [target.'cfg(target_os = "zkvm")'.dependencies]
-sp1-lib = "6.1.0"
+sp1-lib = { workspace = true }
 
 [build-dependencies]
 mina-curves = { workspace = true }

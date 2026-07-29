@@ -9,10 +9,14 @@ default = ["std"]
 # host-side conversion (serde_json, hex, blake2s dummy-challenge derivation).
 # The core verifier types + `verify` are `no_std` + `alloc` (SP1-guest-ready);
 # the guest builds with `--no-default-features`.
+# `parallel` is deliberately tied to `std`: the guest builds `no_std`, so it can
+# never pull rayon by accident. Host builds keep the parallel MSM.
 std = [
   "dep:serde_json",
   "dep:hex",
   "ark-ff/std",
+  "kimchi/parallel",
+  "poly-commitment/parallel",
 ]
 
 [dependencies]

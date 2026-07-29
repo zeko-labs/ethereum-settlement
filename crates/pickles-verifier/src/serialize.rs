@@ -185,13 +185,34 @@ fn read_bytes_section(bytes: &[u8]) -> (&[u8], &[u8]) {
 // ---------------------------------------------------------------------------
 
 /// Seed the wrap SRS's Lagrange-basis cache at `domain_size`. Interior
-/// mutability via the public `SRS::lagrange_bases` field, so this works
-/// through a shared `&WrapSrs` (i.e. through an `Arc<WrapSrs>` deref).
+/// mutability via the public `SRS::lagrange_bases()` accessor, so this works
+/// through a shared `&WrapSrs` (i.e. through an `Arc<WrapSrs>` deref). The
+/// *field* is private upstream; the accessor is not.
 ///
-/// This proof-systems branch exposes `HashMapCache::get_or_generate`; use it to
-/// install the precomputed basis when absent.
+/// Upstream: this whole blob format, and the reason for baking the Lagrange
+/// basis at all, come from Martin Allen (o1-labs), commit `a1f19aa`
+/// "Pickles fixtures (#10)", 2026-05-26:
+/// <https://github.com/o1-labs/o1js-to-zkvm/commit/a1f19aa>
+///
+/// That commit already used the accessor form; the field-access variant this
+/// file previously carried predates poly-commitment making the field private.
+/// Keep this in sync with upstream rather than re-deriving it.
+///
+/// std and no_std take different cache shapes: in std, poly-commitment's
+/// `HashMapCache` with `set_once(K, V)`; in no_std, a plain
+/// `Rc<RefCell<HashMap<K, Rc<V>>>>`. We always insert -- fine, because the
+/// basis is deterministic in the SRS and the domain.
 fn seed_wrap_lagrange_basis(srs: &WrapSrs, domain_size: usize, basis: Vec<PolyComm<Pallas>>) {
-    let _ = srs.lagrange_bases.get_or_generate(domain_size, || basis);
+    #[cfg(feature = "std")]
+    {
+        srs.lagrange_bases().set_once(domain_size, basis);
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        srs.lagrange_bases()
+            .borrow_mut()
+            .insert(domain_size, alloc::rc::Rc::new(basis));
+    }
 }
 
 // ---------------------------------------------------------------------------
