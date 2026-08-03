@@ -1,4 +1,3 @@
-use alloy::primitives::keccak256;
 use anyhow::{Context, Result};
 use sqlx::{PgPool, Row};
 use std::time::Duration;
@@ -6,9 +5,14 @@ use tokio::time::sleep;
 
 use crate::ethereum::{BlockRef, Ethereum};
 use serde_json::{json, Value};
+use zeko_sp1_lib::inner_action_commitment::{
+    action_fields_hash as hash_action_fields, erc20_withdrawal_leaf as hash_erc20_withdrawal_leaf,
+    native_withdrawal_leaf as hash_native_withdrawal_leaf,
+    raw_inner_action_leaf as hash_raw_inner_action_leaf, root as inner_action_root,
+};
 use zeko_sp1_lib::{
-    Address, BridgeTransitionPublicValuesV2, Bytes32, InnerActionBatchWitnessV2,
-    SettlementPublicValues, SettlementPublicValuesV1, SettlementPublicValuesV2,
+    BridgeTransitionPublicValuesV2, Bytes32, InnerActionBatchWitnessV2, SettlementPublicValues,
+    SettlementPublicValuesV1, SettlementPublicValuesV2,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -475,31 +479,29 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
-        let asset_id = if deposit.token.is_zero() {
-            None
-        } else {
-            let asset_id = ethereum.erc20_asset_id(deposit.token).await?;
-            anyhow::ensure!(
-                !asset_id.is_zero(),
-                "ERC20 deposit references an unregistered bridge asset"
-            );
-            Some(asset_id.to_string())
-        };
+        let asset_id = deposit.asset_id.map(|value| value.to_string());
+        let action_encoding_version = i32::try_from(deposit.action_encoding_version)?;
+        let registry_index = deposit.registry_index.map(i64::from);
+        let record_commitment = deposit.record_commitment.map(|value| value.to_string());
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
-                 token, asset_id, sender, zeko_recipient, ethereum_amount,
+                 token, asset_id, action_encoding_version, registry_index,
+                 record_commitment, sender, zeko_recipient, ethereum_amount,
                  zeko_amount, timeout, ethereum_block_number,
                  ethereum_block_hash, ethereum_tx_hash, ethereum_log_index,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::numeric,
-                     $10::numeric, $11, $12, $13, $14, $15, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::numeric,
+                     $13::numeric, $14, $15, $16, $17, $18, FALSE)
              ON CONFLICT (nonce) DO UPDATE SET
                  deposit_leaf = EXCLUDED.deposit_leaf,
                  old_deposit_state = EXCLUDED.old_deposit_state,
                  new_deposit_state = EXCLUDED.new_deposit_state,
                  token = EXCLUDED.token,
                  asset_id = EXCLUDED.asset_id,
+                 action_encoding_version = EXCLUDED.action_encoding_version,
+                 registry_index = EXCLUDED.registry_index,
+                 record_commitment = EXCLUDED.record_commitment,
                  sender = EXCLUDED.sender,
                  zeko_recipient = EXCLUDED.zeko_recipient,
                  ethereum_amount = EXCLUDED.ethereum_amount,
@@ -517,6 +519,9 @@ async fn index_bridge_deposits(
         .bind(deposit.new_deposit_state.to_string())
         .bind(deposit.token.to_string())
         .bind(asset_id)
+        .bind(action_encoding_version)
+        .bind(registry_index)
+        .bind(record_commitment)
         .bind(deposit.sender.to_string())
         .bind(deposit.zeko_recipient.to_string())
         .bind(deposit.amount.to_string())
@@ -847,6 +852,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                     block_number,
                     &block_hash,
                     &transaction_hash,
+                    config.fee_payer_public_key.as_deref(),
                 )
                 .await?;
             }
@@ -881,6 +887,12 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         tracing::info!(%kind, %transaction_hash, "recovered finalized gateway state from Ethereum");
     }
     Ok(())
+}
+
+fn u32_word(value: u32) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[28..].copy_from_slice(&value.to_be_bytes());
+    word
 }
 
 async fn recovered_settlement_input(
@@ -1020,6 +1032,7 @@ async fn reconcile_jobs(
                 receipt.block_number,
                 &receipt.block_hash.to_string(),
                 &transaction_hash,
+                config.fee_payer_public_key.as_deref(),
             )
             .await?;
         }
@@ -1155,17 +1168,18 @@ pub(crate) async fn apply_confirmed_settlement(
         .execute(&mut *tx)
         .await?;
     if input.pointer("/proof/innerActionBatch").is_some() {
-        if let SettlementPublicValues::V2(v2) = &decoded {
-            store_inner_action_leaves(
-                &mut tx,
-                input,
-                v2,
-                block_number,
-                block_hash,
-                transaction_hash,
-            )
-            .await?;
-        }
+        let inner_action_batch = decoded
+            .inner_action_batch()
+            .context("settlement receipt does not bind an inner-action batch")?;
+        store_inner_action_leaves(
+            &mut tx,
+            input,
+            inner_action_batch,
+            block_number,
+            block_hash,
+            transaction_hash,
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok(())
@@ -1178,6 +1192,7 @@ pub(crate) async fn apply_confirmed_bridge(
     block_number: u64,
     block_hash: &str,
     transaction_hash: &str,
+    fee_payer_public_key: Option<&str>,
 ) -> Result<()> {
     let bytes = hex::decode(
         public_values_hex
@@ -1264,6 +1279,18 @@ pub(crate) async fn apply_confirmed_bridge(
         block_hash,
     )
     .await?;
+    if let Some(fee_payer_public_key) = fee_payer_public_key {
+        advance_fee_payer(
+            &mut tx,
+            job_id,
+            fee_payer_public_key,
+            None,
+            u64::try_from(decoded.actions.len())?,
+            block_number,
+            block_hash,
+        )
+        .await?;
+    }
 
     let mut state_before = decoded.zeko_action_state_before;
     for (offset, action) in decoded.actions.iter().enumerate() {
@@ -1349,18 +1376,14 @@ async fn store_inner_action_leaves(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
-                withdrawal.recipient,
-                withdrawal.amount,
+                withdrawal,
                 action_fields_hash,
             ),
             (None, Some(withdrawal)) => hash_erc20_withdrawal_leaf(
                 receipt.settlement.chain_id,
                 batch.bridge_address,
                 global_index,
-                withdrawal.token,
-                withdrawal.asset_id,
-                withdrawal.recipient,
-                withdrawal.amount,
+                withdrawal,
                 action_fields_hash,
             ),
             (None, None) => hash_raw_inner_action_leaf(
@@ -1380,34 +1403,49 @@ async fn store_inner_action_leaves(
     );
 
     for (offset, global_index, action, action_fields_hash, leaf) in rows {
-        let (token, asset_id, recipient, amount) =
-            match (&action.withdrawal, &action.token_withdrawal) {
-                (Some(withdrawal), None) => (
-                    None,
-                    None,
-                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
-                    Some(withdrawal.amount.to_string()),
-                ),
-                (None, Some(withdrawal)) => (
-                    Some(format!("0x{}", hex::encode(withdrawal.token))),
-                    Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
-                    Some(format!("0x{}", hex::encode(withdrawal.recipient))),
-                    Some(withdrawal.amount.to_string()),
-                ),
-                (None, None) => (None, None, None, None),
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("inner action has multiple withdrawal preimages")
-                }
-            };
+        let (
+            token,
+            asset_id,
+            action_encoding_version,
+            registry_index,
+            record_commitment,
+            recipient,
+            amount,
+        ) = match (&action.withdrawal, &action.token_withdrawal) {
+            (Some(withdrawal), None) => (
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                Some(withdrawal.amount.to_string()),
+            ),
+            (None, Some(withdrawal)) => (
+                Some(format!("0x{}", hex::encode(withdrawal.token))),
+                Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                Some(i32::try_from(withdrawal.encoding_version)?),
+                (withdrawal.encoding_version == 2).then_some(i64::from(withdrawal.registry_index)),
+                (withdrawal.encoding_version == 2)
+                    .then(|| format!("0x{}", hex::encode(withdrawal.record_commitment))),
+                Some(format!("0x{}", hex::encode(withdrawal.recipient))),
+                Some(withdrawal.amount.to_string()),
+            ),
+            (None, None) => (None, None, None, None, None, None, None),
+            (Some(_), Some(_)) => {
+                anyhow::bail!("inner action has multiple withdrawal preimages")
+            }
+        };
         sqlx::query(
             "INSERT INTO gateway_inner_action_leaves
                 (settlement_sequence, action_offset, global_action_index,
                  action_fields, action_fields_hash, leaf, token, asset_id,
+                 action_encoding_version, registry_index, record_commitment,
                  recipient, zeko_amount, inner_action_root, commit_slot_upper,
                  ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::numeric, $11,
-                     $12, $13, $14, $15, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13::numeric, $14, $15, $16, $17, $18, FALSE)
              ON CONFLICT (settlement_sequence, action_offset) DO UPDATE SET
                  global_action_index = EXCLUDED.global_action_index,
                  action_fields = EXCLUDED.action_fields,
@@ -1415,6 +1453,9 @@ async fn store_inner_action_leaves(
                  leaf = EXCLUDED.leaf,
                  token = EXCLUDED.token,
                  asset_id = EXCLUDED.asset_id,
+                 action_encoding_version = EXCLUDED.action_encoding_version,
+                 registry_index = EXCLUDED.registry_index,
+                 record_commitment = EXCLUDED.record_commitment,
                  recipient = EXCLUDED.recipient,
                  zeko_amount = EXCLUDED.zeko_amount,
                  inner_action_root = EXCLUDED.inner_action_root,
@@ -1432,6 +1473,9 @@ async fn store_inner_action_leaves(
         .bind(format!("0x{}", hex::encode(leaf)))
         .bind(token)
         .bind(asset_id)
+        .bind(action_encoding_version)
+        .bind(registry_index)
+        .bind(record_commitment)
         .bind(recipient)
         .bind(amount)
         .bind(format!("0x{}", hex::encode(receipt.inner_action_root)))
@@ -1443,124 +1487,6 @@ async fn store_inner_action_leaves(
         .await?;
     }
     Ok(())
-}
-
-pub(crate) fn hash_action_fields(fields: &[Bytes32]) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
-    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_FIELDS_V2").0);
-    encoded.extend_from_slice(&u32_word(fields.len() as u32));
-    for field in fields {
-        encoded.extend_from_slice(field);
-    }
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_native_withdrawal_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    recipient: Address,
-    amount: u64,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(224);
-    encoded.extend_from_slice(&keccak256("ZEKO_NATIVE_WITHDRAWAL_LEAF_V2").0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(recipient));
-    encoded.extend_from_slice(&u64_word(amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_erc20_withdrawal_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    token: Address,
-    asset_id: Bytes32,
-    recipient: Address,
-    amount: u64,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(288);
-    encoded.extend_from_slice(&keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3").0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&address_word(token));
-    encoded.extend_from_slice(&asset_id);
-    encoded.extend_from_slice(&address_word(recipient));
-    encoded.extend_from_slice(&u64_word(amount));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn hash_raw_inner_action_leaf(
-    chain_id: u64,
-    bridge: Address,
-    global_index: u32,
-    action_fields_hash: Bytes32,
-) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(160);
-    encoded.extend_from_slice(&keccak256("ZEKO_RAW_INNER_ACTION_LEAF_V2").0);
-    encoded.extend_from_slice(&u64_word(chain_id));
-    encoded.extend_from_slice(&address_word(bridge));
-    encoded.extend_from_slice(&u32_word(global_index));
-    encoded.extend_from_slice(&action_fields_hash);
-    keccak256(encoded).0
-}
-
-pub(crate) fn inner_action_root(leaves: &[Bytes32]) -> Bytes32 {
-    let zero_hashes = inner_action_zero_hashes();
-    if leaves.is_empty() {
-        return zero_hashes[16];
-    }
-    let mut nodes = leaves.to_vec();
-    for level in 0..16 {
-        nodes = nodes
-            .chunks(2)
-            .map(|pair| {
-                hash_inner_action_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level]))
-            })
-            .collect();
-    }
-    nodes[0]
-}
-
-fn inner_action_zero_hashes() -> [Bytes32; 17] {
-    let mut hashes = [[0u8; 32]; 17];
-    for level in 0..16 {
-        hashes[level + 1] = hash_inner_action_node(hashes[level], hashes[level]);
-    }
-    hashes
-}
-
-fn hash_inner_action_node(left: Bytes32, right: Bytes32) -> Bytes32 {
-    let mut encoded = Vec::with_capacity(96);
-    encoded.extend_from_slice(&keccak256("ZEKO_INNER_ACTION_NODE_V2").0);
-    encoded.extend_from_slice(&left);
-    encoded.extend_from_slice(&right);
-    keccak256(encoded).0
-}
-
-fn u64_word(value: u64) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[24..].copy_from_slice(&value.to_be_bytes());
-    word
-}
-
-fn u32_word(value: u32) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[28..].copy_from_slice(&value.to_be_bytes());
-    word
-}
-
-fn address_word(value: Address) -> Bytes32 {
-    let mut word = [0u8; 32];
-    word[12..].copy_from_slice(&value);
-    word
 }
 
 async fn update_outer_account(
@@ -1667,6 +1593,27 @@ async fn update_fee_payer(
     block_number: u64,
     block_hash: &str,
 ) -> Result<()> {
+    advance_fee_payer(
+        tx,
+        job_id,
+        public_key,
+        Some(nonce),
+        1,
+        block_number,
+        block_hash,
+    )
+    .await
+}
+
+async fn advance_fee_payer(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    job_id: uuid::Uuid,
+    public_key: &str,
+    expected_nonce: Option<u64>,
+    increment: u64,
+    block_number: u64,
+    block_hash: &str,
+) -> Result<()> {
     let Some(mut account) = sqlx::query_scalar::<_, Value>(
         "SELECT account_json FROM gateway_accounts
          WHERE public_key = $1 AND token_id = '1' FOR UPDATE",
@@ -1677,18 +1624,34 @@ async fn update_fee_payer(
     else {
         anyhow::bail!("fee-payer virtual Mina account {public_key} is not configured");
     };
+    let current_nonce = account
+        .get("nonce")
+        .and_then(Value::as_str)
+        .unwrap_or("0")
+        .parse::<u64>()
+        .context("virtual Mina fee-payer nonce is invalid")?;
+    if let Some(expected_nonce) = expected_nonce {
+        anyhow::ensure!(
+            current_nonce == expected_nonce,
+            "virtual Mina fee-payer nonce {current_nonce} does not match expected nonce \
+             {expected_nonce}"
+        );
+    }
     snapshot_account(tx, job_id, public_key, &account, block_number, block_hash).await?;
     account
         .as_object_mut()
         .context("virtual Mina account must be a JSON object")?
         .insert(
             "nonce".to_owned(),
-            json!(nonce
-                .checked_add(1)
-                .context("fee-payer nonce overflow")?
-                .to_string()),
+            json!(fee_payer_nonce_after(current_nonce, increment)?.to_string()),
         );
     store_account(tx, public_key, account, block_number, block_hash).await
+}
+
+fn fee_payer_nonce_after(current_nonce: u64, increment: u64) -> Result<u64> {
+    current_nonce
+        .checked_add(increment)
+        .context("fee-payer nonce overflow")
 }
 
 async fn snapshot_account(
@@ -1846,5 +1809,11 @@ mod tests {
             FinalityMode::Confirmations
         );
         assert!(FinalityMode::parse("safe").is_err());
+    }
+
+    #[test]
+    fn bridge_actions_advance_the_virtual_fee_payer_nonce() {
+        assert_eq!(fee_payer_nonce_after(2, 2).unwrap(), 4);
+        assert!(fee_payer_nonce_after(u64::MAX, 1).is_err());
     }
 }

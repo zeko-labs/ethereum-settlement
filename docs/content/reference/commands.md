@@ -51,12 +51,12 @@ Ethereum custody, SP1 execution, settlement submission, and withdrawal claim.
 tools/run-local-erc20-bridge-roundtrip.sh
 ```
 
-This single command creates a deterministic local ERC-20 identity, generates
-the matching asset-specialized circuit configuration, deploys the unmodified
-Mina FungibleToken owner/admin and proof-authorized vault through the live
-sequencer, exports two real OCaml settlements, and replays the exact deposit and
-withdrawal through Anvil custody. It uses the chain-ID-31337 mock verifier and
-does not request or generate an SP1 proof.
+This command creates two deterministic ERC-20 identities under one universal
+registry configuration, settles and activates their ordered record batch,
+deploys two unmodified Mina FungibleToken owner/admin pairs with a shared
+proof-authorized vault, and replays both deposits and withdrawals through Anvil
+custody. It uses the chain-ID-31337 mock verifier and does not request or
+generate an SP1 proof.
 
 Run the standalone browser app:
 

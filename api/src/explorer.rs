@@ -109,9 +109,15 @@ pub async fn validate_archive_schema(pool: &PgPool) -> Result<()> {
 async fn summary(State(state): State<AppState>) -> Response {
     let gateway_query = sqlx::query(
         "SELECT
-             (SELECT COUNT(*)::text FROM gateway_bridge_deposits WHERE NOT removed) AS deposit_count,
-             (SELECT COUNT(*)::text FROM gateway_inner_action_leaves WHERE recipient IS NOT NULL AND NOT removed) AS withdrawal_count,
-             (SELECT COALESCE(SUM(ethereum_amount), 0)::text FROM gateway_bridge_deposits WHERE NOT removed) AS deposited_amount,
+             (SELECT COUNT(*)::text FROM gateway_bridge_deposits
+                WHERE NOT removed
+                  AND token = '0x0000000000000000000000000000000000000000') AS deposit_count,
+             (SELECT COUNT(*)::text FROM gateway_inner_action_leaves
+                WHERE recipient IS NOT NULL AND token IS NULL AND NOT removed) AS withdrawal_count,
+             (SELECT COALESCE(SUM(ethereum_amount), 0)::text
+                FROM gateway_bridge_deposits
+                WHERE NOT removed
+                  AND token = '0x0000000000000000000000000000000000000000') AS deposited_amount,
              (SELECT batch_sequence::text FROM gateway_explorer_settlements WHERE NOT removed ORDER BY batch_sequence DESC LIMIT 1) AS latest_settlement",
     )
     .fetch_one(&state.pool);
@@ -664,7 +670,7 @@ async fn list_withdrawals(
     let locations = sqlx::query(
         "SELECT settlement_sequence, action_offset, global_action_index
          FROM gateway_inner_action_leaves
-         WHERE recipient IS NOT NULL AND NOT removed
+         WHERE recipient IS NOT NULL AND token IS NULL AND NOT removed
            AND ($1::bigint IS NULL OR global_action_index < $1)
          ORDER BY global_action_index DESC LIMIT $2",
     )
@@ -728,7 +734,7 @@ async fn get_withdrawal(
         "SELECT EXISTS (
            SELECT 1 FROM gateway_inner_action_leaves
            WHERE settlement_sequence = $1 AND action_offset = $2
-             AND recipient IS NOT NULL AND NOT removed
+             AND recipient IS NOT NULL AND token IS NULL AND NOT removed
          )",
     )
     .bind(match i64::try_from(sequence) {
@@ -818,7 +824,9 @@ async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>)
     }
     if let Ok(rows) = sqlx::query(
         "SELECT nonce::text, ethereum_tx_hash, sender FROM gateway_bridge_deposits
-         WHERE NOT removed AND (ethereum_tx_hash = $1 OR lower(sender) = lower($1)
+         WHERE NOT removed
+           AND token = '0x0000000000000000000000000000000000000000'
+           AND (ethereum_tx_hash = $1 OR lower(sender) = lower($1)
            OR zeko_recipient = $1 OR zeko_recipient = $3
            OR ($2::bigint IS NOT NULL AND nonce = $2))
          ORDER BY nonce DESC LIMIT 5",
@@ -840,7 +848,8 @@ async fn search(State(state): State<AppState>, Query(query): Query<SearchQuery>)
                ON claims.settlement_sequence = leaves.settlement_sequence
               AND claims.global_action_index = leaves.global_action_index
               AND NOT claims.removed
-             WHERE leaves.recipient IS NOT NULL AND NOT leaves.removed
+             WHERE leaves.recipient IS NOT NULL AND leaves.token IS NULL
+               AND NOT leaves.removed
                AND (lower(leaves.recipient) = lower($1)
                     OR lower(claims.ethereum_tx_hash) = lower($1))
              ORDER BY leaves.global_action_index DESC LIMIT 5",
@@ -997,7 +1006,11 @@ async fn annotate_withdrawal_requests(state: &AppState, transactions: &mut [Valu
     let by_hash = actions
         .into_iter()
         .filter_map(|action| {
-            let withdrawal = action.withdrawal?;
+            let crate::withdrawal_activity::ArchiveWithdrawal::Native(withdrawal) =
+                action.withdrawal?
+            else {
+                return None;
+            };
             let phase = if settled.contains(&i64::from(action.global_action_index)) {
                 "settled"
             } else {
@@ -1130,6 +1143,7 @@ async fn deposit_query(
           AND blocks.block_hash = deposits.ethereum_block_hash
          LEFT JOIN proof_jobs bridge_jobs ON bridge_jobs.id = deposits.bridge_job_id
          WHERE NOT deposits.removed AND blocks.canonical
+           AND deposits.token = '0x0000000000000000000000000000000000000000'
            AND ($1::bigint IS NULL OR deposits.nonce = $1)
            AND ($2::bigint IS NULL OR deposits.nonce < $2)
            AND ($3::text IS NULL OR
@@ -1497,5 +1511,23 @@ mod tests {
             "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn3"
         )
         .is_err());
+    }
+
+    #[test]
+    fn native_explorer_queries_exclude_erc20_activity() {
+        let source = include_str!("explorer.rs");
+        let native_token = "token = '0x0000000000000000000000000000000000000000'";
+
+        let summary = &source[source.find("async fn summary").unwrap()
+            ..source.find("async fn fetch_commit_schedule").unwrap()];
+        assert_eq!(summary.matches(native_token).count(), 2);
+
+        let search = &source[source.find("async fn search").unwrap()
+            ..source.find("async fn load_transactions").unwrap()];
+        assert!(search.contains(native_token));
+
+        let deposits = &source[source.find("async fn deposit_query").unwrap()
+            ..source.find("fn deposit_json").unwrap()];
+        assert!(deposits.contains("deposits.token = '0x0000000000000000000000000000000000000000'"));
     }
 }

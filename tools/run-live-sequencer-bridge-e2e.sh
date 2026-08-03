@@ -74,6 +74,7 @@ cleanup() {
   [[ -z ${ACTIONS_INDEXER_PID:-} ]] || terminate_tree "$ACTIONS_INDEXER_PID"
   [[ -z ${ACTIONS_API_PID:-} ]] || terminate_tree "$ACTIONS_API_PID"
   [[ -z ${ARCHIVE_PROXY_PID:-} ]] || terminate_tree "$ARCHIVE_PROXY_PID"
+  [[ -z ${SDK_PID:-} ]] || terminate_tree "$SDK_PID"
   [[ -z ${ZEKO_PID:-} ]] || terminate_tree "$ZEKO_PID"
   docker rm -f pg-sequencer rabbitmq-sequencer >/dev/null 2>&1 || true
   if [[ $status -ne 0 ]]; then
@@ -103,10 +104,19 @@ source "$ENV_FILE"
 set +a
 if [[ $BRIDGE_ASSET == erc20 ]]; then
   for variable in \
-    ERC20_TOKEN_ADDRESS ERC20_ASSET_ID ERC20_DEPOSIT_CAP \
-    ERC20_DEPOSIT_AMOUNT ERC20_TOKEN_OWNER_PRIVATE_KEY \
-    ERC20_TOKEN_VAULT_PRIVATE_KEY ERC20_ADMIN_CONTRACT_PRIVATE_KEY \
-    ERC20_ADMIN_AUTHORITY_PRIVATE_KEY ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG; do
+    ERC20_REGISTRY_L2 ERC20_SHARED_VAULT_PACKED \
+    ERC20_SHARED_VAULT_PRIVATE_KEY ERC20_MFT_STANDARD_VK_ID \
+    ERC20_UNIVERSAL_BRIDGE_VK_ID ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG \
+    ERC20_TOKEN_0_ADDRESS ERC20_TOKEN_0_ASSET_ID ERC20_TOKEN_0_DEPOSIT_CAP \
+    ERC20_TOKEN_0_DEPOSIT_AMOUNT ERC20_TOKEN_0_OWNER_L2 \
+    ERC20_TOKEN_0_OWNER_PACKED ERC20_TOKEN_0_TOKEN_ID \
+    ERC20_TOKEN_0_OWNER_PRIVATE_KEY ERC20_TOKEN_0_ADMIN_CONTRACT_PRIVATE_KEY \
+    ERC20_TOKEN_0_ADMIN_AUTHORITY_PRIVATE_KEY \
+    ERC20_TOKEN_1_ADDRESS ERC20_TOKEN_1_ASSET_ID ERC20_TOKEN_1_DEPOSIT_CAP \
+    ERC20_TOKEN_1_DEPOSIT_AMOUNT ERC20_TOKEN_1_OWNER_L2 \
+    ERC20_TOKEN_1_OWNER_PACKED ERC20_TOKEN_1_TOKEN_ID \
+    ERC20_TOKEN_1_OWNER_PRIVATE_KEY ERC20_TOKEN_1_ADMIN_CONTRACT_PRIVATE_KEY \
+    ERC20_TOKEN_1_ADMIN_AUTHORITY_PRIVATE_KEY; do
     [[ -n ${!variable:-} ]] || {
       echo "$variable is required for the ERC20 live sequencer scenario" >&2
       exit 1
@@ -142,8 +152,6 @@ fi
     ZEKO_ETHEREUM_BRIDGE_EXPORT_ONLY=true \
     ZEKO_ETHEREUM_BRIDGE_LIVE_SDK=true \
     BRIDGE_ASSET="$BRIDGE_ASSET" \
-    ERC20_DEPOSIT_CAP="${ERC20_DEPOSIT_CAP:-}" \
-    ERC20_DEPOSIT_AMOUNT="${ERC20_DEPOSIT_AMOUNT:-}" \
     ZEKO_ETHEREUM_BRIDGE_LIVE_DIR="$LIVE_DIR" \
     ZEKO_ETHEREUM_BRIDGE_LIVE_PORT="$SEQUENCER_PORT" \
     ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY="$ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY" \
@@ -183,6 +191,7 @@ ACTIONS_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5433/actions
 ) >/dev/null
 
 outer_public_key=$(jq -er '.outerPublicKey' "$READY_FILE")
+registry_public_key=${ERC20_REGISTRY_L2:-$outer_public_key}
 l1_graphql_url=$(jq -er '.l1GraphqlUrl' "$READY_FILE")
 sequencer_graphql_url=$(jq -er '.sequencerGraphqlUrl' "$READY_FILE")
 (
@@ -205,7 +214,9 @@ archive_proxy_graphql_url="http://127.0.0.1:$ARCHIVE_PROXY_PORT/graphql"
     PORT="$ACTIONS_INDEXER_PORT" L1_ARCHIVE_URL="$archive_proxy_graphql_url" \
     L1_FINALITY=0 L2_ARCHIVE_URL="$sequencer_graphql_url" L2_FINALITY_TIME_H=1 \
     OUTER_PK="$outer_public_key" INNER_PK="$outer_public_key" \
-    INDEX_OUTER=true INDEX_INNER=false ENVIRONMENT=LOCAL \
+    REGISTRY_PK="$registry_public_key" \
+    INDEX_OUTER=true INDEX_INNER=false INDEX_REGISTRY="$([[ $BRIDGE_ASSET == erc20 ]] && echo true || echo false)" \
+    ENVIRONMENT=LOCAL \
     "$NIX" develop -c pnpm exec moon run actions-indexer:start
 ) >"$ACTIONS_INDEXER_LOG" 2>&1 &
 ACTIONS_INDEXER_PID=$!
@@ -237,23 +248,6 @@ for _ in $(seq 1 120); do
   sleep 1
 done
 
-deposit_aux=$(
-  "$CAST" to-dec "$(jq -er '.depositAux' "$OUTPUT_DIR/bridge-scenario.json")"
-)
-for _ in $(seq 1 180); do
-  indexed=$(jq -n --arg aux "$deposit_aux" \
-    '{query:"query($input: OuterWitnessesFromAuxesInput!) { outerWitnessesFromAuxes(input:$input) { aux index } commitAsePastSlot(slot: 2147483647) { commit { index } } }",variables:{input:{auxes:[$aux]}}}' \
-    | curl -fsS -H 'content-type: application/json' --data-binary @- \
-        "http://127.0.0.1:$ACTIONS_API_PORT/graphql" 2>/dev/null || true)
-  if [[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' <<<"$indexed") == 1 && \
-        $(jq -r '.data.commitAsePastSlot.commit.index // empty' <<<"$indexed") != "" ]]; then
-    break
-  fi
-  sleep 1
-done
-[[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' <<<"$indexed") == 1 ]]
-jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
-
 (
   cd "$ZEKO_UI_ROOT"
   LIVE_SEQUENCER_READY_FILE="$READY_FILE" \
@@ -263,15 +257,44 @@ jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
     ACTIONS_API_URL="http://127.0.0.1:$ACTIONS_API_PORT/graphql" \
     BRIDGE_ADDRESS="$BRIDGE_CONTRACT_ADDRESS" \
     BRIDGE_ASSET="$BRIDGE_ASSET" \
-    ERC20_TOKEN_ADDRESS="${ERC20_TOKEN_ADDRESS:-}" \
-    ERC20_ASSET_ID="${ERC20_ASSET_ID:-}" \
-    ERC20_DEPOSIT_CAP="${ERC20_DEPOSIT_CAP:-}" \
-    DEPOSIT_AMOUNT_ZEKO="$(jq -er '.depositAmountZeko' "$OUTPUT_DIR/bridge-scenario.json")" \
-    WITHDRAWAL_AMOUNT_ZEKO="$(jq -er '.withdrawalAmountZeko' "$OUTPUT_DIR/bridge-scenario.json")" \
-    WITHDRAWAL_RECIPIENT="$(jq -er '.withdrawalRecipient' "$OUTPUT_DIR/bridge-scenario.json")" \
+    DEPOSIT_AMOUNT_ZEKO="${ERC20_TOKEN_0_DEPOSIT_AMOUNT:-10000000000}" \
+    WITHDRAWAL_AMOUNT_ZEKO="${WITHDRAWAL_AMOUNT_ZEKO:-5000000000}" \
+    WITHDRAWAL_RECIPIENT="${ZEKO_ETHEREUM_WITHDRAWAL_RECIPIENT:-0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266}" \
     "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:live-sequencer-e2e
-)
+) &
+SDK_PID=$!
 
+for _ in $(seq 1 1800); do
+  [[ -f "$OUTPUT_DIR/bridge-scenario.json" ]] && break
+  kill -0 "$SDK_PID" 2>/dev/null || {
+    echo "The live SDK exited before the scenario was written" >&2
+    exit 1
+  }
+  sleep 1
+done
+[[ -f "$OUTPUT_DIR/bridge-scenario.json" ]]
+
+mapfile -t deposit_auxes < <(
+  jq -er '.depositAuxes[]' "$OUTPUT_DIR/bridge-scenario.json" |
+    while read -r aux; do "$CAST" to-dec "$aux"; done
+)
+auxes_json=$(printf '%s\n' "${deposit_auxes[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')
+for _ in $(seq 1 180); do
+  indexed=$(jq -n --argjson auxes "$auxes_json" \
+    '{query:"query($input: OuterWitnessesFromAuxesInput!) { outerWitnessesFromAuxes(input:$input) { aux index } commitAsePastSlot(slot: 2147483647) { commit { index } } }",variables:{input:{auxes:$auxes}}}' \
+    | curl -fsS -H 'content-type: application/json' --data-binary @- \
+        "http://127.0.0.1:$ACTIONS_API_PORT/graphql" 2>/dev/null || true)
+  if [[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' <<<"$indexed") == ${#deposit_auxes[@]} && \
+        $(jq -r '.data.commitAsePastSlot.commit.index // empty' <<<"$indexed") != "" ]]; then
+    break
+  fi
+  sleep 1
+done
+[[ $(jq -r '.data.outerWitnessesFromAuxes | length // 0' <<<"$indexed") == ${#deposit_auxes[@]} ]]
+jq -e '.data.commitAsePastSlot.commit.index != null' <<<"$indexed" >/dev/null
+
+wait "$SDK_PID"
+SDK_PID=
 wait "$ZEKO_PID"
 ZEKO_PID=
 BRIDGE_ASSET="$BRIDGE_ASSET" POC_REUSE_OCAML_EXPORT=true \
@@ -280,7 +303,8 @@ BRIDGE_ASSET="$BRIDGE_ASSET" POC_REUSE_OCAML_EXPORT=true \
 
 jq -n --slurpfile sdk "$LIVE_DIR/operations-complete" \
   --arg fixtures "$OUTPUT_DIR" \
-  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,ocamlSettlements:2,
+  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,registrationSettlements:1,
+    bridgeSettlements:2,
     liveSequencerGraphql:true,actionsPreparationApi:true,sp1ProofsGenerated:0}'
 if [[ $BRIDGE_ASSET == erc20 ]]; then
   echo "Standard ERC20 mirror deployment, deposit finalization, and token withdrawal passed."

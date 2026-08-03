@@ -37,15 +37,26 @@ not depend on that switch.
 
 ## Canonical ERC-20 deposit
 
-Each ERC-20 registry entry immutably binds the Ethereum token, standard Mina
-FungibleToken owner, derived L2 token ID, decimals, capacity, chain, and bridge
-proxy into an asset ID. `submitDeposit(token, amount, zekoRecipient)` requires
-matching nine-or-fewer decimals on both chains, exact transfer custody, a
-positive UInt64 amount, and remaining registered capacity. Its timeout is fixed
-to `UInt32.max`.
+Each ERC-20 registry record immutably binds its stable index, Ethereum token,
+standard Mina FungibleToken owner, derived L2 token ID, decimals, capacity, and
+approved VK identities. The asset ID separately binds the chain, bridge proxy,
+token, owner, token ID, and decimals. `submitDeposit(token, amount,
+zekoRecipient)` requires matching nine-or-fewer decimals on both chains, exact
+transfer custody, a positive UInt64 amount, and remaining registered capacity.
+Its timeout is fixed to `UInt32.max`.
 
-The bridge guest verifies the V2 asset-bound deposit leaf and emits the same
-five-field outer Witness shape as native deposits. Its auxiliary value is:
+Registration is a three-stage flow. An administrator first calls
+`proposeAsset`, which stores a dense append as `Pending` but cannot enable
+custody. The OCaml registry transition must then be verified in a V3 settlement
+for one record or a V4 settlement for an ordered batch. Finally,
+`activateAsset` or `activateAssetFromBatch` checks the settlement-bound record
+hash and canonical Mina Poseidon record commitment before making the asset
+active. `registerToken` cannot create a registry-backed asset: it is retained
+only for the explicit one-token V1 fixture path and reverts unless the legacy
+deposit switch is enabled.
+
+The one-token compatibility path is action encoding V1. It keeps the
+`ZEKO_ERC20_DEPOSIT_LEAF_V2` Keccak leaf and this auxiliary value:
 
 ```text
 Poseidon("Ethereum ERC20 deposit V1", [
@@ -61,10 +72,51 @@ Poseidon("Ethereum ERC20 deposit V1", [
 ])
 ```
 
-The asset-specific OCaml circuit checks both asset-ID limbs before allowing the
-proof-controlled L2 vault to debit its pre-minted inventory. The browser SDK
-then places that proved forest beneath the unmodified Mina Foundation
-FungibleToken owner's `approveBase` proof.
+The universal registry path is action encoding V2. Its
+`ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak preimage is:
+
+```text
+[
+  chain_id,
+  bridge_address,
+  token,
+  encoding_version = 2,
+  registry_index,
+  record_commitment,
+  asset_id,
+  zeko_recipient,
+  amount,
+  UInt32.max,
+  nonce
+]
+```
+
+The guest uses the same immutable identity in the Mina action:
+
+```text
+Poseidon("Ethereum ERC20 deposit V2", [
+  encoding_version = 2,
+  registry_index,
+  record_commitment,
+  asset_id_high,
+  asset_id_low,
+  empty_call_forest,
+  bridge_address_as_field,
+  false,
+  amount,
+  recipient_x,
+  recipient_is_odd,
+  UInt32.max
+])
+```
+
+The universal OCaml circuit authenticates the complete record against the
+registry zkApp root/count, derives the token ID from the registered MFT owner,
+and checks both asset-ID limbs before allowing the token-specific shared-vault
+account to debit its pre-minted inventory. The browser SDK then places that
+proved forest beneath the unmodified Mina Foundation FungibleToken owner's
+`approveBase` proof. Different assets share the vault public key and bridge VK
+but use distinct derived token IDs, balances, and replay-helper domains.
 
 ## Canonical proof input
 
@@ -73,7 +125,7 @@ head, an operator calls `POST /v1/bridge/deposits/prove`. The gateway constructs
 the batch itself from the next contiguous canonical finalized `BridgeDeposit`
 rows. A caller cannot substitute deposit contents.
 
-For each deposit the guest recomputes:
+For native deposits the guest recomputes:
 
 ```text
 deposit_leaf = keccak256(
@@ -144,7 +196,23 @@ processed-deposit cursor.
 ## User-facing status
 
 `GET /v1/bridge/deposits/:nonce` reports Ethereum finality, bridge proof job,
-exact outer action, synchronized settlement, and the next action:
+exact outer action, synchronized settlement, and the next action. Every
+response also carries the immutable action identity:
+
+```json
+{
+  "assetId": "0x...",
+  "encodingVersion": 2,
+  "registryIndex": 7,
+  "recordCommitment": "0x..."
+}
+```
+
+Native deposits use encoding version `0`; legacy ERC-20 V1 deposits use
+encoding version `1`. Both return `null` for `registryIndex` and
+`recordCommitment`. Registry V2 deposits return the values emitted with that
+specific deposit, rather than values inferred from the registry's current
+state.
 
 ```text
 waitForEthereumFinality

@@ -17,7 +17,8 @@ The following values must be chosen together and never mixed across builds:
 - exact genesis ledger and two-commit bridge scenario
 - OCaml wrap verifier index and its PoC SHA-256 identifier
 - settlement, bridge, and withdrawal SP1 program vkeys
-- settlement/bridge proxy addresses and Sepolia chain ID
+- settlement/bridge proxy addresses, registry-module address, and Sepolia
+  chain ID
 
 `build/poc/manifest.json`, and later
 `deploy/testnet/artifacts/manifest.json`, is the public identity record. Review
@@ -103,8 +104,9 @@ do not match the live contracts.
 
 ## 5. Deploy Ethereum contracts
 
-Use a real SP1 6.1-compatible verifier, then deploy and atomically initialize
-the deterministic `ZekoSettlement` and `EthereumZekoBridge` proxies. Initialize:
+Use a real SP1 6.1-compatible verifier, deploy the deterministic immutable
+`ZekoAssetRegistry` module, then deploy and atomically initialize the
+`ZekoSettlement` and `EthereumZekoBridge` proxies. Initialize:
 
 - all eight outer-state fields
 - initial outer action state and length

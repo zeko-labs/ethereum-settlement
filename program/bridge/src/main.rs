@@ -11,7 +11,7 @@ use mina_poseidon::pasta::{fp_kimchi, FULL_ROUNDS};
 use mina_poseidon::permutation::poseidon_block_cipher;
 use zeko_sp1_lib::{
     Address, BridgeOuterActionV2, BridgeTransitionInput, BridgeTransitionPublicValuesV2, Bytes32,
-    ZekoAddress,
+    ZekoAddress, ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2,
 };
 
 const WEI_PER_ZEKO_UNIT: u64 = 1_000_000_000;
@@ -46,6 +46,14 @@ fn derive_bridge_transition(input: BridgeTransitionInput) -> BridgeTransitionPub
         let zeko_amount = if is_native {
             assert_eq!(deposit.asset_id, [0u8; 32], "native asset id must be zero");
             assert_eq!(
+                deposit.registry_index, 0,
+                "native deposit has a registry index"
+            );
+            assert_eq!(
+                deposit.record_commitment, [0u8; 32],
+                "native deposit has a record commitment"
+            );
+            assert_eq!(
                 ethereum_amount % U256::from(WEI_PER_ZEKO_UNIT),
                 U256::ZERO,
                 "native deposit must have 1 gwei granularity"
@@ -68,6 +76,26 @@ fn derive_bridge_transition(input: BridgeTransitionInput) -> BridgeTransitionPub
                 deposit.timeout, INFINITE_TIMEOUT,
                 "canonical ERC20 deposit must use infinite timeout"
             );
+            match deposit.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => {
+                    assert_eq!(
+                        deposit.registry_index, 0,
+                        "legacy ERC20 deposit has a registry index"
+                    );
+                    assert_eq!(
+                        deposit.record_commitment, [0u8; 32],
+                        "legacy ERC20 deposit has a record commitment"
+                    );
+                }
+                ERC20_ACTION_ENCODING_V2 => {
+                    assert_ne!(
+                        deposit.record_commitment, [0u8; 32],
+                        "registry ERC20 deposit record commitment is zero"
+                    );
+                    fp_from_bytes(deposit.record_commitment);
+                }
+                version => panic!("unsupported ERC20 deposit encoding version {version}"),
+            }
             assert!(
                 ethereum_amount <= U256::from(u64::MAX),
                 "ERC20 deposit exceeds Mina amount"
@@ -96,16 +124,31 @@ fn derive_bridge_transition(input: BridgeTransitionInput) -> BridgeTransitionPub
                 next_nonce,
             )
         } else {
-            compute_ethereum_erc20_deposit_leaf(
-                input.ethereum.chain_id,
-                input.ethereum.bridge_address,
-                deposit.token,
-                deposit.asset_id,
-                deposit.zeko_recipient,
-                zeko_amount,
-                deposit.timeout,
-                next_nonce,
-            )
+            match deposit.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => compute_ethereum_erc20_deposit_leaf_v1(
+                    input.ethereum.chain_id,
+                    input.ethereum.bridge_address,
+                    deposit.token,
+                    deposit.asset_id,
+                    deposit.zeko_recipient,
+                    zeko_amount,
+                    deposit.timeout,
+                    next_nonce,
+                ),
+                ERC20_ACTION_ENCODING_V2 => compute_ethereum_erc20_deposit_leaf_v2(
+                    input.ethereum.chain_id,
+                    input.ethereum.bridge_address,
+                    deposit.token,
+                    deposit.registry_index,
+                    deposit.record_commitment,
+                    deposit.asset_id,
+                    deposit.zeko_recipient,
+                    zeko_amount,
+                    deposit.timeout,
+                    next_nonce,
+                ),
+                _ => unreachable!("ERC20 action version checked above"),
+            }
         };
 
         ethereum_state = compute_ethereum_state(ethereum_state, ethereum_deposit_leaf);
@@ -120,14 +163,27 @@ fn derive_bridge_transition(input: BridgeTransitionInput) -> BridgeTransitionPub
                 deposit.timeout,
             )
         } else {
-            compute_erc20_deposit_aux(
-                deposit.asset_id,
-                input.ethereum.bridge_address,
-                zeko_amount,
-                zeko_recipient_x,
-                zeko_recipient_is_odd,
-                deposit.timeout,
-            )
+            match deposit.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => compute_erc20_deposit_aux_v1(
+                    deposit.asset_id,
+                    input.ethereum.bridge_address,
+                    zeko_amount,
+                    zeko_recipient_x,
+                    zeko_recipient_is_odd,
+                    deposit.timeout,
+                ),
+                ERC20_ACTION_ENCODING_V2 => compute_erc20_deposit_aux_v2(
+                    deposit.registry_index,
+                    deposit.record_commitment,
+                    deposit.asset_id,
+                    input.ethereum.bridge_address,
+                    zeko_amount,
+                    zeko_recipient_x,
+                    zeko_recipient_is_odd,
+                    deposit.timeout,
+                ),
+                _ => unreachable!("ERC20 action version checked above"),
+            }
         };
         let action_fields =
             compute_zeko_outer_witness_fields(aux, Fp::from(0u8), 0, INFINITE_TIMEOUT);
@@ -185,7 +241,8 @@ fn compute_ethereum_state(previous_state: Bytes32, deposit_leaf: Bytes32) -> Byt
     keccak256(encoded).0
 }
 
-fn compute_ethereum_erc20_deposit_leaf(
+#[allow(clippy::too_many_arguments)]
+fn compute_ethereum_erc20_deposit_leaf_v1(
     chain_id: u64,
     bridge_address: Address,
     token: Address,
@@ -200,6 +257,35 @@ fn compute_ethereum_erc20_deposit_leaf(
     encoded.extend_from_slice(&u64_word(chain_id));
     encoded.extend_from_slice(&address_word(bridge_address));
     encoded.extend_from_slice(&address_word(token));
+    encoded.extend_from_slice(&asset_id);
+    encoded.extend_from_slice(&zeko_recipient);
+    encoded.extend_from_slice(&u256_to_bytes(zeko_amount));
+    encoded.extend_from_slice(&u64_word(timeout));
+    encoded.extend_from_slice(&u64_word(nonce));
+    keccak256(encoded).0
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_ethereum_erc20_deposit_leaf_v2(
+    chain_id: u64,
+    bridge_address: Address,
+    token: Address,
+    registry_index: u32,
+    record_commitment: Bytes32,
+    asset_id: Bytes32,
+    zeko_recipient: ZekoAddress,
+    zeko_amount: U256,
+    timeout: u64,
+    nonce: u64,
+) -> Bytes32 {
+    let mut encoded = Vec::with_capacity(32 * 12);
+    encoded.extend_from_slice(&keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V3".as_bytes()).0);
+    encoded.extend_from_slice(&u64_word(chain_id));
+    encoded.extend_from_slice(&address_word(bridge_address));
+    encoded.extend_from_slice(&address_word(token));
+    encoded.extend_from_slice(&u32_word(ERC20_ACTION_ENCODING_V2));
+    encoded.extend_from_slice(&u32_word(registry_index));
+    encoded.extend_from_slice(&record_commitment);
     encoded.extend_from_slice(&asset_id);
     encoded.extend_from_slice(&zeko_recipient);
     encoded.extend_from_slice(&u256_to_bytes(zeko_amount));
@@ -227,7 +313,7 @@ fn compute_deposit_aux(
     hash_with_prefix("Ethereum deposit V1", &fields)
 }
 
-fn compute_erc20_deposit_aux(
+fn compute_erc20_deposit_aux_v1(
     asset_id: Bytes32,
     holder_account_l1: Address,
     zeko_amount: U256,
@@ -249,6 +335,36 @@ fn compute_erc20_deposit_aux(
         Fp::from(timeout),
     ];
     hash_with_prefix("Ethereum ERC20 deposit V1", &fields)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_erc20_deposit_aux_v2(
+    registry_index: u32,
+    record_commitment: Bytes32,
+    asset_id: Bytes32,
+    holder_account_l1: Address,
+    zeko_amount: U256,
+    zeko_recipient_x: U256,
+    zeko_recipient_is_odd: bool,
+    timeout: u64,
+) -> Fp {
+    let asset_high = U256::from_be_slice(&asset_id[..16]);
+    let asset_low = U256::from_be_slice(&asset_id[16..]);
+    let fields = [
+        Fp::from(ERC20_ACTION_ENCODING_V2),
+        Fp::from(registry_index),
+        fp_from_bytes(record_commitment),
+        fp_from_u256(asset_high),
+        fp_from_u256(asset_low),
+        Fp::from(0u8), // children = Field(0) for empty call forest
+        fp_from_address(holder_account_l1),
+        Fp::from(0u8), // synthetic holder compressed-key parity
+        fp_from_u256(zeko_amount),
+        fp_from_u256(zeko_recipient_x),
+        Fp::from(zeko_recipient_is_odd as u8),
+        Fp::from(timeout),
+    ];
+    hash_with_prefix("Ethereum ERC20 deposit V2", &fields)
 }
 
 // Returns the 5 action fields for an L1 outer witness (deposit) action:
@@ -333,7 +449,9 @@ fn fp_from_u256(value: U256) -> Fp {
 }
 
 fn fp_from_bytes(bytes: Bytes32) -> Fp {
-    Fp::from_be_bytes_mod_order(&bytes)
+    let value = Fp::from_be_bytes_mod_order(&bytes);
+    assert_eq!(fp_to_bytes(value), bytes, "non-canonical Mina field");
+    value
 }
 
 fn fp_to_bytes(x: Fp) -> Bytes32 {
@@ -347,6 +465,12 @@ fn fp_to_bytes(x: Fp) -> Bytes32 {
 fn u64_word(value: u64) -> Bytes32 {
     let mut word = [0u8; 32];
     word[24..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn u32_word(value: u32) -> Bytes32 {
+    let mut word = [0u8; 32];
+    word[28..32].copy_from_slice(&value.to_be_bytes());
     word
 }
 
@@ -625,7 +749,8 @@ mod tests {
         let recipient = hex32("0000000000000000000000000000000000000000000000000000000001020304");
         let amount = 2_000_000u64;
 
-        let input = |token, asset_id| BridgeTransitionInput {
+        let record_commitment = fp_to_bytes(Fp::from(991u64));
+        let input = |token, asset_id, registry_index, record_commitment| BridgeTransitionInput {
             ethereum: zeko_sp1_lib::EthereumBridgeState {
                 chain_id: 31337,
                 bridge_address,
@@ -640,6 +765,9 @@ mod tests {
             deposits: vec![zeko_sp1_lib::BridgeDeposit {
                 token,
                 asset_id,
+                encoding_version: ERC20_ACTION_ENCODING_V2,
+                registry_index,
+                record_commitment,
                 amount: u256_to_bytes(U256::from(amount)),
                 zeko_amount: Some(amount),
                 zeko_recipient: recipient,
@@ -647,8 +775,8 @@ mod tests {
             }],
         };
 
-        let a = derive_bridge_transition(input(token_a, [0x11; 32]));
-        let b = derive_bridge_transition(input(token_b, [0x22; 32]));
+        let a = derive_bridge_transition(input(token_a, [0x11; 32], 3, record_commitment));
+        let b = derive_bridge_transition(input(token_b, [0x22; 32], 4, record_commitment));
 
         assert_ne!(a.ethereum_state_after, b.ethereum_state_after);
         assert_ne!(a.actions[0].fields[1], b.actions[0].fields[1]);
@@ -657,7 +785,9 @@ mod tests {
         let mut vector_asset = [0u8; 32];
         vector_asset[15] = 1;
         vector_asset[31] = 2;
-        let aux = compute_erc20_deposit_aux(
+        let aux = compute_erc20_deposit_aux_v2(
+            3,
+            record_commitment,
             vector_asset,
             address(1),
             U256::from(amount),
@@ -667,7 +797,24 @@ mod tests {
         );
         assert_eq!(
             fp_to_bytes(aux),
-            hex32("0fc821581944d768e902d37d6527e3011992e5368fb33dca2f5ccc24a6f417f7")
+            hex32("2d60dc7f6f355ec2a3a25a1ecd3da47d4fd77d12038f8a78747fab4e549af1a2")
+        );
+
+        let wrong_index =
+            derive_bridge_transition(input(token_a, [0x11; 32], 4, record_commitment));
+        assert_ne!(a.ethereum_state_after, wrong_index.ethereum_state_after);
+        assert_ne!(a.actions[0].fields[1], wrong_index.actions[0].fields[1]);
+
+        let other_commitment = fp_to_bytes(Fp::from(992u64));
+        let wrong_commitment =
+            derive_bridge_transition(input(token_a, [0x11; 32], 3, other_commitment));
+        assert_ne!(
+            a.ethereum_state_after,
+            wrong_commitment.ethereum_state_after
+        );
+        assert_ne!(
+            a.actions[0].fields[1],
+            wrong_commitment.actions[0].fields[1]
         );
     }
 

@@ -12,8 +12,12 @@ CAST=${CAST:-$HOME/.foundry/bin/cast}
 ADMIN_ADDRESS=${ADMIN_ADDRESS:-0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266}
 FIXTURE_ROOT=${BRIDGE_FIXTURE_ROOT:-$ROOT/build/poc/bridge-erc20-fixtures}
 LIVE_DIR=${BRIDGE_LIVE_STATE_DIR:-$ROOT/build/poc/bridge-erc20-live}
-ERC20_DEPOSIT_CAP=${ERC20_DEPOSIT_CAP:-100000000000}
-ERC20_DEPOSIT_AMOUNT=${ERC20_DEPOSIT_AMOUNT:-10000000000}
+ERC20_TOKEN_0_DEPOSIT_CAP=${ERC20_TOKEN_0_DEPOSIT_CAP:-100000000000}
+ERC20_TOKEN_1_DEPOSIT_CAP=${ERC20_TOKEN_1_DEPOSIT_CAP:-200000000000}
+ERC20_TOKEN_0_DEPOSIT_AMOUNT=${ERC20_TOKEN_0_DEPOSIT_AMOUNT:-10000000000}
+ERC20_TOKEN_1_DEPOSIT_AMOUNT=${ERC20_TOKEN_1_DEPOSIT_AMOUNT:-10000000000}
+ERC20_MFT_STANDARD_VK_ID_DECIMAL=${ERC20_MFT_STANDARD_VK_ID_DECIMAL:-9001}
+ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL=${ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL:-9002}
 
 for executable in "$NIX" "$FORGE" "$CAST"; do
   [[ -x $executable ]] || {
@@ -47,26 +51,35 @@ echo "Building the live Zeko bridge harness..."
 )
 
 KEYGEN=$ZEKO_ROOT/_build/default/src/app/zeko/sequencer/cli.exe
-generate_even_private_key() {
-  ZEKO_CIRCUITS_CONFIG=test "$KEYGEN" generate-even-key \
-    | awk -F': ' '/Private key:/ {print $2}'
+generate_even_key() {
+  ZEKO_CIRCUITS_CONFIG=test "$KEYGEN" generate-even-key
+}
+key_field() {
+  local label=$1
+  awk -F': ' -v label="$label" '$1 == label {print $2}'
 }
 
-ERC20_TOKEN_OWNER_PRIVATE_KEY=$(generate_even_private_key)
-ERC20_TOKEN_VAULT_PRIVATE_KEY=$(generate_even_private_key)
-ERC20_ADMIN_CONTRACT_PRIVATE_KEY=$(generate_even_private_key)
-ERC20_ADMIN_AUTHORITY_PRIVATE_KEY=$(generate_even_private_key)
-ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY=$(generate_even_private_key)
-export ERC20_TOKEN_OWNER_PRIVATE_KEY ERC20_TOKEN_VAULT_PRIVATE_KEY
-export ERC20_ADMIN_CONTRACT_PRIVATE_KEY ERC20_ADMIN_AUTHORITY_PRIVATE_KEY
-export ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY
+registry_key=$(generate_even_key)
+vault_key=$(generate_even_key)
+recipient_key=$(generate_even_key)
+ERC20_REGISTRY_L2=$(key_field 'Public key' <<<"$registry_key")
+ERC20_SHARED_VAULT_L2=$(key_field 'Public key' <<<"$vault_key")
+ERC20_SHARED_VAULT_PRIVATE_KEY=$(key_field 'Private key' <<<"$vault_key")
+ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY=$(key_field 'Private key' <<<"$recipient_key")
 
-IDENTITY_FILE=$TEMP_DIR/erc20-identity.json
-(
-  cd "$ZEKO_UI_ROOT"
-  ERC20_IDENTITY_OUTPUT="$IDENTITY_FILE" \
-    "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:erc20-identity
-) >/dev/null
+for index in 0 1; do
+  owner_key=$(generate_even_key)
+  admin_contract_key=$(generate_even_key)
+  admin_authority_key=$(generate_even_key)
+  printf -v "ERC20_TOKEN_${index}_OWNER_PRIVATE_KEY" '%s' \
+    "$(key_field 'Private key' <<<"$owner_key")"
+  printf -v "ERC20_TOKEN_${index}_OWNER_L2" '%s' \
+    "$(key_field 'Public key' <<<"$owner_key")"
+  printf -v "ERC20_TOKEN_${index}_ADMIN_CONTRACT_PRIVATE_KEY" '%s' \
+    "$(key_field 'Private key' <<<"$admin_contract_key")"
+  printf -v "ERC20_TOKEN_${index}_ADMIN_AUTHORITY_PRIVATE_KEY" '%s' \
+    "$(key_field 'Private key' <<<"$admin_authority_key")"
+done
 
 prediction=$(
   cd "$ROOT/contracts"
@@ -79,22 +92,47 @@ read_prediction() {
     <<<"$prediction"
 }
 BRIDGE_CONTRACT_ADDRESS=$(read_prediction BRIDGE_CONTRACT_ADDRESS)
-ERC20_TOKEN_ADDRESS=$(read_prediction ERC20_TOKEN_ADDRESS)
-export BRIDGE_CONTRACT_ADDRESS ERC20_TOKEN_ADDRESS ERC20_DEPOSIT_CAP ERC20_DEPOSIT_AMOUNT
+ERC20_TOKEN_0_ADDRESS=$(read_prediction ERC20_TOKEN_0_ADDRESS)
+ERC20_TOKEN_1_ADDRESS=$(read_prediction ERC20_TOKEN_1_ADDRESS)
 
-ERC20_ZEKO_TOKEN_OWNER=$(jq -er '.tokenOwnerPacked' "$IDENTITY_FILE")
-ERC20_ZEKO_TOKEN_ID=$(jq -er '.tokenIdHex' "$IDENTITY_FILE")
-ERC20_TOKEN_OWNER_L2=$(jq -er '.tokenOwner' "$IDENTITY_FILE")
-ERC20_TOKEN_VAULT_L2=$(jq -er '.tokenVault' "$IDENTITY_FILE")
-export ERC20_ZEKO_TOKEN_OWNER ERC20_ZEKO_TOKEN_ID
+for index in 0 1; do
+  identity_file=$TEMP_DIR/erc20-identity-$index.json
+  owner_private_var=ERC20_TOKEN_${index}_OWNER_PRIVATE_KEY
+  admin_contract_var=ERC20_TOKEN_${index}_ADMIN_CONTRACT_PRIVATE_KEY
+  admin_authority_var=ERC20_TOKEN_${index}_ADMIN_AUTHORITY_PRIVATE_KEY
+  (
+    cd "$ZEKO_UI_ROOT"
+    ERC20_TOKEN_OWNER_PRIVATE_KEY=${!owner_private_var} \
+      ERC20_TOKEN_VAULT_PRIVATE_KEY="$ERC20_SHARED_VAULT_PRIVATE_KEY" \
+      ERC20_ADMIN_CONTRACT_PRIVATE_KEY=${!admin_contract_var} \
+      ERC20_ADMIN_AUTHORITY_PRIVATE_KEY=${!admin_authority_var} \
+      ERC20_IDENTITY_OUTPUT="$identity_file" \
+      "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:erc20-identity
+  ) >/dev/null
+  printf -v "ERC20_TOKEN_${index}_OWNER_PACKED" '%s' \
+    "$(jq -er '.tokenOwnerPacked' "$identity_file")"
+  printf -v "ERC20_TOKEN_${index}_TOKEN_ID" '%s' \
+    "$(jq -er '.tokenIdHex' "$identity_file")"
+done
+ERC20_SHARED_VAULT_PACKED=$(jq -er '.tokenVaultPacked' "$TEMP_DIR/erc20-identity-0.json")
 
 asset_domain=$("$CAST" keccak 'ZEKO_ERC20_ASSET_V1')
-asset_preimage=$("$CAST" abi-encode \
-  'f(bytes32,uint256,address,address,bytes32,bytes32,uint8)' \
-  "$asset_domain" 31337 "$BRIDGE_CONTRACT_ADDRESS" "$ERC20_TOKEN_ADDRESS" \
-  "$ERC20_ZEKO_TOKEN_OWNER" "$ERC20_ZEKO_TOKEN_ID" 9)
-ERC20_ASSET_ID=$("$CAST" keccak "$asset_preimage" | tr '[:upper:]' '[:lower:]')
-export ERC20_ASSET_ID
+for index in 0 1; do
+  address_var=ERC20_TOKEN_${index}_ADDRESS
+  owner_var=ERC20_TOKEN_${index}_OWNER_PACKED
+  token_id_var=ERC20_TOKEN_${index}_TOKEN_ID
+  asset_preimage=$(
+    "$CAST" abi-encode \
+      'f(bytes32,uint256,address,address,bytes32,bytes32,uint8)' \
+      "$asset_domain" 31337 "$BRIDGE_CONTRACT_ADDRESS" "${!address_var}" \
+      "${!owner_var}" "${!token_id_var}" 9
+  )
+  printf -v "ERC20_TOKEN_${index}_ASSET_ID" '%s' \
+    "$("$CAST" keccak "$asset_preimage" | tr '[:upper:]' '[:lower:]')"
+done
+
+printf -v ERC20_MFT_STANDARD_VK_ID '0x%064x' "$ERC20_MFT_STANDARD_VK_ID_DECIMAL"
+printf -v ERC20_UNIVERSAL_BRIDGE_VK_ID '0x%064x' "$ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL"
 
 ZEKO_CIRCUITS_CONFIG=$TEMP_DIR/circuits-config.json
 ZEKO_DEPLOY_CONFIG=$TEMP_DIR/deploy-config.json
@@ -106,12 +144,26 @@ ZEKO_DEPLOY_CONFIG=$TEMP_DIR/deploy-config.json
       --circuits-config-output "$ZEKO_CIRCUITS_CONFIG" \
       --deploy-config-output "$ZEKO_DEPLOY_CONFIG" \
       --ethereum-bridge-address "$BRIDGE_CONTRACT_ADDRESS" \
-      --ethereum-token-asset-id "$ERC20_ASSET_ID" \
-      --ethereum-token-address "$ERC20_TOKEN_ADDRESS" \
-      --ethereum-token-owner-l2 "$ERC20_TOKEN_OWNER_L2" \
-      --ethereum-token-vault-l2 "$ERC20_TOKEN_VAULT_L2"
+      --ethereum-asset-registry-l2 "$ERC20_REGISTRY_L2" \
+      --ethereum-shared-vault-l2 "$ERC20_SHARED_VAULT_L2" \
+      --ethereum-mft-standard-vk-id "$ERC20_MFT_STANDARD_VK_ID_DECIMAL" \
+      --ethereum-universal-bridge-vk-id "$ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL"
 )
-export ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG
+
+export BRIDGE_CONTRACT_ADDRESS ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG
+export ERC20_REGISTRY_L2 ERC20_SHARED_VAULT_L2 ERC20_SHARED_VAULT_PACKED
+export ERC20_SHARED_VAULT_PRIVATE_KEY ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY
+export ERC20_MFT_STANDARD_VK_ID ERC20_UNIVERSAL_BRIDGE_VK_ID
+export ERC20_TOKEN_0_ADDRESS ERC20_TOKEN_1_ADDRESS
+export ERC20_TOKEN_0_ASSET_ID ERC20_TOKEN_1_ASSET_ID
+export ERC20_TOKEN_0_OWNER_L2 ERC20_TOKEN_1_OWNER_L2
+export ERC20_TOKEN_0_OWNER_PACKED ERC20_TOKEN_1_OWNER_PACKED
+export ERC20_TOKEN_0_TOKEN_ID ERC20_TOKEN_1_TOKEN_ID
+export ERC20_TOKEN_0_OWNER_PRIVATE_KEY ERC20_TOKEN_1_OWNER_PRIVATE_KEY
+export ERC20_TOKEN_0_ADMIN_CONTRACT_PRIVATE_KEY ERC20_TOKEN_1_ADMIN_CONTRACT_PRIVATE_KEY
+export ERC20_TOKEN_0_ADMIN_AUTHORITY_PRIVATE_KEY ERC20_TOKEN_1_ADMIN_AUTHORITY_PRIVATE_KEY
+export ERC20_TOKEN_0_DEPOSIT_CAP ERC20_TOKEN_1_DEPOSIT_CAP
+export ERC20_TOKEN_0_DEPOSIT_AMOUNT ERC20_TOKEN_1_DEPOSIT_AMOUNT
 
 LIVE_ENV=$TEMP_DIR/live-deployment.env
 {
@@ -121,31 +173,44 @@ LIVE_ENV=$TEMP_DIR/live-deployment.env
   printf 'ZEKO_DEPLOY_CONFIG=%s\n' "$ZEKO_DEPLOY_CONFIG"
 } >"$LIVE_ENV"
 
-echo "Running the standard-token deposit/withdrawal through the live sequencer..."
+echo "Running both standard-token mirrors through the live sequencer..."
 BRIDGE_ASSET=erc20 POC_ENV_FILE="$LIVE_ENV" \
   BRIDGE_LIVE_FIXTURE_ROOT="$FIXTURE_ROOT" \
   BRIDGE_LIVE_STATE_DIR="$LIVE_DIR" \
   "$ROOT/tools/run-live-sequencer-bridge-e2e.sh"
 
 scenario=$FIXTURE_ROOT/bridge-scenario.json
-[[ $(jq -er '.ethereumTokenAddress | ascii_downcase' "$scenario") == \
-  "${ERC20_TOKEN_ADDRESS,,}" ]]
-[[ $(jq -er '.ethereumTokenAssetId | ascii_downcase' "$scenario") == \
-  "$ERC20_ASSET_ID" ]]
-[[ $(jq -er '.ethereumTokenOwnerPacked | ascii_downcase' "$scenario") == \
-  "${ERC20_ZEKO_TOKEN_OWNER,,}" ]]
-[[ $(jq -er '.ethereumTokenIdL2 | ascii_downcase' "$scenario") == \
-  "${ERC20_ZEKO_TOKEN_ID,,}" ]]
+[[ $(jq -er '.ethereumAssets | length' "$scenario") == 2 ]]
+for index in 0 1; do
+  address_var=ERC20_TOKEN_${index}_ADDRESS
+  asset_var=ERC20_TOKEN_${index}_ASSET_ID
+  owner_var=ERC20_TOKEN_${index}_OWNER_PACKED
+  token_id_var=ERC20_TOKEN_${index}_TOKEN_ID
+  address_value=${!address_var}
+  asset_value=${!asset_var}
+  owner_value=${!owner_var}
+  token_id_value=${!token_id_var}
+  [[ $(jq -er ".ethereumAssets[$index].record.ethereumToken | ascii_downcase" "$scenario") == \
+    "${address_value,,}" ]]
+  [[ $(jq -er ".ethereumAssets[$index].record.assetId | ascii_downcase" "$scenario") == \
+    "${asset_value,,}" ]]
+  [[ $(jq -er ".ethereumAssets[$index].record.tokenOwnerL2 | ascii_downcase" "$scenario") == \
+    "${owner_value,,}" ]]
+  [[ $(jq -er ".ethereumAssets[$index].record.tokenIdL2 | ascii_downcase" "$scenario") == \
+    "${token_id_value,,}" ]]
+done
 
-echo "Submitting the exact asset-bound fixtures through Anvil custody..."
+echo "Submitting the exact two-asset fixtures through Anvil custody..."
 BRIDGE_ASSET=erc20 BRIDGE_FIXTURE_ROOT="$FIXTURE_ROOT" \
   "$ROOT/tools/run-local-bridge-roundtrip.sh"
 
 jq -n --arg fixtures "$FIXTURE_ROOT" \
   --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
-  --arg token "$ERC20_TOKEN_ADDRESS" --arg assetId "$ERC20_ASSET_ID" \
+  --arg token0 "$ERC20_TOKEN_0_ADDRESS" --arg token1 "$ERC20_TOKEN_1_ADDRESS" \
+  --arg assetId0 "$ERC20_TOKEN_0_ASSET_ID" --arg assetId1 "$ERC20_TOKEN_1_ASSET_ID" \
   '{status:"passed",bridgeAsset:"erc20",fixtures:$fixtures,
-    bridge:$bridge,token:$token,assetId:$assetId,
+    bridge:$bridge,tokens:[$token0,$token1],assetIds:[$assetId0,$assetId1],
+    sharedVault:true,universalBridgeVerificationKey:true,
     liveStandardTokenRoundtrip:true,anvilCustodyRoundtrip:true,
-    ocamlSettlements:2,sp1ProofsGenerated:0}'
-echo "Full local ERC20 bridge roundtrip passed without generating an SP1 proof."
+    registrationSettlements:1,bridgeSettlements:2,sp1ProofsGenerated:0}'
+echo "Full local two-token ERC20 bridge roundtrip passed without generating an SP1 proof."

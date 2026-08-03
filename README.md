@@ -56,6 +56,7 @@ other branches create preview deployments.
 | `crates/pickles-verifier` | o1 reference Pickles verifier adapted for this workspace. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side bridge contract that records deposits and accepts withdraw states. |
+| `contracts/src/ZekoAssetRegistry.sol` | Immutable registry module delegated through the bridge proxy for proposal and proof-settled activation. |
 | `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
 | `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
@@ -67,6 +68,11 @@ other branches create preview deployments.
 ## Contracts, Proxies And Roles
 
 `ZekoSettlement` and `EthereumZekoBridge` are UUPS implementations intended to be deployed behind OpenZeppelin `ERC1967Proxy` proxies. Deploy a fresh implementation, then deploy an `ERC1967Proxy` with the encoded `initialize(...)` call as constructor data.
+
+`ZekoAssetRegistry` is not another proxy. The bridge implementation fixes its
+module address immutably, delegates registry selectors to it, and keeps registry
+state in namespaced bridge-proxy storage so the existing UUPS layout is not
+shifted.
 
 Both contracts use OpenZeppelin `AccessControl` with the same role layout:
 
@@ -105,7 +111,7 @@ At a high level it:
 5. For a real Zeko export, the guest recomputes the account-update body digest,
    checks it against the verified two-field zkApp statement, recomputes the
    action hash, and decodes the fixed eight-field outer `Commit` action.
-6. The guest derives and emits the versioned 768-byte settlement receipt. A
+6. The guest derives and emits a versioned V1 through V4 settlement receipt. A
    fixture-only compatibility mode still emits the old 577-byte output so the
    copied o1 fixtures can be executed without pretending they are Zeko commits.
 
@@ -129,13 +135,19 @@ public output matches the verifier contract's tracked state:
 - the virtual Mina slot must be inside the proved commit range.
 
 On acceptance it stores the complete next outer state and records the accepted
-inner action state for bridge consumers.
+inner action state for bridge consumers. Later receipt versions also bind the
+inner-action claim tree and proof-checked asset-registry checkpoints. See the
+[settlement protocol](docs/content/protocol/settlement.md) for the authoritative
+receipt layouts.
 
 ## Bridge Circuit
 
-The bridge program in `program/bridge` proves that a batch of Ethereum deposits maps to the expected Zeko action-state transition. It is deposit-only; withdrawals are handled by `program/withdraw`.
+The bridge program in `program/bridge` proves that a batch of native or
+registered ERC-20 deposits maps to the expected Zeko action-state transition.
+It is deposit-only; current withdrawals are bound by the settlement guest,
+while `program/withdraw` remains a legacy compatibility path.
 
-For each deposit, the program:
+For each native deposit, the program:
 
 1. Validates and unpacks the packed `ZekoAddress` into `(x, isOdd)`.
 2. Converts the deposit amount into the Zeko amount field.
@@ -190,20 +202,28 @@ The bridge public output includes:
 - Zeko action-state length before/after
 - every exact five-field action and its intermediate action-state checkpoint
 
-The native path accepts ETH only, requires 1 gwei granularity, fixes the timeout
-to `UInt32.max`, and rejects an empty batch. Arbitrary-timeout and ERC20 deposit
-entry points are disabled by default because the current OCaml PoC cannot safely
-consume or cancel them.
+The native path requires 1 gwei granularity, fixes the timeout to `UInt32.max`,
+and rejects an empty batch. Arbitrary-timeout and arbitrary-token compatibility
+entry points remain disabled by default. The explicit legacy one-token ERC-20
+path retains action encoding V1 behind its compatibility switch. Universal
+registry assets use encoding V2 and bind the stable registry index plus the
+canonical Mina Poseidon record commitment in both deposit and withdrawal
+actions.
 
-## Native Bridge PoC
+The exact versioned wires and settlement receipts are documented in
+[deposits](docs/content/protocol/deposit-bridge.md),
+[withdrawals](docs/content/protocol/withdrawals.md), and
+[settlement](docs/content/protocol/settlement.md).
+
+## Native and ERC-20 Bridge PoC
 
 Settlement public values V2 bind the exact ordered inner actions to the
 proof-verified inner action-state transition. SP1 emits a depth-16 Keccak root,
 the global start index, count, bridge address, and the normal settlement
 receipt. Solidity records that root only while accepting the corresponding
-settlement transition. A native withdrawal claim supplies an ordinary Merkle
-proof, amount, recipient, and action-fields hash; it does not require the user
-to generate a SNARK.
+settlement transition. Native and registered ERC-20 withdrawal claims supply
+ordinary Merkle proofs and proof-bound preimages; users do not generate another
+SNARK.
 
 The OCaml Ethereum deposit rule recognizes one additional synthetic holder key:
 `x = uint160(EthereumZekoBridge)` and `is_odd = false`. Its circuit configuration
@@ -375,8 +395,8 @@ deposit_count     : 3
 The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
 checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
 Network, simulates contract submission, and broadcasts valid transactions. Its
-native deposit endpoint derives proof input from canonical finalized Ethereum
-logs, and its public withdrawal endpoint serves settlement-bound Keccak paths.
+deposit endpoint derives proof input from canonical finalized Ethereum logs,
+and its public withdrawal endpoint serves settlement-bound Keccak paths.
 
 It can run with Docker Compose using a read-only environment-file mount and a
 persistent PostgreSQL volume. See [`api/README.md`](api/README.md) and
