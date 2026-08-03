@@ -675,6 +675,89 @@ contract EthereumZekoBridgeTest is Test {
         registry.proposeAsset(duplicate);
     }
 
+    function test_UniversalRegistryCanCancelOnlyUnsettledTailProposal() public {
+        bytes32 ownerL2 = bytes32(uint256(0x123456));
+        bytes32 tokenIdL2 = keccak256("malformed token id");
+        AssetRecord memory malformed = AssetRecord({
+            schemaVersion: 1,
+            registryIndex: 0,
+            assetId: bridge.computeERC20AssetId(address(token6), ownerL2, tokenIdL2, 6),
+            ethereumToken: address(token6),
+            tokenOwnerL2: ownerL2,
+            tokenIdL2: tokenIdL2,
+            decimals: 6,
+            inventoryCap: 10_000_000,
+            mftStandardVkId: keccak256("mft standard vk"),
+            vaultPublicKey: bytes32(uint256(0x654321)),
+            universalBridgeVkId: keccak256("universal bridge vk")
+        });
+
+        bytes32 recordHash = registry.proposeAsset(malformed);
+        bytes32 laterOwnerL2 = bytes32(uint256(0x234567));
+        bytes32 laterTokenIdL2 = keccak256("later malformed token id");
+        AssetRecord memory later = AssetRecord({
+            schemaVersion: malformed.schemaVersion,
+            registryIndex: 1,
+            assetId: bridge.computeERC20AssetId(address(token9), laterOwnerL2, laterTokenIdL2, token9.decimals()),
+            ethereumToken: address(token9),
+            tokenOwnerL2: laterOwnerL2,
+            tokenIdL2: laterTokenIdL2,
+            decimals: token9.decimals(),
+            inventoryCap: malformed.inventoryCap,
+            mftStandardVkId: malformed.mftStandardVkId,
+            vaultPublicKey: malformed.vaultPublicKey,
+            universalBridgeVkId: malformed.universalBridgeVkId
+        });
+        registry.proposeAsset(later);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(IZekoAssetRegistry.UnauthorizedAssetRegistryCaller.selector, alice));
+        registry.cancelLastPendingAsset(address(token9));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZekoAssetRegistry.AssetProposalNotTail.selector, address(token6), uint32(0), uint32(2)
+            )
+        );
+        registry.cancelLastPendingAsset(address(token6));
+        registry.cancelLastPendingAsset(address(token9));
+        registry.cancelLastPendingAsset(address(token6));
+
+        assertEq(registry.proposedAssetCount(), 0);
+        assertEq(uint8(registry.assetStatusByToken(address(token6))), uint8(AssetStatus.None));
+        assertFalse(registry.proposedAssetRecord(recordHash));
+        assertFalse(registry.proposedAssetId(malformed.assetId));
+        assertFalse(registry.proposedL2TokenIdentity(keccak256(abi.encode(ownerL2, tokenIdL2))));
+
+        registry.proposeAsset(malformed);
+        settlement.setAssetRegistryCheckpoint(
+            keccak256("settled malformed registry root"), 1, 1, recordHash, bytes32(uint256(991))
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IZekoAssetRegistry.AssetProposalAlreadySettled.selector, recordHash, uint32(0), uint32(1)
+            )
+        );
+        registry.cancelLastPendingAsset(address(token6));
+    }
+
+    function test_AssetRecordBatchMatchesSharedV2GoldenVector() public view {
+        bytes32 recordHash = bytes32(uint256(0x1111111111111111111111111111111111111111111111111111111111111111));
+        bytes32 recordCommitment = bytes32(uint256(0x2222222222222222222222222222222222222222222222222222222222222222));
+        bytes32 leaf = keccak256(
+            abi.encodePacked(registryModule.ASSET_RECORD_BATCH_LEAF_V2_DOMAIN(), recordHash, recordCommitment)
+        );
+        assertEq(leaf, 0xd3c4982b15c04f3dc43bb070575355bb0155b6298b01f5858a51431c9dabd1fc);
+
+        bytes32 root = leaf;
+        bytes32 zero;
+        for (uint256 level = 0; level < 8; level++) {
+            root = keccak256(abi.encodePacked(registryModule.ASSET_RECORD_BATCH_NODE_V1_DOMAIN(), root, zero));
+            zero = keccak256(abi.encodePacked(registryModule.ASSET_RECORD_BATCH_NODE_V1_DOMAIN(), zero, zero));
+        }
+        assertEq(root, 0x3585343cc90a5d46ee8d6fa33b86040ea6ff3845175e8fb64640469392a10a3b);
+    }
+
     function test_UniversalRegistryActivatesTwoExactRecordsFromOneSettlementBatch() public {
         bytes32 sharedVault = bytes32(uint256(0x654321));
         bytes32 mftVk = keccak256("mft standard vk");

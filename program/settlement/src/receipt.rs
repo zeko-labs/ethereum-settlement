@@ -327,11 +327,7 @@ fn asset_record_batch_root(record_identities: &[(u32, Bytes32, Bytes32)]) -> Byt
             level[index], [0u8; 32],
             "duplicate asset record batch index"
         );
-        let mut leaf = Vec::with_capacity(96);
-        leaf.extend_from_slice(&keccak256(ASSET_RECORD_BATCH_LEAF_DOMAIN.as_bytes()).0);
-        leaf.extend_from_slice(record_hash);
-        leaf.extend_from_slice(record_commitment);
-        level[index] = keccak256(leaf).0;
+        level[index] = asset_record_batch_leaf(record_hash, record_commitment);
     }
     for _ in 0..ASSET_REGISTRY_TREE_DEPTH {
         level = level
@@ -346,6 +342,14 @@ fn asset_record_batch_root(record_identities: &[(u32, Bytes32, Bytes32)]) -> Byt
             .collect();
     }
     level[0]
+}
+
+fn asset_record_batch_leaf(record_hash: &Bytes32, record_commitment: &Bytes32) -> Bytes32 {
+    let mut leaf = Vec::with_capacity(96);
+    leaf.extend_from_slice(&keccak256(ASSET_RECORD_BATCH_LEAF_DOMAIN.as_bytes()).0);
+    leaf.extend_from_slice(record_hash);
+    leaf.extend_from_slice(record_commitment);
+    keccak256(leaf).0
 }
 
 fn compute_asset_id(
@@ -1068,6 +1072,28 @@ mod tests {
 
     fn encoded(value: u64) -> Bytes32 {
         field_to_bytes(field(value))
+    }
+
+    #[test]
+    fn asset_record_batch_matches_shared_v2_golden_vector() {
+        let record_hash = [0x11; 32];
+        let record_commitment = [0x22; 32];
+        assert_eq!(
+            asset_record_batch_leaf(&record_hash, &record_commitment),
+            [
+                0xd3, 0xc4, 0x98, 0x2b, 0x15, 0xc0, 0x4f, 0x3d, 0xc4, 0x3b, 0xb0, 0x70, 0x57, 0x53,
+                0x55, 0xbb, 0x01, 0x55, 0xb6, 0x29, 0x8b, 0x01, 0xf5, 0x85, 0x8a, 0x51, 0x43, 0x1c,
+                0x9d, 0xab, 0xd1, 0xfc,
+            ]
+        );
+        assert_eq!(
+            asset_record_batch_root(&[(0, record_hash, record_commitment)]),
+            [
+                0x35, 0x85, 0x34, 0x3c, 0xc9, 0x0a, 0x5d, 0x46, 0xee, 0x8d, 0x6f, 0xa3, 0x3b, 0x86,
+                0x04, 0x0e, 0xa6, 0xff, 0x38, 0x45, 0x17, 0x5e, 0x8f, 0xb6, 0x46, 0x40, 0x46, 0x93,
+                0x92, 0xa1, 0x0a, 0x3b,
+            ]
+        );
     }
 
     #[test]

@@ -32,6 +32,8 @@ interface IZekoAssetRegistry {
     error AssetIdentityAlreadyProposed(bytes32 identity);
     error AssetRecordNotPending(bytes32 recordHash);
     error AssetRecordNotSettled(bytes32 recordHash);
+    error AssetProposalNotTail(address token, uint32 registryIndex, uint32 proposedCount);
+    error AssetProposalAlreadySettled(bytes32 recordHash, uint32 registryIndex, uint32 settledCount);
     error InvalidAssetRecordBatch(bytes32 expectedRoot, bytes32 actualRoot, uint64 settlementSequence);
     error RegistryCheckpointMismatch(
         bytes32 expectedRoot,
@@ -69,9 +71,13 @@ interface IZekoAssetRegistry {
         uint32 registrySchemaVersion
     );
 
+    event AssetRegistrationCancelled(bytes32 indexed recordHash, uint32 indexed registryIndex, address indexed token);
+
     event AssetStatusUpdated(address indexed token, AssetStatus oldStatus, AssetStatus newStatus);
 
     function proposeAsset(AssetRecord calldata record) external returns (bytes32 recordHash);
+
+    function cancelLastPendingAsset(address token) external;
 
     function activateAsset(address token, bytes32 expectedRegistryRoot, uint32 expectedRegistryCount) external;
 
@@ -248,6 +254,44 @@ contract ZekoAssetRegistry is IZekoAssetRegistry {
             record.vaultPublicKey,
             record.universalBridgeVkId
         );
+    }
+
+    /// @notice Removes the un-settled tail proposal so an operator mistake
+    /// cannot permanently block the next append-only registry index.
+    /// @dev Later pending proposals must be unwound in reverse order. A record
+    /// at an index already accepted by settlement is immutable.
+    function cancelLastPendingAsset(address token) external onlyBridgeAdmin {
+        ZekoAssetRegistryStorage.Layout storage registry = ZekoAssetRegistryStorage.registryStorage();
+        AssetRecord memory record = registry.assetRecordByToken[token];
+        bytes32 recordHash = _hashAssetRecord(record);
+        if (registry.assetStatusByToken[token] != AssetStatus.Pending) {
+            revert AssetRecordNotPending(recordHash);
+        }
+
+        uint32 proposedCount = registry.proposedAssetCount;
+        if (
+            proposedCount == 0 || record.registryIndex + 1 != proposedCount
+                || registry.assetTokenByRegistryIndex[record.registryIndex] != token
+        ) {
+            revert AssetProposalNotTail(token, record.registryIndex, proposedCount);
+        }
+
+        IZekoAssetRegistrySettlement settlement = _settlement();
+        uint32 settledCount = settlement.assetRegistryCount();
+        if (record.registryIndex < settledCount || settlement.settledAssetRecord(recordHash)) {
+            revert AssetProposalAlreadySettled(recordHash, record.registryIndex, settledCount);
+        }
+
+        bytes32 l2Identity = keccak256(abi.encode(record.tokenOwnerL2, record.tokenIdL2));
+        delete registry.proposedAssetRecord[recordHash];
+        delete registry.proposedAssetId[record.assetId];
+        delete registry.proposedL2TokenIdentity[l2Identity];
+        delete registry.assetTokenByRegistryIndex[record.registryIndex];
+        delete registry.assetStatusByToken[token];
+        delete registry.assetRecordByToken[token];
+        registry.proposedAssetCount = record.registryIndex;
+
+        emit AssetRegistrationCancelled(recordHash, record.registryIndex, token);
     }
 
     function activateAsset(address token, bytes32 expectedRegistryRoot, uint32 expectedRegistryCount)
