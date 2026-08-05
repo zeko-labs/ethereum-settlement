@@ -404,11 +404,10 @@ Current settlement verification status:
   full verification over the copied o1 fixture matrix, mutation failures,
   exact serial-MSM equivalence on both Pasta curves, and the real 65,536-term
   accumulator commitment.
-- On the checked-in default mainnet fixture, the low-memory direct executor
-  fell from 52,159,229,071 to 5,072,572,223 cycles after replacing the zkVM's
-  per-scalar fallback with an explicitly serial windowed MSM. That removes
-  90.274833% of the cycles (10.2826x). Both runs accepted the same proof and
-  verifier hash; a guest run with a mutated recursive challenge was rejected.
+- The zkVM's per-scalar accumulator fallback was replaced with an explicitly
+  serial windowed MSM. The authoritative before/after measurements and
+  verification conditions are recorded in the
+  [settlement cycle optimization benchmark](docs/content/status.md#settlement-cycle-optimization-benchmark).
   This is execute-only; local proving remains disabled.
 - The retained real generated OCaml commit previously passed at
   52,188,766,765 cycles and advanced the marked local settlement contract.

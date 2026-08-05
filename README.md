@@ -449,7 +449,8 @@ lower. No static PROVE estimate is kept in the repository because the market
 price changes. The command only reads auction parameters and never requests a
 proof.
 
-`network_fixture` provides an approval-digest and explicit cost caps for paid
-proof-only benchmarks of the pinned Pickles fixture. Its output is not a
-Solidity-submittable settlement receipt; operational settlement proofs must use
-the gateway's approval-gated bundle flow.
+For the approval-digest and explicit cost caps required by the fixture-only
+paid benchmark, see the
+[`network_fixture` command reference](docs/content/reference/commands.md#approval-capped-fixture-benchmark).
+Its output is not a Solidity-submittable settlement receipt; operational
+settlement proofs must use the gateway's approval-gated bundle flow.

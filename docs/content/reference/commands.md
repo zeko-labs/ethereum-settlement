@@ -1,6 +1,7 @@
 # Command reference
 
-All commands in the default sections avoid proof generation.
+Except for the explicitly approval-capped fixture benchmark, these commands
+avoid proof generation.
 
 ## Build and test
 
@@ -103,13 +104,50 @@ tools/build-machine-images.sh \
 
 ```sh
 cargo run --release --bin network_quote -- --proof-system groth16
+cargo run --release --bin zkapp -- --execute --calculate-gas
 cargo run --release --bin network_quote -- \
   --proof-system groth16 --pgu "$MAX_PGU"
 ```
 
-The command reads auction parameters and never creates a request. The current
-maximum quote is `baseFee + maxPricePerPgu * PGU`; obtain PGU from network
-simulation rather than substituting local executor cycles.
+`network_quote` reads auction parameters and never creates a request. The
+current maximum quote is `baseFee + maxPricePerPgu * PGU`. Pass
+`--include-balance` to also read the credited balance and requester address
+derived from the existing `NETWORK_PRIVATE_KEY`; this still performs only
+read-only RPCs. The `zkapp` command forces local CPU execution and calculates
+settlement PGU without creating a network request; do not substitute the cycle
+count from ordinary execute-only output.
+
+## Approval-capped fixture benchmark
+
+`network_fixture` executes and hashes an in-memory snapshot of the four pinned
+Pickles fixture files. Without `--request`, it is a read-only preflight that
+emits the snapshot's `inputSha256`, expected public-values hash, program vkey,
+and local cycles:
+
+```sh
+cargo run --release --bin network_fixture
+```
+
+A paid Groth16 benchmark requires explicit approval of that exact digest and
+all three cost caps:
+
+```sh
+cargo run --release --bin network_fixture -- \
+  --request \
+  --approved-input-sha256 "$INPUT_SHA256" \
+  --max-pgu "$MAX_PGU" \
+  --max-price-per-pgu "$MAX_PRICE_PER_PGU" \
+  --max-total-atto-prove "$MAX_TOTAL_ATTO_PROVE"
+```
+
+The paid form requires `NETWORK_PRIVATE_KEY`, rechecks the snapshotted input and
+live maximum cost, and does not retry submission when a fixed-nonce request has
+an ambiguous outcome; it attempts read-only request recovery instead. Review
+`cargo run --release --bin network_fixture -- --help` for the pinned fixture,
+simulation, cap, timeout, and output defaults before approval. The saved proof
+is a fixture-only benchmark artifact, not a Solidity-submittable settlement
+receipt. Operational proofs use the
+[gateway approval flow](/gateway/proving#approval-boundary).
 
 ## Testnet profile
 

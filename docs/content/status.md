@@ -147,6 +147,8 @@ The universal registry runtime path is also implemented:
   withdrawals, and claims the corresponding Ethereum tokens without generating
   an SP1 proof.
 
+## Settlement cycle optimization benchmark
+
 A separate July 29 source benchmark on the checked-in default mainnet fixture
 reduced a full settlement guest execution from 52,159,229,071 to 5,072,572,223
 cycles by replacing the zkVM's per-scalar accumulator fallback with an

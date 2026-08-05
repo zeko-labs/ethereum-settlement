@@ -88,6 +88,7 @@ The following are not routine tests:
 
 - `--prove`
 - `cargo run --release --bin evm`
+- `network_fixture --request`
 - `SP1_PROVER=network`
 - gateway approval of a job
 - a broadcast Foundry script against Sepolia

@@ -15,12 +15,12 @@ queued -> validating -> awaiting_approval -> approved
 `validating` verifies every proof input before any paid request exists. A
 settlement is checked natively with the same baked Pickles verifier blob used
 by the SP1 guest, then its receipt is derived by the exact shared guest
-function. This avoids a roughly 5-billion-cycle zkVM replay on the current
-optimized guest; the retained July 15 audit checkpoint predates that
-optimization and records roughly 52 billion cycles. Bridge and legacy-withdraw
-jobs still execute their SP1 guests through the low-memory executor. The
-gateway validates the resulting public values against live contract state and
-hashes the hydrated proof input.
+function. This avoids a full zkVM replay on the operational path; the
+[project status](/status#settlement-cycle-optimization-benchmark) owns the
+current source benchmark and distinguishes it from the retained July 15 audit
+checkpoint. Bridge and legacy-withdraw jobs still execute their SP1 guests
+through the low-memory executor. The gateway validates the resulting public
+values against live contract state and hashes the hydrated proof input.
 
 Native settlement validation deliberately records `cycleCount: null`; native
 runtime is not an SP1 cycle or network-PGU measurement. Set
