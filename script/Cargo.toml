@@ -20,6 +20,7 @@ anyhow            = { workspace = true }
 hex               = { workspace = true }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
+sha2              = "0.10"
 zeko_sp1_lib      = { path = "../lib" }
 pickles-verifier = { path = "../crates/pickles-verifier" }
 settlement-program = { path = "../program/settlement" }

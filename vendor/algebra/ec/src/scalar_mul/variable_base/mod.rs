@@ -36,6 +36,12 @@ pub trait VariableBaseMSM: ScalarMul {
     ///
     /// Reference: [`VariableBaseMSM::msm`]
     fn msm_unchecked(bases: &[Self::MulBase], scalars: &[Self::ScalarField]) -> Self {
+        #[cfg(target_os = "zkvm")]
+        let bigints = scalars
+            .iter()
+            .map(|s| s.into_bigint())
+            .collect::<Vec<_>>();
+        #[cfg(not(target_os = "zkvm"))]
         let bigints = cfg_into_iter!(scalars)
             .map(|s| s.into_bigint())
             .collect::<Vec<_>>();
@@ -62,16 +68,7 @@ pub trait VariableBaseMSM: ScalarMul {
     ) -> Self {
         #[cfg(target_os = "zkvm")]
         {
-            let size = ark_std::cmp::min(bases.len(), bigints.len());
-            let mut result = Self::zero();
-            for (base, bigint) in bases.iter().zip(&bigints[..size]) {
-                if !bigint.is_zero() {
-                    let scalar = Self::ScalarField::from_bigint(*bigint)
-                        .expect("MSM scalar bigint must fit scalar field");
-                    result += *base * scalar;
-                }
-            }
-            return result;
+            return msm_bigint_serial(bases, bigints);
         }
 
         if Self::NEGATION_IS_CHEAP {
@@ -123,6 +120,152 @@ pub trait VariableBaseMSM: ScalarMul {
         }
         result
     }
+}
+
+/// Serial windowed multi-scalar multiplication.
+///
+/// This is the same Pippenger/wNAF computation used by the optimized native
+/// path, but it deliberately contains no `cfg_into_iter!`, Rayon iterators, or
+/// thread-count queries. zkVM targets use this entry point even when Cargo
+/// feature unification enables arkworks' `parallel` feature.
+///
+/// Keeping this function available on native targets lets downstream verifier
+/// tests exercise the exact arithmetic schedule selected inside the zkVM.
+#[doc(hidden)]
+pub fn msm_bigint_serial<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+) -> V {
+    if V::NEGATION_IS_CHEAP {
+        msm_bigint_wnaf_serial(bases, bigints)
+    } else {
+        msm_bigint_bucket_serial(bases, bigints)
+    }
+}
+
+fn msm_bigint_wnaf_serial<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+) -> V {
+    let size = ark_std::cmp::min(bases.len(), bigints.len());
+    if size == 0 {
+        return V::zero();
+    }
+    let scalars = &bigints[..size];
+    let bases = &bases[..size];
+
+    let c = if size < 32 {
+        3
+    } else {
+        super::ln_without_floats(size) + 2
+    };
+
+    let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+    let digits_count = (num_bits + c - 1) / c;
+    let scalar_digits = scalars
+        .iter()
+        .flat_map(|s| make_digits(s, c, num_bits))
+        .collect::<Vec<_>>();
+    let zero = V::zero();
+    let window_sums: Vec<_> = (0..digits_count)
+        .map(|i| {
+            let mut buckets = vec![zero; 1 << c];
+            for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
+                use ark_std::cmp::Ordering;
+                let scalar = digits[i];
+                match 0.cmp(&scalar) {
+                    Ordering::Less => buckets[(scalar - 1) as usize] += base,
+                    Ordering::Greater => buckets[(-scalar - 1) as usize] -= base,
+                    Ordering::Equal => (),
+                }
+            }
+
+            let mut running_sum = V::zero();
+            let mut res = V::zero();
+            buckets.into_iter().rev().for_each(|b| {
+                running_sum += &b;
+                res += &running_sum;
+            });
+            res
+        })
+        .collect();
+
+    let lowest = window_sums[0];
+    lowest
+        + &window_sums[1..]
+            .iter()
+            .rev()
+            .fold(zero, |mut total, sum_i| {
+                total += sum_i;
+                for _ in 0..c {
+                    total.double_in_place();
+                }
+                total
+            })
+}
+
+fn msm_bigint_bucket_serial<V: VariableBaseMSM>(
+    bases: &[V::MulBase],
+    bigints: &[<V::ScalarField as PrimeField>::BigInt],
+) -> V {
+    let size = ark_std::cmp::min(bases.len(), bigints.len());
+    if size == 0 {
+        return V::zero();
+    }
+    let scalars = &bigints[..size];
+    let bases = &bases[..size];
+
+    let c = if size < 32 {
+        3
+    } else {
+        super::ln_without_floats(size) + 2
+    };
+    let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
+    let one = V::ScalarField::one().into_bigint();
+    let zero = V::zero();
+    let window_starts: Vec<_> = (0..num_bits).step_by(c).collect();
+
+    let window_sums: Vec<_> = window_starts
+        .into_iter()
+        .map(|w_start| {
+            let mut res = zero;
+            let mut buckets = vec![zero; (1 << c) - 1];
+            for (&scalar, base) in scalars.iter().zip(bases) {
+                if scalar == one {
+                    if w_start == 0 {
+                        res += base;
+                    }
+                } else if !scalar.is_zero() {
+                    let mut scalar = scalar;
+                    scalar >>= w_start as u32;
+                    let scalar = scalar.as_ref()[0] % (1 << c);
+                    if scalar != 0 {
+                        buckets[(scalar - 1) as usize] += base;
+                    }
+                }
+            }
+
+            let mut running_sum = V::zero();
+            buckets.into_iter().rev().for_each(|b| {
+                running_sum += &b;
+                res += &running_sum;
+            });
+            res
+        })
+        .collect();
+
+    let lowest = window_sums[0];
+    lowest
+        + &window_sums[1..]
+            .iter()
+            .rev()
+            .fold(zero, |mut total, sum_i| {
+                total += sum_i;
+                for _ in 0..c {
+                    total.double_in_place();
+                }
+                total
+            })
 }
 
 // Compute msm using windowed non-adjacent form

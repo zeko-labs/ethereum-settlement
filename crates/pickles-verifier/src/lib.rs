@@ -39,6 +39,14 @@ use poly_commitment::commitment::b_poly_coefficients;
 
 use types::{StepField, VerifiableProof, Verifier};
 
+#[cfg(target_os = "zkvm")]
+fn track_cycles(command: &[u8]) {
+    sp1_lib::io::write(1, command);
+}
+
+#[cfg(not(target_os = "zkvm"))]
+fn track_cycles(_command: &[u8]) {}
+
 /// Verify a single Pickles proof against its tag's [`Verifier`]. Deterministic
 /// + `no_std`.
 pub fn verify(verifier: &Verifier, proof: &VerifiableProof) -> bool {
@@ -74,6 +82,7 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
         return false;
     }
 
+    track_cycles(b"cycle-tracker-report-start:pickles-wrap-prepare\n");
     let pis: Vec<Vec<WrapField>> = proofs
         .iter()
         .map(|p| {
@@ -87,7 +96,6 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
         .collect();
 
     let mut rng = batching_rng(proofs, &pis);
-
     let contexts: Vec<Context<FULL_ROUNDS, Pallas, OpeningProof<Pallas, FULL_ROUNDS>, _>> = proofs
         .iter()
         .zip(pis.iter())
@@ -97,11 +105,13 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
             public_input: pi.as_slice(),
         })
         .collect();
+    track_cycles(b"cycle-tracker-report-end:pickles-wrap-prepare\n");
 
     let group_map = <Pallas as CommitmentCurve>::Map::setup();
     type WrapFqSponge = DefaultFqSponge<PallasParameters, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
     type WrapFrSponge = DefaultFrSponge<WrapField, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
-    batch_verify_with_rng::<
+    track_cycles(b"cycle-tracker-report-start:pickles-wrap-kimchi\n");
+    let verified = batch_verify_with_rng::<
         FULL_ROUNDS,
         Pallas,
         WrapFqSponge,
@@ -109,7 +119,9 @@ pub fn verify_batch(verifier: &Verifier, proofs: &[VerifiableProof]) -> bool {
         OpeningProof<Pallas, FULL_ROUNDS>,
         ChaCha20Rng,
     >(&group_map, &contexts, &mut rng)
-    .is_ok()
+    .is_ok();
+    track_cycles(b"cycle-tracker-report-end:pickles-wrap-kimchi\n");
+    verified
 }
 
 /// Fiat–Shamir-derived `ChaCha20Rng` for kimchi's batched dlog check, seeded
@@ -152,6 +164,7 @@ fn batching_rng(
 /// against the Vesta SRS generators. Plain arkworks MSM rather than the
 /// std-gated `SRS::commit_non_hiding`.
 pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
+    track_cycles(b"cycle-tracker-report-start:pickles-accumulator\n");
     let chals: Vec<StepField> = proof
         .raw_bulletproof_challenges
         .iter()
@@ -159,11 +172,18 @@ pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
         .collect();
     let coeffs = b_poly_coefficients(&chals);
     let g = &verifier.vesta_srs.g;
-    let n = coeffs.len().min(g.len());
-    let computed_sg = <<Vesta as AffineRepr>::Group as VariableBaseMSM>::msm(&g[..n], &coeffs[..n])
-        .expect("compute_sg MSM")
-        .into_affine();
-    computed_sg == proof.challenge_polynomial_commitment
+    let expected_len = 1usize << verifier.step_srs_length_log2;
+    if coeffs.len() != expected_len || g.len() < expected_len {
+        track_cycles(b"cycle-tracker-report-end:pickles-accumulator\n");
+        return false;
+    }
+    let computed_sg =
+        <<Vesta as AffineRepr>::Group as VariableBaseMSM>::msm(&g[..expected_len], &coeffs)
+            .expect("compute_sg MSM")
+            .into_affine();
+    let valid = computed_sg == proof.challenge_polynomial_commitment;
+    track_cycles(b"cycle-tracker-report-end:pickles-accumulator\n");
+    valid
 }
 
 // The tests use `std::fs` to read fixture JSONs + `std::sync::OnceLock` for
@@ -173,12 +193,13 @@ pub fn accumulator_check(verifier: &Verifier, proof: &VerifiableProof) -> bool {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use crate::types::{VestaSrs, WrapSrs};
+    use crate::types::{VestaSrs, WrapSrs, STEP_IPA_ROUNDS};
     use crate::wire::{
         parse_app_statement, parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk,
         OcamlProof,
     };
-    use mina_curves::pasta::Pallas;
+    use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
+    use mina_curves::pasta::{Pallas, Vesta};
     use poly_commitment::precomputed_srs::get_srs;
     use std::sync::{Arc, OnceLock};
 
@@ -283,6 +304,86 @@ mod tests {
             .expect("conversion");
         let verifier = Verifier::new(wrap_vk, wrap_srs().clone(), vesta_srs().clone(), 1);
         (verifier, proof)
+    }
+
+    fn assert_serial_msm_matches_naive<C>(len: usize)
+    where
+        C: AffineRepr,
+        C::Group: VariableBaseMSM<MulBase = C>,
+        C::ScalarField: PrimeField,
+    {
+        let bases: Vec<C> = (0..len)
+            .map(|i| (C::generator() * C::ScalarField::from((i as u64) + 2)).into_affine())
+            .collect();
+        let scalars: Vec<C::ScalarField> = (0..len)
+            .map(|i| {
+                let mut scalar = C::ScalarField::from((i as u64) + 11);
+                for round in 0..4 {
+                    scalar.square_in_place();
+                    scalar += C::ScalarField::from((i + round + 3) as u64);
+                }
+                match i % 19 {
+                    0 => C::ScalarField::ZERO,
+                    1 => C::ScalarField::ONE,
+                    _ => scalar,
+                }
+            })
+            .collect();
+        let bigints: Vec<_> = scalars.iter().map(|scalar| scalar.into_bigint()).collect();
+
+        let serial =
+            ark_ec::scalar_mul::variable_base::msm_bigint_serial::<C::Group>(&bases, &bigints);
+        let naive = bases
+            .iter()
+            .zip(&scalars)
+            .fold(C::Group::zero(), |mut sum, (base, scalar)| {
+                sum += *base * scalar;
+                sum
+            });
+
+        assert_eq!(serial, naive, "serial MSM mismatch at length {len}");
+    }
+
+    #[test]
+    fn zkvm_serial_msm_matches_naive_on_both_pasta_curves() {
+        for len in [0, 1, 2, 31, 32, 257] {
+            assert_serial_msm_matches_naive::<Pallas>(len);
+            assert_serial_msm_matches_naive::<Vesta>(len);
+        }
+    }
+
+    #[test]
+    fn zkvm_serial_msm_accepts_the_real_accumulator_commitment() {
+        let (verifier, proof) = mainnet_proof();
+        let challenges: Vec<StepField> = proof
+            .raw_bulletproof_challenges
+            .iter()
+            .map(|challenge| ScalarChallenge::new(*challenge).to_field(&verifier.step_endo))
+            .collect();
+        let coefficients = b_poly_coefficients(&challenges);
+        assert_eq!(coefficients.len(), 1usize << STEP_IPA_ROUNDS);
+        assert!(verifier.vesta_srs.g.len() >= coefficients.len());
+        let bigints: Vec<_> = coefficients
+            .iter()
+            .map(|coefficient| coefficient.into_bigint())
+            .collect();
+
+        let commitment = ark_ec::scalar_mul::variable_base::msm_bigint_serial::<
+            <Vesta as AffineRepr>::Group,
+        >(&verifier.vesta_srs.g[..coefficients.len()], &bigints)
+        .into_affine();
+
+        assert_eq!(commitment, proof.challenge_polynomial_commitment);
+    }
+
+    #[test]
+    fn accumulator_rejects_a_truncated_step_srs() {
+        let (mut verifier, proof) = mainnet_proof();
+        let mut truncated = VestaSrs::default();
+        truncated.g = verifier.vesta_srs.g[..(1usize << STEP_IPA_ROUNDS) - 1].to_vec();
+        verifier.vesta_srs = Arc::new(truncated);
+
+        assert!(!accumulator_check(&verifier, &proof));
     }
 
     #[test]

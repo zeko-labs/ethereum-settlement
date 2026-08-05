@@ -400,11 +400,20 @@ Current settlement verification status:
 
 - `cargo check --offline -p settlement-program -p zkapp-script -p zeko_sp1_lib
   -p zeko-proof-api` passes.
-- `cargo test --offline -p pickles-verifier` passes: 25 native tests, including
-  full verification over the copied o1 fixture matrix and mutation failures.
-- A real generated OCaml commit passes through the low-memory direct executor
-  at 52,188,766,765 cycles and advances the marked local settlement contract.
+- `cargo test --offline -p pickles-verifier` passes: 30 native tests, including
+  full verification over the copied o1 fixture matrix, mutation failures,
+  exact serial-MSM equivalence on both Pasta curves, and the real 65,536-term
+  accumulator commitment.
+- On the checked-in default mainnet fixture, the low-memory direct executor
+  fell from 52,159,229,071 to 5,072,572,223 cycles after replacing the zkVM's
+  per-scalar fallback with an explicitly serial windowed MSM. That removes
+  90.274833% of the cycles (10.2826x). Both runs accepted the same proof and
+  verifier hash; a guest run with a mutated recursive challenge was rejected.
   This is execute-only; local proving remains disabled.
+- The retained real generated OCaml commit previously passed at
+  52,188,766,765 cycles and advanced the marked local settlement contract.
+  That historical bridge checkpoint has not been rerun with the optimized
+  guest, so its recorded cycle count remains unchanged.
 - The old static RKYV SRS blobs are gone. The o1 verifier blob is produced at
   build time from the wrap VK and proof-systems SRS data.
 - The guest checks the Pickles Vesta accumulator, reconstructs deferred values,
