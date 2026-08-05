@@ -9781,6 +9781,8 @@ dependencies = [
  "mina-curves",
  "pickles-verifier",
  "poly-commitment",
+ "prost",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "settlement-program",
@@ -9790,7 +9792,9 @@ dependencies = [
  "sp1-core-executor-runner",
  "sp1-sdk",
  "tokio",
+ "tonic",
  "zeko_sp1_lib",
+ "zstd",
 ]
 
 [[package]]

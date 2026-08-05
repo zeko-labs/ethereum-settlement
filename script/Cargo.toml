@@ -18,9 +18,13 @@ dotenv          = "0.15.0"
 bincode = { workspace = true }
 anyhow            = { workspace = true }
 hex               = { workspace = true }
+prost             = "0.13"
+reqwest           = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
 sha2              = "0.10"
+tonic             = { version = "0.12.3", features = ["tls", "tls-roots"] }
+zstd              = "0.13"
 zeko_sp1_lib      = { path = "../lib" }
 pickles-verifier = { path = "../crates/pickles-verifier" }
 settlement-program = { path = "../program/settlement" }
