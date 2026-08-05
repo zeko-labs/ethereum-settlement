@@ -53,7 +53,7 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | Method and path | Purpose |
 | --- | --- |
 | `POST /v1/settlements` | Queue a settlement proof bundle. Alias: `/v1/proofs/settlement`. |
-| `POST /v1/bridge/deposits/prove` | Queue the next canonical finalized native-deposit batch. |
+| `POST /v1/bridge/deposits/prove` | Queue the next canonical finalized deposit batch. |
 | `POST /v1/proofs/bridge` | Low-level bridge fixture endpoint; not the production deposit entry point. |
 | `POST /v1/proofs/withdraw` | Legacy withdrawal fixture endpoint. |
 | `GET /v1/proofs` | List jobs, optionally filtered by kind/status. |
@@ -68,11 +68,19 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | --- | --- |
 | `GET /v1/bridge/config` | Chain, contract, decimal, finality-mode, and withdrawal-delay discovery for browser clients. |
 | `GET /v1/bridge/deposits?zekoRecipient=0x...&after=N&limit=N` | Recover a wallet's deposits after a page reload. |
-| `GET /v1/bridge/deposits/:nonce` | Deposit finality, proof, synchronization, and next user action. |
+| `GET /v1/bridge/deposits/:nonce` | Immutable action/registry identity, deposit finality, proof, synchronization, and next user action. |
 | `GET /v1/bridge/withdrawal-requests?recipient=0x...&after=N` | Discover withdrawal requests as soon as their canonical inner actions reach the archive, before settlement. |
 | `GET /v1/bridge/withdrawals?recipient=0x...&after=N` | Discover indexed native claims. |
 | `GET /v1/bridge/withdrawals/:sequence/:offset` | Return one fixed-depth Merkle proof and live delay/cursor status. |
+| `GET /v1/bridge/token-withdrawals/:sequence/:offset` | Return registry identity, one fixed-depth ERC-20 Merkle proof, and live delay/cursor status. |
 | `GET /health` | Database and Ethereum connectivity. |
+
+Deposit and ERC-20 withdrawal responses expose `encodingVersion`,
+`registryIndex`, and `recordCommitment`. Native deposits use version `0`,
+legacy one-token actions use version `1`, and both have null registry fields.
+Universal registry actions use version `2` and carry the exact index and
+canonical Mina Poseidon record commitment persisted from their accepted
+events.
 
 ### Public explorer routes
 

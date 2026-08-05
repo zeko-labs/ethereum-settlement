@@ -33,7 +33,7 @@ environment file.
 | `ETHEREUM_CONFIRMATIONS` | Depth used only when `ETHEREUM_FINALITY_MODE=confirmations`; local E2E uses 1. |
 | `ETHEREUM_POLL_INTERVAL_SECS` | Receipt/indexer poll interval. |
 | `ETHEREUM_INDEXER_START_BLOCK` | Contract deployment block. |
-| `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized native-deposit batch automatically. Enable for the browser PoC. |
+| `BRIDGE_AUTO_PROVE_DEPOSITS` | Queue each complete finalized deposit batch automatically. Enable for the browser PoC. |
 | `BRIDGE_AUTO_PROVE_POLL_SECS` | Automatic batch scan interval; reference value 5. |
 | `API_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins, or `*` for isolated local development. |
 
@@ -84,6 +84,24 @@ the gateway only exposes consensus-finalized outer actions. Mina deployments
 keep the sequencer's existing block-delay behavior; no OCaml finality logic is
 changed by the Ethereum adapter.
 
+An ERC-20-enabled sequencer supplies one universal registry configuration:
+
+```text
+--ethereum-bridge-address 0x...
+--ethereum-asset-registry-l2 B62...
+--ethereum-shared-vault-l2 B62...
+--ethereum-mft-standard-vk-id 9001
+--ethereum-universal-bridge-vk-id 9002
+```
+
+The registry schema and depth are circuit constants. Schema V1 uses a depth-8
+tree with a 256-record capacity. Individual asset records supply the Ethereum
+token, asset ID, dynamic MFT owner, circuit-derived token ID, at most nine
+decimals, and inventory cap through authenticated registry membership. Startup
+rejects a partial universal configuration. Registration rejects an owner equal
+to the shared vault and any record whose MFT or universal VK identifier differs
+from this configuration.
+
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
 materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing
 domain to custom endpoints. Do not substitute the display name or
@@ -114,7 +132,7 @@ The runtime config directory is mounted read-only:
 | `bridge-genesis-ledger.json` | Genuine OCaml bridge export. |
 | `bridge-scenario.json` | Public DA/sequencer/recipient identity and bridge checkpoint manifest. |
 | `virtual-mina-accounts.json` | Outer and fee-payer GraphQL account objects. |
-| `artifacts/manifest.json` | Chain, proxies, vkeys, VK identifier, DA mode, and holder address. |
+| `artifacts/manifest.json` | Chain, proxy/implementation/registry-module addresses, registry identity, vkeys, VK identifier, DA mode, and holder address. |
 
 Changing any of the first three after building the Zeko/gateway images creates
 a different proof identity.

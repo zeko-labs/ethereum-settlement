@@ -17,8 +17,8 @@ batch data.
 | OCaml Zeko | Sequences transactions, stores batches through multisig DA, produces Pickles proofs, and exports proof-bound settlement/bridge data. |
 | Gateway | Implements the Mina GraphQL subset used by the sequencer, natively verifies settlement Pickles proofs, executes the smaller guests locally, obtains approved network proofs, submits Ethereum transactions, and indexes canonical Ethereum state. |
 | SP1 settlement guest | Verifies the full Pickles proof and derives the Zeko outer-state receipt and optional inner-action claim tree. |
-| SP1 bridge guest | Replays finalized native ETH deposits into exact Zeko outer Witness actions and Poseidon checkpoints. |
-| Ethereum contracts | Hold ETH, verify SP1 proofs, enforce state continuity and slot bounds, record checkpoints, and release delayed Merkle claims. |
+| SP1 bridge guest | Replays finalized native ETH and registered ERC-20 deposits into exact Zeko outer Witness actions and Poseidon checkpoints. |
+| Ethereum contracts | Hold ETH and ERC-20 custody, verify SP1 proofs, enforce state continuity and slot bounds, activate proof-settled registry records, record checkpoints, and release delayed Merkle claims. |
 | Succinct Network | Produces EVM-compatible Groth16 proofs after explicit operator approval. |
 
 ## End-to-end paths
@@ -31,7 +31,7 @@ transaction -> sequencer -> 2-of-3 DA -> OCaml prover -> Pickles commit
   -> Succinct proof -> ZekoSettlement -> confirmed virtual Mina state
 ```
 
-Native bridge:
+Bridge:
 
 ```text
 Ethereum deposit -> finalized BridgeDeposit log -> bridge SP1 proof
@@ -50,7 +50,7 @@ Keccak Merkle path to Ethereum.
 | Path | Purpose |
 | --- | --- |
 | `program/settlement` | SP1 guest for Pickles verification and settlement receipts. |
-| `program/bridge` | SP1 guest for canonical native-deposit batches. |
+| `program/bridge` | SP1 guest for canonical native and registered ERC-20 deposit batches. |
 | `program/withdraw` | Legacy compatibility guest; disabled in the current native PoC. |
 | `crates/pickles-verifier` | o1 `o1js-to-zkvm` Pickles verifier adapted to SP1. |
 | `lib` | Shared, versioned host/guest public-value and witness types. |

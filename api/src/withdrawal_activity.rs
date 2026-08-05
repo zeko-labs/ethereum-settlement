@@ -3,11 +3,14 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::{PgPool, Row};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::time::sleep;
-use zeko_sp1_lib::{Address, Bytes32};
+use zeko_sp1_lib::{
+    inner_action_commitment, Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3,
+    ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2,
+};
 
-use crate::{indexer, AppState};
+use crate::{ethereum::TokenWithdrawalIdentity, AppState};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ArchiveInnerAction {
@@ -20,7 +23,23 @@ pub(crate) struct ArchiveInnerAction {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ArchiveWithdrawal {
+pub(crate) enum ArchiveWithdrawal {
+    Native(ArchiveNativeWithdrawal),
+    Token(ArchiveTokenWithdrawal),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ArchiveNativeWithdrawal {
+    pub recipient: Address,
+    pub amount: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ArchiveTokenWithdrawal {
+    pub encoding_version: u32,
+    pub registry_index: u32,
+    pub record_commitment: Bytes32,
+    pub asset_id: Bytes32,
     pub recipient: Address,
     pub amount: u64,
 }
@@ -87,10 +106,13 @@ LEFT JOIN LATERAL (
     WHERE candidate.hash = inner_action.hash
       AND candidate.update_ordinal < inner_action.update_ordinal
       AND candidate.balance_change::numeric < 0
-      AND candidate.increment_nonce
-      AND candidate.call_depth = 0
-      AND cardinality(candidate.fields) = 3
-    ORDER BY candidate.update_ordinal DESC, candidate.action_ordinal DESC
+      AND (
+        (candidate.increment_nonce AND candidate.call_depth = 0
+         AND cardinality(candidate.fields) = 3)
+        OR cardinality(candidate.fields) IN (11, 14)
+      )
+    ORDER BY (cardinality(candidate.fields) IN (11, 14)) DESC,
+             candidate.update_ordinal DESC, candidate.action_ordinal DESC
     LIMIT 1
 ) withdrawal ON TRUE
 ORDER BY inner_action.global_action_index
@@ -287,8 +309,8 @@ pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingW
     Ok(actions
         .into_iter()
         .filter(|action| !settled.contains(&i64::from(action.global_action_index)))
-        .filter_map(|action| {
-            action.withdrawal.map(|withdrawal| PendingWithdrawal {
+        .filter_map(|action| match action.withdrawal {
+            Some(ArchiveWithdrawal::Native(withdrawal)) => Some(PendingWithdrawal {
                 global_action_index: action.global_action_index,
                 transaction_hash: action.transaction_hash,
                 block_height: action.block_height,
@@ -297,7 +319,8 @@ pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingW
                 amount: withdrawal.amount.to_string(),
                 status: "pendingSettlement",
                 next_action: "waitForSettlement",
-            })
+            }),
+            Some(ArchiveWithdrawal::Token(_)) | None => None,
         })
         .collect())
 }
@@ -383,40 +406,48 @@ async fn recover_batch(
     settlement: &sqlx::postgres::PgRow,
 ) -> Result<()> {
     let expected_root = parse_hex_bytes32(settlement.try_get("inner_action_root")?)?;
-    let rows = actions
-        .iter()
-        .enumerate()
-        .map(|(offset, action)| -> Result<_> {
-            let expected_index = start
-                .checked_add(u32::try_from(offset)?)
-                .context("inner action index overflow")?;
-            anyhow::ensure!(
-                action.global_action_index == expected_index,
-                "archive inner actions are not contiguous"
-            );
-            let action_fields_hash = indexer::hash_action_fields(&action.fields);
-            let leaf = match &action.withdrawal {
-                Some(withdrawal) => indexer::hash_native_withdrawal_leaf(
-                    chain_id,
-                    bridge,
-                    action.global_action_index,
-                    withdrawal.recipient,
-                    withdrawal.amount,
-                    action_fields_hash,
-                ),
-                None => indexer::hash_raw_inner_action_leaf(
-                    chain_id,
-                    bridge,
-                    action.global_action_index,
-                    action_fields_hash,
-                ),
-            };
-            Ok((offset, action, action_fields_hash, leaf))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let identities = unique_token_withdrawal_identities(actions.iter().filter_map(|action| {
+        match action.withdrawal.as_ref() {
+            Some(ArchiveWithdrawal::Token(withdrawal)) => Some(withdrawal),
+            Some(ArchiveWithdrawal::Native(_)) | None => None,
+        }
+    }));
+    let resolved_tokens = state
+        .ethereum
+        .resolve_token_withdrawal_identities(&identities)
+        .await?;
+    let mut rows = Vec::with_capacity(actions.len());
+    for (offset, action) in actions.iter().enumerate() {
+        let expected_index = start
+            .checked_add(u32::try_from(offset)?)
+            .context("inner action index overflow")?;
+        anyhow::ensure!(
+            action.global_action_index == expected_index,
+            "archive inner actions are not contiguous"
+        );
+        let action_fields_hash = inner_action_commitment::action_fields_hash(&action.fields);
+        let token = match &action.withdrawal {
+            Some(ArchiveWithdrawal::Token(withdrawal)) => Some(
+                resolved_tokens
+                    .get(&token_withdrawal_identity(withdrawal))
+                    .context("archived ERC20 identity was not resolved")?
+                    .into_array(),
+            ),
+            Some(ArchiveWithdrawal::Native(_)) | None => None,
+        };
+        let leaf = archive_action_leaf(
+            chain_id,
+            bridge,
+            action.global_action_index,
+            action_fields_hash,
+            action.withdrawal.as_ref(),
+            token,
+        )?;
+        rows.push((offset, action, action_fields_hash, leaf, token));
+    }
     let leaves = rows.iter().map(|row| row.3).collect::<Vec<_>>();
     anyhow::ensure!(
-        indexer::inner_action_root(&leaves) == expected_root,
+        inner_action_commitment::root(&leaves) == expected_root,
         "archive actions do not reproduce the Ethereum-accepted inner-action root"
     );
 
@@ -425,13 +456,38 @@ async fn recover_batch(
     let transaction_hash = settlement.try_get::<String, _>("ethereum_tx_hash")?;
     let slot_upper = settlement.try_get::<i64, _>("slot_upper")?;
     let mut tx = state.pool.begin().await?;
-    for (offset, action, action_fields_hash, leaf) in rows {
-        let (recipient, amount) = match &action.withdrawal {
-            Some(withdrawal) => (
+    for (offset, action, action_fields_hash, leaf, token) in rows {
+        let (
+            token,
+            asset_id,
+            action_encoding_version,
+            registry_index,
+            record_commitment,
+            recipient,
+            amount,
+        ) = match (&action.withdrawal, token) {
+            (Some(ArchiveWithdrawal::Native(withdrawal)), None) => (
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(EthereumAddress::from(withdrawal.recipient).to_string()),
                 Some(withdrawal.amount.to_string()),
             ),
-            None => (None, None),
+            (Some(ArchiveWithdrawal::Token(withdrawal)), Some(token)) => (
+                Some(EthereumAddress::from(token).to_string()),
+                Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                Some(i32::try_from(withdrawal.encoding_version)?),
+                (withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2)
+                    .then_some(i64::from(withdrawal.registry_index)),
+                (withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2)
+                    .then(|| format!("0x{}", hex::encode(withdrawal.record_commitment))),
+                Some(EthereumAddress::from(withdrawal.recipient).to_string()),
+                Some(withdrawal.amount.to_string()),
+            ),
+            (None, None) => (None, None, None, None, None, None, None),
+            _ => anyhow::bail!("archive withdrawal token classification is inconsistent"),
         };
         let field_json = action
             .fields
@@ -441,17 +497,23 @@ async fn recover_batch(
         sqlx::query(
             "INSERT INTO gateway_inner_action_leaves
                 (settlement_sequence, action_offset, global_action_index,
-                 action_fields, action_fields_hash, leaf, recipient,
-                 zeko_amount, inner_action_root, commit_slot_upper,
+                 action_fields, action_fields_hash, leaf, token, asset_id,
+                 action_encoding_version, registry_index, record_commitment,
+                 recipient, zeko_amount, inner_action_root, commit_slot_upper,
                  ethereum_block_number, ethereum_block_hash, ethereum_tx_hash,
                  removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric, $9, $10,
-                     $11, $12, $13, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13::numeric, $14, $15, $16, $17, $18, FALSE)
              ON CONFLICT (settlement_sequence, action_offset) DO UPDATE SET
                  global_action_index = EXCLUDED.global_action_index,
                  action_fields = EXCLUDED.action_fields,
                  action_fields_hash = EXCLUDED.action_fields_hash,
                  leaf = EXCLUDED.leaf,
+                 token = EXCLUDED.token,
+                 asset_id = EXCLUDED.asset_id,
+                 action_encoding_version = EXCLUDED.action_encoding_version,
+                 registry_index = EXCLUDED.registry_index,
+                 record_commitment = EXCLUDED.record_commitment,
                  recipient = EXCLUDED.recipient,
                  zeko_amount = EXCLUDED.zeko_amount,
                  inner_action_root = EXCLUDED.inner_action_root,
@@ -467,6 +529,11 @@ async fn recover_batch(
         .bind(serde_json::to_value(field_json)?)
         .bind(format!("0x{}", hex::encode(action_fields_hash)))
         .bind(format!("0x{}", hex::encode(leaf)))
+        .bind(token)
+        .bind(asset_id)
+        .bind(action_encoding_version)
+        .bind(registry_index)
+        .bind(record_commitment)
         .bind(recipient)
         .bind(amount)
         .bind(format!("0x{}", hex::encode(expected_root)))
@@ -486,6 +553,75 @@ async fn recover_batch(
     Ok(())
 }
 
+fn token_withdrawal_identity(withdrawal: &ArchiveTokenWithdrawal) -> TokenWithdrawalIdentity {
+    TokenWithdrawalIdentity {
+        encoding_version: withdrawal.encoding_version,
+        registry_index: withdrawal.registry_index,
+        record_commitment: withdrawal.record_commitment.into(),
+        asset_id: withdrawal.asset_id.into(),
+    }
+}
+
+fn unique_token_withdrawal_identities<'a>(
+    withdrawals: impl IntoIterator<Item = &'a ArchiveTokenWithdrawal>,
+) -> Vec<TokenWithdrawalIdentity> {
+    let mut seen = HashSet::new();
+    withdrawals
+        .into_iter()
+        .map(token_withdrawal_identity)
+        .filter(|identity| seen.insert(*identity))
+        .collect()
+}
+
+fn archive_action_leaf(
+    chain_id: u64,
+    bridge: Address,
+    global_action_index: u32,
+    action_fields_hash: Bytes32,
+    withdrawal: Option<&ArchiveWithdrawal>,
+    token: Option<Address>,
+) -> Result<Bytes32> {
+    match (withdrawal, token) {
+        (Some(ArchiveWithdrawal::Native(withdrawal)), None) => {
+            Ok(inner_action_commitment::native_withdrawal_leaf(
+                chain_id,
+                bridge,
+                global_action_index,
+                &NativeWithdrawalV2 {
+                    recipient: withdrawal.recipient,
+                    amount: withdrawal.amount,
+                },
+                action_fields_hash,
+            ))
+        }
+        (Some(ArchiveWithdrawal::Token(withdrawal)), Some(token)) => {
+            Ok(inner_action_commitment::erc20_withdrawal_leaf(
+                chain_id,
+                bridge,
+                global_action_index,
+                &TokenWithdrawalV3 {
+                    encoding_version: withdrawal.encoding_version,
+                    registry_index: withdrawal.registry_index,
+                    record_commitment: withdrawal.record_commitment,
+                    token,
+                    asset_id: withdrawal.asset_id,
+                    recipient: withdrawal.recipient,
+                    amount: withdrawal.amount,
+                    params_fields: Vec::new(),
+                },
+                action_fields_hash,
+            ))
+        }
+        (None, None) => Ok(inner_action_commitment::raw_inner_action_leaf(
+            chain_id,
+            bridge,
+            global_action_index,
+            action_fields_hash,
+        )),
+        _ => anyhow::bail!("archive withdrawal token classification is inconsistent"),
+    }
+}
+
 fn parse_fields(fields: Vec<String>) -> Result<Vec<Bytes32>> {
     fields
         .into_iter()
@@ -498,6 +634,13 @@ fn parse_fields(fields: Vec<String>) -> Result<Vec<Bytes32>> {
 }
 
 fn parse_withdrawal(fields: Vec<String>) -> Result<ArchiveWithdrawal> {
+    if fields.len() == 3 {
+        return parse_native_withdrawal(fields).map(ArchiveWithdrawal::Native);
+    }
+    parse_token_withdrawal(fields).map(ArchiveWithdrawal::Token)
+}
+
+fn parse_native_withdrawal(fields: Vec<String>) -> Result<ArchiveNativeWithdrawal> {
     anyhow::ensure!(
         fields.len() == 3,
         "withdrawal action must have three fields"
@@ -521,8 +664,83 @@ fn parse_withdrawal(fields: Vec<String>) -> Result<ArchiveWithdrawal> {
     );
     let mut address = [0u8; 20];
     address.copy_from_slice(&recipient_bytes[12..]);
-    Ok(ArchiveWithdrawal {
+    Ok(ArchiveNativeWithdrawal {
         recipient: address,
+        amount: amount.to::<u64>(),
+    })
+}
+
+fn parse_token_withdrawal(fields: Vec<String>) -> Result<ArchiveTokenWithdrawal> {
+    anyhow::ensure!(
+        matches!(fields.len(), 11 | 14),
+        "invalid ERC20 withdrawal parameter width"
+    );
+    let fields = fields
+        .into_iter()
+        .map(|field| U256::from_str_radix(&field, 10))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (encoding_version, registry_index, record_commitment, asset_offset) = if fields.len() == 14
+    {
+        anyhow::ensure!(
+            fields[0] == U256::from(ERC20_ACTION_ENCODING_V2),
+            "unsupported ERC20 withdrawal encoding version"
+        );
+        let registry_index =
+            u32::try_from(fields[1]).context("ERC20 registry index is outside UInt32")?;
+        let record_commitment = fields[2].to_be_bytes();
+        anyhow::ensure!(
+            record_commitment != [0u8; 32],
+            "ERC20 record commitment is zero"
+        );
+        (
+            ERC20_ACTION_ENCODING_V2,
+            registry_index,
+            record_commitment,
+            3,
+        )
+    } else {
+        (ERC20_ACTION_ENCODING_V1, 0, [0u8; 32], 0)
+    };
+    let asset_high: Bytes32 = fields[asset_offset].to_be_bytes();
+    let asset_low: Bytes32 = fields[asset_offset + 1].to_be_bytes();
+    anyhow::ensure!(
+        asset_high[..16].iter().all(|byte| *byte == 0)
+            && asset_low[..16].iter().all(|byte| *byte == 0),
+        "ERC20 asset limbs exceed 128 bits"
+    );
+    let mut asset_id = [0u8; 32];
+    asset_id[..16].copy_from_slice(&asset_high[16..]);
+    asset_id[16..].copy_from_slice(&asset_low[16..]);
+    anyhow::ensure!(asset_id != [0u8; 32], "ERC20 asset id is zero");
+
+    let amount = fields[fields.len() - 3];
+    let recipient = fields[fields.len() - 2];
+    let parity = fields[fields.len() - 1];
+    anyhow::ensure!(
+        parity.is_zero(),
+        "Ethereum withdrawal recipient must use even parity"
+    );
+    let recipient_bytes: Bytes32 = recipient.to_be_bytes();
+    anyhow::ensure!(
+        recipient_bytes[..12].iter().all(|byte| *byte == 0),
+        "withdrawal recipient does not fit 160 bits"
+    );
+    anyhow::ensure!(
+        recipient_bytes[12..].iter().any(|byte| *byte != 0),
+        "withdrawal recipient is zero"
+    );
+    anyhow::ensure!(
+        amount > U256::ZERO && amount <= U256::from(u64::MAX),
+        "withdrawal amount is outside UInt64"
+    );
+    let mut recipient = [0u8; 20];
+    recipient.copy_from_slice(&recipient_bytes[12..]);
+    Ok(ArchiveTokenWithdrawal {
+        encoding_version,
+        registry_index,
+        record_commitment,
+        asset_id,
+        recipient,
         amount: amount.to::<u64>(),
     })
 }
@@ -546,6 +764,9 @@ mod tests {
             "5000000000".into(),
         ])
         .unwrap();
+        let ArchiveWithdrawal::Native(withdrawal) = withdrawal else {
+            panic!("expected native withdrawal");
+        };
         assert_eq!(withdrawal.amount, 5_000_000_000);
         assert_eq!(
             EthereumAddress::from(withdrawal.recipient).to_string(),
@@ -556,5 +777,107 @@ mod tests {
     #[test]
     fn rejects_non_ethereum_recipient_parity() {
         assert!(parse_withdrawal(vec!["1".into(), "1".into(), "2".into()]).is_err());
+    }
+
+    #[test]
+    fn parses_registry_erc20_withdrawal_parameters() {
+        let fields = [
+            "2", "7", "991", "1", "2", "0", "1", "1", "123", "0", "0", "2000000", "16909060", "0",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+        let withdrawal = parse_withdrawal(fields).unwrap();
+        let ArchiveWithdrawal::Token(withdrawal) = withdrawal else {
+            panic!("expected token withdrawal");
+        };
+        let mut asset_id = [0u8; 32];
+        asset_id[15] = 1;
+        asset_id[31] = 2;
+        let mut recipient = [0u8; 20];
+        recipient[16..].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(withdrawal.encoding_version, ERC20_ACTION_ENCODING_V2);
+        assert_eq!(withdrawal.registry_index, 7);
+        assert_eq!(withdrawal.record_commitment, U256::from(991).to_be_bytes());
+        assert_eq!(withdrawal.asset_id, asset_id);
+        assert_eq!(withdrawal.recipient, recipient);
+        assert_eq!(withdrawal.amount, 2_000_000);
+
+        let token = [0x33; 20];
+        let action_fields_hash = [0x44; 32];
+        let actual = archive_action_leaf(
+            31_337,
+            [0x55; 20],
+            9,
+            action_fields_hash,
+            Some(&ArchiveWithdrawal::Token(withdrawal.clone())),
+            Some(token),
+        )
+        .unwrap();
+        let expected = inner_action_commitment::erc20_withdrawal_leaf(
+            31_337,
+            [0x55; 20],
+            9,
+            &TokenWithdrawalV3 {
+                encoding_version: withdrawal.encoding_version,
+                registry_index: withdrawal.registry_index,
+                record_commitment: withdrawal.record_commitment,
+                token,
+                asset_id: withdrawal.asset_id,
+                recipient: withdrawal.recipient,
+                amount: withdrawal.amount,
+                params_fields: Vec::new(),
+            },
+            action_fields_hash,
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn parses_legacy_erc20_withdrawal_parameters() {
+        let fields = [
+            "2", "3", "0", "1", "1", "123", "0", "0", "2000000", "16909060", "0",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let ArchiveWithdrawal::Token(withdrawal) = parse_withdrawal(fields).unwrap() else {
+            panic!("expected token withdrawal");
+        };
+        assert_eq!(withdrawal.encoding_version, ERC20_ACTION_ENCODING_V1);
+        assert_eq!(withdrawal.registry_index, 0);
+        assert_eq!(withdrawal.record_commitment, [0u8; 32]);
+    }
+
+    #[test]
+    fn recovery_deduplicates_complete_token_identities() {
+        let legacy = ArchiveTokenWithdrawal {
+            encoding_version: ERC20_ACTION_ENCODING_V1,
+            registry_index: 0,
+            record_commitment: [0u8; 32],
+            asset_id: [0x11; 32],
+            recipient: [0x22; 20],
+            amount: 5,
+        };
+        let registry = ArchiveTokenWithdrawal {
+            encoding_version: ERC20_ACTION_ENCODING_V2,
+            registry_index: 7,
+            record_commitment: [0x33; 32],
+            asset_id: [0x44; 32],
+            recipient: [0x55; 20],
+            amount: 9,
+        };
+        let actions = [legacy.clone(), legacy, registry.clone(), registry];
+
+        let identities = unique_token_withdrawal_identities(actions.iter());
+
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].encoding_version, ERC20_ACTION_ENCODING_V1);
+        assert_eq!(identities[0].asset_id, [0x11u8; 32]);
+        assert_eq!(identities[1].encoding_version, ERC20_ACTION_ENCODING_V2);
+        assert_eq!(identities[1].registry_index, 7);
+        assert_eq!(identities[1].record_commitment, [0x33u8; 32]);
+        assert_eq!(identities[1].asset_id, [0x44u8; 32]);
     }
 }

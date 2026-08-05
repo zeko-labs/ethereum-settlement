@@ -32,10 +32,10 @@ machines flake a baseline, not an Ethereum-PoC deployment.
 | Gateway host/service | Run the pinned `zeko-proof-api` image or Nix package with a dedicated system user. It performs CPU-heavy local SP1 execution, so a separate x86_64 host is preferred over sharing the sequencer. |
 | Gateway PostgreSQL | Persistent private database for jobs, virtual Mina accounts/actions, Ethereum blocks, bridge logs, proof metrics, and rollback snapshots. Protocol state is replayable, but retain backups for proof-cost/audit history. |
 | Ethereum RPC | Reliable Sepolia JSON-RPC with archive/log access from the deployment block. Use a redundant provider pair or operate synchronized execution and consensus clients. |
-| Ethereum contracts | Real SP1 verifier plus deterministic settlement and bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
+| Ethereum contracts | Real SP1 verifier plus deterministic asset-registry module and settlement/bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
 | Succinct requester | Network private key, funded PROVE balance, Groth16 configuration, hard PGU/price caps, and six-hour worker timeout. |
 | Ethereum transaction signer | Funded Sepolia EOA holding only `PROVER_ROLE`. Current preflight expects the settlement, bridge, and legacy-withdraw submitter files to resolve to this same address. |
-| Retained PoC identity | Final bridge address, circuit config, genesis ledger, three DA keys, sequencer/recipient keys, verifier index, SP1 vkeys, and manifest stored as one release unit. |
+| Retained PoC identity | Final bridge and registry-module addresses, circuit config, genesis ledger, three DA keys, sequencer/recipient keys, verifier index, SP1 vkeys, and manifest stored as one release unit. |
 | Three managed DA nodes | For this PoC, deploy exactly three retained DA identities and configure quorum two. Existing external/quorum-one testnet settings are not the target identity. |
 | Reverse proxy policy | Private/authenticated access for `/graphql` and proof operator routes; optionally public, rate-limited bridge discovery routes. |
 | Monitoring and backup | Gateway/systemd health, job-state age, balances, slot lifetime, finalized-head lag, DA quorum, database backup, and immutable artifact retention. |
@@ -176,7 +176,8 @@ unbounded journal fields.
 2. Predict the bridge proxy and bake it into the circuit config.
 3. Generate and validate the real OCaml two-commit fixture.
 4. Build immutable Zeko/gateway images and record digests plus SP1 vkeys.
-5. Deploy contracts, configure roles/delay, and archive deployment receipts.
+5. Deploy the registry module and both proxy contracts, configure roles/delay,
+   and archive deployment receipts.
 6. Materialize virtual accounts and gateway config from the same fixture.
 7. Deploy PostgreSQL and gateway; verify health and vkey checks.
 8. Deploy three DA nodes/signers, bootstrap the exact ledger, and verify 2-of-3.

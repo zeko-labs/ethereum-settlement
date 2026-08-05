@@ -112,8 +112,201 @@ pub type ZekoAddress = Bytes32;
 pub const SETTLEMENT_PUBLIC_VALUES_MAGIC: [u8; 4] = *b"ZKST";
 pub const SETTLEMENT_PUBLIC_VALUES_VERSION: u16 = 1;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_VERSION: u16 = 2;
+pub const SETTLEMENT_PUBLIC_VALUES_V3_VERSION: u16 = 3;
+pub const SETTLEMENT_PUBLIC_VALUES_V4_VERSION: u16 = 4;
 pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_LENGTH: usize = 828;
+pub const SETTLEMENT_PUBLIC_VALUES_V3_LENGTH: usize = 932;
+pub const SETTLEMENT_PUBLIC_VALUES_V4_LENGTH: usize = 904;
+pub const ERC20_ACTION_ENCODING_V1: u32 = 1;
+pub const ERC20_ACTION_ENCODING_V2: u32 = 2;
+
+pub mod inner_action_commitment {
+    use super::{
+        Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V1,
+        ERC20_ACTION_ENCODING_V2,
+    };
+    use alloy_primitives::keccak256;
+
+    pub const TREE_DEPTH: usize = 16;
+    pub const MAX_LEAVES: usize = 1 << TREE_DEPTH;
+
+    const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
+    const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
+    const ERC20_WITHDRAWAL_LEAF_V1_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
+    const ERC20_WITHDRAWAL_LEAF_V2_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V4";
+    const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
+    const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
+
+    pub fn action_fields_hash(fields: &[Bytes32]) -> Bytes32 {
+        let mut encoded = Vec::with_capacity(64 + fields.len() * 32);
+        encoded.extend_from_slice(&keccak256(ACTION_FIELDS_DOMAIN.as_bytes()).0);
+        encoded.extend_from_slice(&u32_word(
+            u32::try_from(fields.len()).expect("field count fits u32"),
+        ));
+        for field in fields {
+            encoded.extend_from_slice(field);
+        }
+        keccak256(encoded).0
+    }
+
+    pub fn native_withdrawal_leaf(
+        chain_id: u64,
+        bridge_address: Address,
+        global_index: u32,
+        withdrawal: &NativeWithdrawalV2,
+        action_fields_hash: Bytes32,
+    ) -> Bytes32 {
+        let mut encoded = Vec::with_capacity(32 * 7);
+        encoded.extend_from_slice(&keccak256(NATIVE_WITHDRAWAL_LEAF_DOMAIN.as_bytes()).0);
+        encoded.extend_from_slice(&u64_word(chain_id));
+        encoded.extend_from_slice(&address_word(bridge_address));
+        encoded.extend_from_slice(&u32_word(global_index));
+        encoded.extend_from_slice(&address_word(withdrawal.recipient));
+        encoded.extend_from_slice(&u64_word(withdrawal.amount));
+        encoded.extend_from_slice(&action_fields_hash);
+        keccak256(encoded).0
+    }
+
+    pub fn erc20_withdrawal_leaf(
+        chain_id: u64,
+        bridge_address: Address,
+        global_index: u32,
+        withdrawal: &TokenWithdrawalV3,
+        action_fields_hash: Bytes32,
+    ) -> Bytes32 {
+        let mut encoded = Vec::with_capacity(32 * 12);
+        let domain = match withdrawal.encoding_version {
+            ERC20_ACTION_ENCODING_V1 => ERC20_WITHDRAWAL_LEAF_V1_DOMAIN,
+            ERC20_ACTION_ENCODING_V2 => ERC20_WITHDRAWAL_LEAF_V2_DOMAIN,
+            version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
+        };
+        encoded.extend_from_slice(&keccak256(domain.as_bytes()).0);
+        encoded.extend_from_slice(&u64_word(chain_id));
+        encoded.extend_from_slice(&address_word(bridge_address));
+        encoded.extend_from_slice(&u32_word(global_index));
+        encoded.extend_from_slice(&address_word(withdrawal.token));
+        if withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2 {
+            encoded.extend_from_slice(&u32_word(withdrawal.encoding_version));
+            encoded.extend_from_slice(&u32_word(withdrawal.registry_index));
+            encoded.extend_from_slice(&withdrawal.record_commitment);
+        }
+        encoded.extend_from_slice(&withdrawal.asset_id);
+        encoded.extend_from_slice(&address_word(withdrawal.recipient));
+        encoded.extend_from_slice(&u64_word(withdrawal.amount));
+        encoded.extend_from_slice(&action_fields_hash);
+        keccak256(encoded).0
+    }
+
+    pub fn raw_inner_action_leaf(
+        chain_id: u64,
+        bridge_address: Address,
+        global_index: u32,
+        action_fields_hash: Bytes32,
+    ) -> Bytes32 {
+        let mut encoded = Vec::with_capacity(32 * 5);
+        encoded.extend_from_slice(&keccak256(RAW_INNER_ACTION_LEAF_DOMAIN.as_bytes()).0);
+        encoded.extend_from_slice(&u64_word(chain_id));
+        encoded.extend_from_slice(&address_word(bridge_address));
+        encoded.extend_from_slice(&u32_word(global_index));
+        encoded.extend_from_slice(&action_fields_hash);
+        keccak256(encoded).0
+    }
+
+    pub fn root(leaves: &[Bytes32]) -> Bytes32 {
+        assert!(
+            leaves.len() <= MAX_LEAVES,
+            "inner action tree exceeds capacity"
+        );
+        let zero_hashes = zero_hashes();
+        if leaves.is_empty() {
+            return zero_hashes[TREE_DEPTH];
+        }
+        let mut nodes = leaves.to_vec();
+        for zero_hash in zero_hashes.iter().take(TREE_DEPTH) {
+            nodes = nodes
+                .chunks(2)
+                .map(|pair| hash_node(pair[0], pair.get(1).copied().unwrap_or(*zero_hash)))
+                .collect();
+        }
+        assert_eq!(nodes.len(), 1, "invalid inner action tree");
+        nodes[0]
+    }
+
+    pub fn merkle_proof(leaves: &[Bytes32], target: usize) -> Option<[Bytes32; TREE_DEPTH]> {
+        if leaves.len() > MAX_LEAVES || target >= leaves.len() {
+            return None;
+        }
+        let zero_hashes = zero_hashes();
+        let mut proof = [[0u8; 32]; TREE_DEPTH];
+        let mut nodes = leaves.to_vec();
+        let mut index = target;
+        for level in 0..TREE_DEPTH {
+            proof[level] = nodes.get(index ^ 1).copied().unwrap_or(zero_hashes[level]);
+            nodes = nodes
+                .chunks(2)
+                .map(|pair| hash_node(pair[0], pair.get(1).copied().unwrap_or(zero_hashes[level])))
+                .collect();
+            index >>= 1;
+        }
+        Some(proof)
+    }
+
+    pub fn verify_merkle_proof(
+        leaf: Bytes32,
+        mut index: usize,
+        proof: &[Bytes32; TREE_DEPTH],
+        expected_root: Bytes32,
+    ) -> bool {
+        if index >= MAX_LEAVES {
+            return false;
+        }
+        let mut computed = leaf;
+        for sibling in proof {
+            computed = if index & 1 == 0 {
+                hash_node(computed, *sibling)
+            } else {
+                hash_node(*sibling, computed)
+            };
+            index >>= 1;
+        }
+        computed == expected_root
+    }
+
+    fn zero_hashes() -> [Bytes32; TREE_DEPTH + 1] {
+        let mut hashes = [[0u8; 32]; TREE_DEPTH + 1];
+        for level in 0..TREE_DEPTH {
+            hashes[level + 1] = hash_node(hashes[level], hashes[level]);
+        }
+        hashes
+    }
+
+    fn hash_node(left: Bytes32, right: Bytes32) -> Bytes32 {
+        let mut encoded = Vec::with_capacity(96);
+        encoded.extend_from_slice(&keccak256(INNER_ACTION_NODE_DOMAIN.as_bytes()).0);
+        encoded.extend_from_slice(&left);
+        encoded.extend_from_slice(&right);
+        keccak256(encoded).0
+    }
+
+    fn u64_word(value: u64) -> Bytes32 {
+        let mut output = [0u8; 32];
+        output[24..].copy_from_slice(&value.to_be_bytes());
+        output
+    }
+
+    fn u32_word(value: u32) -> Bytes32 {
+        let mut output = [0u8; 32];
+        output[28..].copy_from_slice(&value.to_be_bytes());
+        output
+    }
+
+    fn address_word(value: Address) -> Bytes32 {
+        let mut output = [0u8; 32];
+        output[12..].copy_from_slice(&value);
+        output
+    }
+}
 
 /// Mina network domain used when hashing the account-update body that is the
 /// first field of the verified Zkapp statement.
@@ -154,6 +347,18 @@ pub struct SettlementBindingV1 {
     #[serde(with = "serde_vec_vec_bytes32")]
     pub actions: Vec<Vec<Bytes32>>,
     pub state_before: OuterStateV1,
+    /// Exact child call forest from the Pickles statement. It is required for
+    /// V3 registry checkpoints and omitted by retained V1/V2 fixtures.
+    #[serde(default)]
+    pub call_forest: Vec<CallForestNodeV3>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CallForestNodeV3 {
+    pub account_update_body: ChunkedRandomOracleInputV1,
+    #[serde(default)]
+    pub calls: Vec<CallForestNodeV3>,
 }
 
 /// Ethereum-domain values supplied by the gateway. These are intentionally
@@ -180,6 +385,94 @@ pub struct SettlementWitnessV1 {
     /// optional preserves the existing V1 fixture and execute checkpoint.
     #[serde(default)]
     pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
+    /// Optional proof-synchronized asset-registry checkpoint. The settlement
+    /// guest emits V3 only together with the V2 inner-action range.
+    #[serde(default)]
+    pub asset_registry_checkpoint: Option<AssetRegistryCheckpointV3>,
+    /// Optional batched proof-synchronized asset-registry checkpoint. V4
+    /// validates every sequential Poseidon append and emits a depth-8 Keccak
+    /// commitment to the exact canonical record hashes so Solidity can
+    /// activate any record with a fixed-size membership proof.
+    #[serde(default)]
+    pub asset_registry_batch: Option<AssetRegistryBatchCheckpointV4>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryCheckpointV3 {
+    /// Version of the Pickles-bound registry checkpoint commitment.
+    pub checkpoint_version: u32,
+    /// Packed Mina compressed public key for the configured registry account.
+    /// The most-significant bit carries the y-coordinate parity and the
+    /// remaining 255 bits carry the canonical x-coordinate.
+    #[serde(with = "serde_bytes32")]
+    pub registry_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub root: Bytes32,
+    pub count: u32,
+    pub schema_version: u32,
+    /// Keccak hash of the exact canonical Solidity/TypeScript V1 asset record
+    /// whose append produced this checkpoint.
+    #[serde(with = "serde_bytes32")]
+    pub record_hash: Bytes32,
+    pub record: CanonicalAssetRecordV1,
+    #[serde(with = "serde_vec_bytes32")]
+    pub append_path: Vec<Bytes32>,
+    #[serde(with = "serde_bytes32")]
+    pub old_root: Bytes32,
+    pub old_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryBatchCheckpointV4 {
+    /// Version of the Pickles-bound registry checkpoint commitment.
+    pub checkpoint_version: u32,
+    /// Packed Mina compressed public key for the configured registry account.
+    /// The most-significant bit carries the y-coordinate parity and the
+    /// remaining 255 bits carry the canonical x-coordinate.
+    #[serde(with = "serde_bytes32")]
+    pub registry_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub root: Bytes32,
+    pub count: u32,
+    pub schema_version: u32,
+    #[serde(with = "serde_bytes32")]
+    pub old_root: Bytes32,
+    pub old_count: u32,
+    pub appends: Vec<AssetRegistryAppendV1>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRegistryAppendV1 {
+    pub record: CanonicalAssetRecordV1,
+    #[serde(with = "serde_vec_bytes32")]
+    pub append_path: Vec<Bytes32>,
+}
+
+/// Canonical V1 asset wire shared with Solidity, OCaml and TypeScript.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalAssetRecordV1 {
+    pub schema_version: u32,
+    pub registry_index: u32,
+    #[serde(with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    #[serde(with = "serde_address")]
+    pub ethereum_token: Address,
+    #[serde(with = "serde_bytes32")]
+    pub token_owner_l2: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub token_id_l2: Bytes32,
+    pub decimals: u8,
+    pub inventory_cap: u64,
+    #[serde(with = "serde_bytes32")]
+    pub mft_standard_vk_id: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub vault_public_key: Bytes32,
+    #[serde(with = "serde_bytes32")]
+    pub universal_bridge_vk_id: Bytes32,
 }
 
 /// A clear native withdrawal whose preimage must match the OCaml action aux.
@@ -193,6 +486,31 @@ pub struct NativeWithdrawalV2 {
     pub amount: u64,
 }
 
+/// Clear ERC-20 withdrawal metadata plus the exact flattened OCaml parameter
+/// fields used to recompute the proof-bound action auxiliary hash.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenWithdrawalV3 {
+    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
+    /// universal-registry withdrawals must use V2.
+    #[serde(default = "default_erc20_action_encoding")]
+    pub encoding_version: u32,
+    #[serde(default)]
+    pub registry_index: u32,
+    /// Mina Poseidon commitment to the complete canonical registry record.
+    #[serde(default, with = "serde_bytes32")]
+    pub record_commitment: Bytes32,
+    #[serde(with = "serde_address")]
+    pub token: Address,
+    #[serde(with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    #[serde(with = "serde_address")]
+    pub recipient: Address,
+    pub amount: u64,
+    #[serde(with = "serde_vec_bytes32")]
+    pub params_fields: Vec<Bytes32>,
+}
+
 /// One exact OCaml `Rollup_state.Inner_action` action. `fields` is the raw
 /// three-field action emitted by Mina. Non-withdrawal actions intentionally
 /// omit `withdrawal` and become non-claimable leaves in the same ordered tree.
@@ -203,6 +521,8 @@ pub struct InnerActionWitnessV2 {
     pub fields: Vec<Bytes32>,
     #[serde(default)]
     pub withdrawal: Option<NativeWithdrawalV2>,
+    #[serde(default)]
+    pub token_withdrawal: Option<TokenWithdrawalV3>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -429,6 +749,170 @@ pub struct SettlementPublicValuesV2 {
     pub inner_action_count: u32,
 }
 
+/// V3 extends the V2 receipt with the settled L2 asset-registry checkpoint and
+/// exact canonical record identity used by the pending-to-active L1 flow.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV3 {
+    pub settlement: SettlementPublicValuesV2,
+    pub asset_registry_root: Bytes32,
+    pub asset_registry_count: u32,
+    pub asset_registry_schema_version: u32,
+    pub asset_record_hash: Bytes32,
+    /// Mina Poseidon commitment to the same record authenticated by
+    /// `asset_record_hash`.
+    pub asset_record_commitment: Bytes32,
+}
+
+/// V4 extends the V2 receipt with a settled L2 asset-registry checkpoint and a
+/// depth-8 Keccak commitment to all exact record hashes appended by this
+/// settlement. The tree uses global registry indices, so a membership proof
+/// also binds each record to its canonical append position.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SettlementPublicValuesV4 {
+    pub settlement: SettlementPublicValuesV2,
+    pub asset_registry_root: Bytes32,
+    pub asset_registry_count: u32,
+    pub asset_registry_schema_version: u32,
+    pub asset_record_batch_root: Bytes32,
+    pub asset_record_batch_count: u32,
+}
+
+impl SettlementPublicValuesV4 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V4_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V4_LENGTH];
+        output[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH].copy_from_slice(&self.settlement.encode());
+        output[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V4_VERSION.to_be_bytes());
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        write_bytes(&mut output, &mut cursor, &self.asset_registry_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_count.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_schema_version.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &self.asset_record_batch_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_record_batch_count.to_be_bytes(),
+        );
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V4_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V4_LENGTH {
+            return Err(format!(
+                "settlement V4 public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V4_LENGTH,
+                input.len()
+            ));
+        }
+        if input[..4] != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement V4 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != SETTLEMENT_PUBLIC_VALUES_V4_VERSION {
+            return Err(format!(
+                "settlement V4 public values: unsupported version {version}"
+            ));
+        }
+
+        let mut v2_prefix = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
+        v2_prefix.copy_from_slice(&input[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH]);
+        v2_prefix[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+        let settlement = SettlementPublicValuesV2::decode(&v2_prefix)?;
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        let asset_registry_root = read_array(input, &mut cursor);
+        let asset_registry_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_registry_schema_version = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_record_batch_root = read_array(input, &mut cursor);
+        let asset_record_batch_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            settlement,
+            asset_registry_root,
+            asset_registry_count,
+            asset_registry_schema_version,
+            asset_record_batch_root,
+            asset_record_batch_count,
+        })
+    }
+}
+
+impl SettlementPublicValuesV3 {
+    pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V3_LENGTH] {
+        let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V3_LENGTH];
+        output[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH].copy_from_slice(&self.settlement.encode());
+        output[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V3_VERSION.to_be_bytes());
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        write_bytes(&mut output, &mut cursor, &self.asset_registry_root);
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_count.to_be_bytes(),
+        );
+        write_bytes(
+            &mut output,
+            &mut cursor,
+            &self.asset_registry_schema_version.to_be_bytes(),
+        );
+        write_bytes(&mut output, &mut cursor, &self.asset_record_hash);
+        write_bytes(&mut output, &mut cursor, &self.asset_record_commitment);
+        debug_assert_eq!(cursor, SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
+        output
+    }
+
+    pub fn decode(input: &[u8]) -> Result<Self, String> {
+        if input.len() != SETTLEMENT_PUBLIC_VALUES_V3_LENGTH {
+            return Err(format!(
+                "settlement V3 public values: expected {} bytes, got {}",
+                SETTLEMENT_PUBLIC_VALUES_V3_LENGTH,
+                input.len()
+            ));
+        }
+        if input[..4] != SETTLEMENT_PUBLIC_VALUES_MAGIC {
+            return Err("settlement V3 public values: invalid magic".to_owned());
+        }
+        let version = u16::from_be_bytes(input[4..6].try_into().expect("two-byte version"));
+        if version != SETTLEMENT_PUBLIC_VALUES_V3_VERSION {
+            return Err(format!(
+                "settlement V3 public values: unsupported version {version}"
+            ));
+        }
+
+        let mut v2_prefix = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
+        v2_prefix.copy_from_slice(&input[..SETTLEMENT_PUBLIC_VALUES_V2_LENGTH]);
+        v2_prefix[4..6].copy_from_slice(&SETTLEMENT_PUBLIC_VALUES_V2_VERSION.to_be_bytes());
+        let settlement = SettlementPublicValuesV2::decode(&v2_prefix)?;
+
+        let mut cursor = SETTLEMENT_PUBLIC_VALUES_V2_LENGTH;
+        let asset_registry_root = read_array(input, &mut cursor);
+        let asset_registry_count = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_registry_schema_version = u32::from_be_bytes(read_array(input, &mut cursor));
+        let asset_record_hash = read_array(input, &mut cursor);
+        let asset_record_commitment = read_array(input, &mut cursor);
+        debug_assert_eq!(cursor, input.len());
+
+        Ok(Self {
+            settlement,
+            asset_registry_root,
+            asset_registry_count,
+            asset_registry_schema_version,
+            asset_record_hash,
+            asset_record_commitment,
+        })
+    }
+}
+
 impl SettlementPublicValuesV2 {
     pub fn encode(&self) -> [u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH] {
         let mut output = [0u8; SETTLEMENT_PUBLIC_VALUES_V2_LENGTH];
@@ -496,6 +980,8 @@ impl SettlementPublicValuesV2 {
 pub enum SettlementPublicValues {
     V1(SettlementPublicValuesV1),
     V2(SettlementPublicValuesV2),
+    V3(SettlementPublicValuesV3),
+    V4(SettlementPublicValuesV4),
 }
 
 impl SettlementPublicValues {
@@ -507,6 +993,12 @@ impl SettlementPublicValues {
             SETTLEMENT_PUBLIC_VALUES_V2_LENGTH => {
                 SettlementPublicValuesV2::decode(input).map(Self::V2)
             }
+            SETTLEMENT_PUBLIC_VALUES_V3_LENGTH => {
+                SettlementPublicValuesV3::decode(input).map(Self::V3)
+            }
+            SETTLEMENT_PUBLIC_VALUES_V4_LENGTH => {
+                SettlementPublicValuesV4::decode(input).map(Self::V4)
+            }
             actual => Err(format!(
                 "settlement public values: unsupported length {actual}"
             )),
@@ -517,6 +1009,17 @@ impl SettlementPublicValues {
         match self {
             Self::V1(values) => values,
             Self::V2(values) => &values.settlement,
+            Self::V3(values) => &values.settlement.settlement,
+            Self::V4(values) => &values.settlement.settlement,
+        }
+    }
+
+    pub fn inner_action_batch(&self) -> Option<&SettlementPublicValuesV2> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(values) => Some(values),
+            Self::V3(values) => Some(&values.settlement),
+            Self::V4(values) => Some(&values.settlement),
         }
     }
 }
@@ -536,12 +1039,41 @@ fn read_array<const N: usize>(input: &[u8], cursor: &mut usize) -> [u8; N] {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeDeposit {
-    /// Native ETH amount in 18-decimal wei. The guest requires 1 gwei
-    /// granularity and derives the 9-decimal Zeko amount itself.
+    /// Zero for native ETH; otherwise the registered ERC-20 address.
+    #[serde(default, with = "serde_address")]
+    pub token: Address,
+    /// Canonical registry identity. Native ETH uses zero for compatibility.
+    #[serde(default, with = "serde_bytes32")]
+    pub asset_id: Bytes32,
+    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
+    /// universal-registry deposits must use V2.
+    #[serde(default = "default_erc20_action_encoding")]
+    pub encoding_version: u32,
+    #[serde(default)]
+    pub registry_index: u32,
+    /// Mina Poseidon commitment to the complete canonical registry record.
+    #[serde(default, with = "serde_bytes32")]
+    pub record_commitment: Bytes32,
+    /// Raw Ethereum custody amount. Native ETH uses wei; canonical ERC-20s use
+    /// the identical base unit configured on the Mina fungible token.
     #[serde(with = "serde_bytes32")]
     pub amount: Bytes32,
+    /// Amount encoded into the Zeko action. Older native fixtures omit this and
+    /// let the guest derive the 9-decimal amount from wei.
+    #[serde(default)]
+    pub zeko_amount: Option<u64>,
     #[serde(with = "serde_bytes32")]
     pub zeko_recipient: ZekoAddress,
+    #[serde(default = "default_bridge_timeout")]
+    pub timeout: u64,
+}
+
+fn default_bridge_timeout() -> u64 {
+    u32::MAX as u64
+}
+
+fn default_erc20_action_encoding() -> u32 {
+    ERC20_ACTION_ENCODING_V1
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -611,9 +1143,9 @@ pub struct BridgeOuterActionV2 {
     pub state_after: Bytes32,
 }
 
-/// Canonical native-deposit receipt. The variable tail contains every exact
-/// five-field outer Witness action, so the gateway can serve the same action
-/// bytes to the OCaml sequencer without reimplementing Poseidon hashing.
+/// Canonical native/ERC-20 deposit receipt. The variable tail contains every
+/// exact five-field outer Witness action, so the gateway can serve the same
+/// action bytes to the OCaml sequencer without reimplementing Poseidon hashing.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct BridgeTransitionPublicValuesV2 {
     pub ethereum_state_before: Bytes32,
@@ -1018,7 +1550,7 @@ fn parse_hex_fixed<const N: usize>(hex: &str) -> Result<[u8; N], String> {
             _ => unreachable!(),
         };
         let byte_index = nibble_index / 2;
-        if nibble_index % 2 == 0 {
+        if nibble_index.is_multiple_of(2) {
             out[byte_index] = nibble << 4;
         } else {
             out[byte_index] |= nibble;
@@ -1109,6 +1641,54 @@ mod tests {
     }
 
     #[test]
+    fn settlement_public_values_v3_round_trip() {
+        let values = SettlementPublicValuesV3 {
+            settlement: SettlementPublicValuesV2 {
+                settlement: settlement_values(),
+                bridge_address: [0x88; 20],
+                inner_action_root: [0x99; 32],
+                inner_action_start_index: 7,
+                inner_action_count: 1,
+            },
+            asset_registry_root: [0xaa; 32],
+            asset_registry_count: 3,
+            asset_registry_schema_version: 1,
+            asset_record_hash: [0xbb; 32],
+            asset_record_commitment: [0xcc; 32],
+        };
+        let encoded = values.encode();
+        assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V3_LENGTH);
+        assert_eq!(SettlementPublicValuesV3::decode(&encoded).unwrap(), values);
+        let decoded = SettlementPublicValues::decode(&encoded).unwrap();
+        assert!(matches!(&decoded, SettlementPublicValues::V3(_)));
+        assert_eq!(decoded.inner_action_batch(), Some(&values.settlement));
+    }
+
+    #[test]
+    fn settlement_public_values_v4_round_trip() {
+        let values = SettlementPublicValuesV4 {
+            settlement: SettlementPublicValuesV2 {
+                settlement: settlement_values(),
+                bridge_address: [0x88; 20],
+                inner_action_root: [0x99; 32],
+                inner_action_start_index: 7,
+                inner_action_count: 2,
+            },
+            asset_registry_root: [0xaa; 32],
+            asset_registry_count: 5,
+            asset_registry_schema_version: 1,
+            asset_record_batch_root: [0xbb; 32],
+            asset_record_batch_count: 2,
+        };
+        let encoded = values.encode();
+        assert_eq!(encoded.len(), SETTLEMENT_PUBLIC_VALUES_V4_LENGTH);
+        assert_eq!(SettlementPublicValuesV4::decode(&encoded).unwrap(), values);
+        let decoded = SettlementPublicValues::decode(&encoded).unwrap();
+        assert!(matches!(&decoded, SettlementPublicValues::V4(_)));
+        assert_eq!(decoded.inner_action_batch(), Some(&values.settlement));
+    }
+
+    #[test]
     fn settlement_binding_uses_hex_json_and_round_trips() {
         let binding = SettlementBindingV1 {
             mina_signature_kind: MinaSignatureKindV1::Testnet,
@@ -1123,6 +1703,7 @@ mod tests {
             state_before: OuterStateV1 {
                 fields: [[0x55; 32]; 8],
             },
+            call_forest: Vec::new(),
         };
         let json = serde_json::to_string(&binding).unwrap();
         assert!(json.contains("0x1111111111111111"));
@@ -1141,12 +1722,149 @@ mod tests {
                 outer_action_state_length_before: 3,
             },
             inner_action_batch: None,
+            asset_registry_checkpoint: None,
+            asset_registry_batch: None,
         };
         let encoded = bincode::serialize(&witness).unwrap();
         assert_eq!(
             bincode::deserialize::<SettlementWitnessV1>(&encoded).unwrap(),
             witness
         );
+    }
+
+    #[test]
+    fn inner_action_commitments_match_versioned_reference_encodings() {
+        fn u64_word(value: u64) -> Bytes32 {
+            let mut word = [0u8; 32];
+            word[24..].copy_from_slice(&value.to_be_bytes());
+            word
+        }
+
+        fn u32_word(value: u32) -> Bytes32 {
+            let mut word = [0u8; 32];
+            word[28..].copy_from_slice(&value.to_be_bytes());
+            word
+        }
+
+        fn address_word(value: Address) -> Bytes32 {
+            let mut word = [0u8; 32];
+            word[12..].copy_from_slice(&value);
+            word
+        }
+
+        let chain_id = 31_337;
+        let bridge = [0x11; 20];
+        let global_index = 5;
+        let fields = [[0x21; 32], [0x22; 32], [0x23; 32]];
+        let action_fields_hash = inner_action_commitment::action_fields_hash(&fields);
+        let mut expected_action_fields = Vec::new();
+        expected_action_fields
+            .extend_from_slice(&alloy_primitives::keccak256("ZEKO_INNER_ACTION_FIELDS_V2").0);
+        expected_action_fields.extend_from_slice(&u32_word(3));
+        for field in fields {
+            expected_action_fields.extend_from_slice(&field);
+        }
+        assert_eq!(
+            action_fields_hash,
+            alloy_primitives::keccak256(expected_action_fields).0
+        );
+
+        let native = NativeWithdrawalV2 {
+            recipient: [0x31; 20],
+            amount: 7,
+        };
+        let mut expected_native = Vec::new();
+        expected_native
+            .extend_from_slice(&alloy_primitives::keccak256("ZEKO_NATIVE_WITHDRAWAL_LEAF_V2").0);
+        expected_native.extend_from_slice(&u64_word(chain_id));
+        expected_native.extend_from_slice(&address_word(bridge));
+        expected_native.extend_from_slice(&u32_word(global_index));
+        expected_native.extend_from_slice(&address_word(native.recipient));
+        expected_native.extend_from_slice(&u64_word(native.amount));
+        expected_native.extend_from_slice(&action_fields_hash);
+        assert_eq!(
+            inner_action_commitment::native_withdrawal_leaf(
+                chain_id,
+                bridge,
+                global_index,
+                &native,
+                action_fields_hash,
+            ),
+            alloy_primitives::keccak256(expected_native).0
+        );
+
+        for encoding_version in [ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2] {
+            let withdrawal = TokenWithdrawalV3 {
+                encoding_version,
+                registry_index: 9,
+                record_commitment: [0x41; 32],
+                token: [0x42; 20],
+                asset_id: [0x43; 32],
+                recipient: [0x44; 20],
+                amount: 11,
+                params_fields: Vec::new(),
+            };
+            let domain = if encoding_version == ERC20_ACTION_ENCODING_V1 {
+                "ZEKO_ERC20_WITHDRAWAL_LEAF_V3"
+            } else {
+                "ZEKO_ERC20_WITHDRAWAL_LEAF_V4"
+            };
+            let mut expected = Vec::new();
+            expected.extend_from_slice(&alloy_primitives::keccak256(domain).0);
+            expected.extend_from_slice(&u64_word(chain_id));
+            expected.extend_from_slice(&address_word(bridge));
+            expected.extend_from_slice(&u32_word(global_index));
+            expected.extend_from_slice(&address_word(withdrawal.token));
+            if encoding_version == ERC20_ACTION_ENCODING_V2 {
+                expected.extend_from_slice(&u32_word(encoding_version));
+                expected.extend_from_slice(&u32_word(withdrawal.registry_index));
+                expected.extend_from_slice(&withdrawal.record_commitment);
+            }
+            expected.extend_from_slice(&withdrawal.asset_id);
+            expected.extend_from_slice(&address_word(withdrawal.recipient));
+            expected.extend_from_slice(&u64_word(withdrawal.amount));
+            expected.extend_from_slice(&action_fields_hash);
+            assert_eq!(
+                inner_action_commitment::erc20_withdrawal_leaf(
+                    chain_id,
+                    bridge,
+                    global_index,
+                    &withdrawal,
+                    action_fields_hash,
+                ),
+                alloy_primitives::keccak256(expected).0
+            );
+        }
+
+        let mut expected_raw = Vec::new();
+        expected_raw
+            .extend_from_slice(&alloy_primitives::keccak256("ZEKO_RAW_INNER_ACTION_LEAF_V2").0);
+        expected_raw.extend_from_slice(&u64_word(chain_id));
+        expected_raw.extend_from_slice(&address_word(bridge));
+        expected_raw.extend_from_slice(&u32_word(global_index));
+        expected_raw.extend_from_slice(&action_fields_hash);
+        assert_eq!(
+            inner_action_commitment::raw_inner_action_leaf(
+                chain_id,
+                bridge,
+                global_index,
+                action_fields_hash,
+            ),
+            alloy_primitives::keccak256(expected_raw).0
+        );
+    }
+
+    #[test]
+    fn inner_action_tree_proofs_share_the_committed_root() {
+        let leaves = [[0x51; 32], [0x52; 32], [0x53; 32]];
+        let root = inner_action_commitment::root(&leaves);
+        for (index, leaf) in leaves.iter().copied().enumerate() {
+            let proof = inner_action_commitment::merkle_proof(&leaves, index).unwrap();
+            assert!(inner_action_commitment::verify_merkle_proof(
+                leaf, index, &proof, root
+            ));
+        }
+        assert!(inner_action_commitment::merkle_proof(&leaves, leaves.len()).is_none());
     }
 
     #[test]

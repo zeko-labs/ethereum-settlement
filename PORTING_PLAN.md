@@ -23,8 +23,8 @@ companion Zeko repository:
   and rejects unsupported lookup features and mutated deferred/accumulator data;
 - OCaml exports the real wrap proof/VK, full statement skeleton, two-field zkApp
   statement, account-update body input, actions and source outer state;
-- the settlement guest derives versioned proof-bound outer-commit receipts
-  (768-byte V1 and 828-byte bridge-aware V2) instead of accepting a
+- the settlement guest derives versioned proof-bound V1 through V4
+  outer-commit, bridge, and registry receipts instead of accepting a
   host-provided next state;
 - Solidity tracks all eight outer-state fields, action state/length, batch
   sequence, accepted inner action states and the virtual Mina slot clock;
@@ -46,7 +46,9 @@ native claim without user proving. Remaining items for an actual testnet launch
 are operational: retain a stable testnet genesis, build and pin images from
 that identity, obtain explicitly approved network proofs, deploy/configure the
 contracts and gateway, and run the acceptance script on Sepolia. Cancellation,
-ERC20 bridging, proof fees, and blob DA remain outside this milestone.
+proof fees, and blob DA remain outside this milestone. The universal ERC-20
+registry checkpoint is documented in
+[`docs/content/status.md`](docs/content/status.md).
 
 ## Current PoC Boundary
 
@@ -67,9 +69,10 @@ The current repository has useful PoC pieces:
 
 It should still be treated as a PoC. The settlement contract represents all
 eight fields of Zeko's normal multisig outer state and its action-state length,
-and that path has a real OCaml-produced local checkpoint. The native bridge
-implements the deliberately reduced no-cancellation PoC path described below,
-but not the full bridge protocol in the OCaml design docs.
+and that path has a real OCaml-produced local checkpoint. The native and
+registry-backed ERC-20 bridge implements the deliberately reduced
+no-cancellation PoC path described below, but not the full bridge protocol in
+the OCaml design docs.
 
 ## Settlement Binding
 
@@ -277,11 +280,11 @@ The important protocol facts are:
   upgrade ideas, but the design README marks those files as historical and not
   up to date.
 
-## Native Bridge PoC Status And Remaining Gaps
+## Bridge PoC Status And Remaining Gaps
 
 ### Deposits
 
-Implemented for the native-only PoC:
+Implemented for the current PoC:
 
 - The Ethereum bridge proxy is the synthetic L1 holder. OCaml accepts the
   compressed key `(x = uint160(bridge), is_odd = false)` under the distinct
@@ -294,18 +297,20 @@ Implemented for the native-only PoC:
 - The gateway derives bridge input only from contiguous canonical finalized
   `BridgeDeposit` logs and mirrors the proven actions into the Mina GraphQL view.
 - Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout. The
-  arbitrary-timeout/ERC20 entry points are disabled by default, explicitly
-  cutting cancellation out of this PoC.
+  arbitrary-timeout/ERC20 compatibility entry points are disabled by default,
+  while canonical registry assets use `submitDeposit`.
 - Rust and OCaml cross-language vectors assert the same three deposit aux
   values.
 
 Remaining beyond this PoC: retain the generated proof fixture as a testnet
-release identity, add the cancellation/refund protocol if desired, add circuit
-proof fees, and design ERC20 asset/token-ID semantics.
+release identity, add the cancellation/refund protocol if desired, and add
+circuit proof fees. The universal registry and its V1 compatibility boundary
+are owned by
+[`docs/content/protocol/deposit-bridge.md`](docs/content/protocol/deposit-bridge.md).
 
 ### Withdrawals
 
-Implemented for the native-only PoC:
+Implemented for the current PoC:
 
 - The OCaml committer exports each exact three-field inner Witness action and,
   where archived, its native withdrawal preimage.
@@ -318,14 +323,15 @@ Implemented for the native-only PoC:
   generate a SNARK.
 - The gateway reconstructs and validates the root after confirmation and serves
   withdrawal proofs through a public endpoint.
+- Registered ERC-20 withdrawals use the same settlement-bound tree while
+  binding the action version, registry index, and canonical record commitment.
 
 Remaining beyond this PoC: retain the generated proof fixture as a testnet
-release identity, define ERC20 withdrawals, and specify how
-emergency/governance state changes interact with pending claims.
+release identity and specify how emergency/governance state changes interact
+with pending claims.
 
 ### Shared Bridge Work
 
-- Define ERC20 token-ID and decimal encodings when ERC20 support is added.
 - Add invariant tests covering cancellation and emergency paths if those paths
   enter scope. The native E2E already checks liability conservation on the
   deposit-to-withdraw happy path.
@@ -478,8 +484,8 @@ not part of this verification target.
    Ethereum logs and bind exact outer actions to settlement checkpoints.
 8. **Cut from the native PoC:** cancelled deposits and caller-selected timeouts;
    add them only together with a complete refund protocol.
-9. **Native index/delay done; ERC20 pending:** settlement-bound inner-action
-   trees allow delayed, indexed native claims without user SNARK proving.
+9. **Native and registry ERC20 index/delay done:** settlement-bound inner-action
+   trees allow delayed, indexed claims without user SNARK proving.
 10. **Multisig gateway done; blob batcher pending:** the gateway owns proving,
     Ethereum submission and canonical checkpoint indexing. Extend it to derive
     blob payloads and bridge inputs from Ethereum logs in the production phase.

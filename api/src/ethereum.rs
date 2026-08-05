@@ -10,7 +10,11 @@ use alloy::{
     sol_types::{SolCall, SolEvent},
 };
 use anyhow::{Context, Result};
-use std::str::FromStr;
+use std::{
+    collections::{HashMap, HashSet},
+    str::FromStr,
+};
+use zeko_sp1_lib::{ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2};
 
 sol! {
     #[sol(rpc)]
@@ -60,6 +64,12 @@ sol! {
         function bridgedDepositNonce() external view returns (uint64);
         function withdrawalDelaySlots() external view returns (uint32);
         function nextWithdrawalIndex(address recipient) external view returns (uint32);
+        function nextTokenWithdrawalIndex(address token, address recipient) external view returns (uint32);
+        function canonicalTokenRegistered(address token) external view returns (bool);
+        function assetIdByToken(address token) external view returns (bytes32);
+        function registryIndexByToken(address token) external view returns (uint32);
+        function recordCommitmentByToken(address token) external view returns (bytes32);
+        function assetTokenByRegistryIndex(uint32 registryIndex) external view returns (address);
         function processedActionState(bytes32 actionState) external view returns (bool);
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
@@ -77,6 +87,31 @@ sol! {
             uint256 zekoAmount,
             uint64 timeout
         );
+        event ERC20DepositSubmitted(
+            uint64 indexed nonce,
+            bytes32 indexed assetId,
+            bytes32 indexed depositLeaf,
+            bytes32 newDepositState,
+            address token,
+            address sender,
+            uint256 zekoRecipient,
+            uint64 amount,
+            uint64 timeout
+        );
+        event ERC20DepositSubmittedV2(
+            uint64 indexed nonce,
+            bytes32 indexed assetId,
+            bytes32 indexed depositLeaf,
+            bytes32 newDepositState,
+            address token,
+            address sender,
+            uint256 zekoRecipient,
+            uint64 amount,
+            uint64 timeout,
+            uint32 encodingVersion,
+            uint32 registryIndex,
+            bytes32 recordCommitment
+        );
         event NativeWithdrawalClaimed(
             uint64 indexed settlementSequence,
             uint32 indexed globalActionIndex,
@@ -84,6 +119,14 @@ sol! {
             uint64 zekoAmount,
             uint256 ethereumAmount,
             bytes32 actionFieldsHash
+        );
+        event TokenRegistered(
+            address indexed token,
+            bytes32 indexed assetId,
+            bytes32 zekoTokenOwner,
+            bytes32 indexed zekoTokenId,
+            uint8 zekoDecimals,
+            uint64 depositCap
         );
         event BridgeTransitionAccepted(
             bytes32 indexed oldActionState,
@@ -131,6 +174,22 @@ pub struct BridgeState {
     pub paused: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TokenWithdrawalIdentity {
+    pub encoding_version: u32,
+    pub registry_index: u32,
+    pub record_commitment: B256,
+    pub asset_id: B256,
+}
+
+enum TokenWithdrawalValidation {
+    Legacy,
+    Registry {
+        registry_index: u32,
+        record_commitment: B256,
+    },
+}
+
 #[derive(Clone, Debug)]
 pub struct BridgeDepositLog {
     pub nonce: u64,
@@ -143,10 +202,40 @@ pub struct BridgeDepositLog {
     pub amount: U256,
     pub zeko_amount: U256,
     pub timeout: u64,
+    pub asset_id: Option<B256>,
+    pub action_encoding_version: u32,
+    pub registry_index: Option<u32>,
+    pub record_commitment: Option<B256>,
     pub block_number: u64,
     pub block_hash: B256,
     pub transaction_hash: TxHash,
     pub log_index: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ERC20DepositMetadata {
+    asset_id: B256,
+    deposit_leaf: B256,
+    new_deposit_state: B256,
+    token: Address,
+    sender: Address,
+    zeko_recipient: B256,
+    amount: u64,
+    timeout: u64,
+    registry_index: Option<u32>,
+    record_commitment: Option<B256>,
+}
+
+fn bridge_deposit_filter(bridge_address: Address, from_block: u64, to_block: u64) -> Filter {
+    Filter::new()
+        .address(bridge_address)
+        .event_signature(vec![
+            IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH,
+            IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH,
+            IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH,
+        ])
+        .from_block(from_block)
+        .to_block(to_block)
 }
 
 #[derive(Clone, Debug)]
@@ -416,46 +505,178 @@ impl Ethereum {
         to_block: u64,
     ) -> Result<Vec<BridgeDepositLog>> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let filter = Filter::new()
-            .address(self.bridge_address)
-            .event_signature(IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH)
-            .from_block(from_block)
-            .to_block(to_block);
-        provider
-            .get_logs(&filter)
-            .await?
-            .into_iter()
-            .map(|log| {
-                let decoded = log
-                    .log_decode_validate::<IEthereumZekoBridge::BridgeDeposit>()
-                    .context("decode BridgeDeposit log")?;
-                let data = decoded.data();
-                Ok(BridgeDepositLog {
-                    nonce: data.nonce,
+        let filter = bridge_deposit_filter(self.bridge_address, from_block, to_block);
+        let mut bridge_logs = Vec::new();
+        let mut erc20_logs = Vec::new();
+        let mut erc20_v2_logs = Vec::new();
+        for log in provider.get_logs(&filter).await? {
+            match log.topic0().copied() {
+                Some(signature)
+                    if signature == IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH =>
+                {
+                    bridge_logs.push(log)
+                }
+                Some(signature)
+                    if signature == IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH =>
+                {
+                    erc20_logs.push(log)
+                }
+                Some(signature)
+                    if signature
+                        == IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH =>
+                {
+                    erc20_v2_logs.push(log)
+                }
+                Some(signature) => anyhow::bail!("unexpected bridge deposit event {signature}"),
+                None => anyhow::bail!("bridge deposit event is missing topic zero"),
+            }
+        }
+
+        let mut metadata = HashMap::new();
+        for log in erc20_logs {
+            let decoded = log
+                .log_decode_validate::<IEthereumZekoBridge::ERC20DepositSubmitted>()
+                .context("decode ERC20DepositSubmitted log")?;
+            let transaction_hash = decoded
+                .transaction_hash
+                .context("ERC20DepositSubmitted log missing transaction hash")?;
+            let data = decoded.data();
+            anyhow::ensure!(
+                !data.assetId.is_zero(),
+                "ERC20 deposit asset identity is zero"
+            );
+            let previous = metadata.insert(
+                (transaction_hash, data.nonce),
+                ERC20DepositMetadata {
+                    asset_id: data.assetId,
                     deposit_leaf: data.depositLeaf,
                     new_deposit_state: data.newDepositState,
-                    old_deposit_state: data.oldDepositState,
                     token: data.token,
                     sender: data.sender,
                     zeko_recipient: B256::from(data.zekoRecipient.to_be_bytes()),
                     amount: data.amount,
-                    zeko_amount: data.zekoAmount,
                     timeout: data.timeout,
-                    block_number: decoded
-                        .block_number
-                        .context("BridgeDeposit log missing block number")?,
-                    block_hash: decoded
-                        .block_hash
-                        .context("BridgeDeposit log missing block hash")?,
-                    transaction_hash: decoded
-                        .transaction_hash
-                        .context("BridgeDeposit log missing transaction hash")?,
-                    log_index: decoded
-                        .log_index
-                        .context("BridgeDeposit log missing log index")?,
-                })
-            })
-            .collect()
+                    registry_index: None,
+                    record_commitment: None,
+                },
+            );
+            anyhow::ensure!(previous.is_none(), "duplicate ERC20 deposit identity event");
+        }
+
+        for log in erc20_v2_logs {
+            let decoded = log
+                .log_decode_validate::<IEthereumZekoBridge::ERC20DepositSubmittedV2>()
+                .context("decode ERC20DepositSubmittedV2 log")?;
+            let transaction_hash = decoded
+                .transaction_hash
+                .context("ERC20DepositSubmittedV2 log missing transaction hash")?;
+            let data = decoded.data();
+            anyhow::ensure!(
+                data.encodingVersion == ERC20_ACTION_ENCODING_V2,
+                "ERC20 deposit has an unsupported action encoding"
+            );
+            anyhow::ensure!(
+                !data.recordCommitment.is_zero(),
+                "ERC20 deposit record commitment is zero"
+            );
+            let identity = metadata
+                .get_mut(&(transaction_hash, data.nonce))
+                .context("registry ERC20 deposit is missing its base identity event")?;
+            anyhow::ensure!(
+                identity.asset_id == data.assetId
+                    && identity.deposit_leaf == data.depositLeaf
+                    && identity.new_deposit_state == data.newDepositState
+                    && identity.token == data.token
+                    && identity.sender == data.sender
+                    && identity.zeko_recipient == B256::from(data.zekoRecipient.to_be_bytes())
+                    && identity.amount == data.amount
+                    && identity.timeout == data.timeout,
+                "registry ERC20 deposit identity events disagree"
+            );
+            anyhow::ensure!(
+                identity.record_commitment.is_none(),
+                "duplicate registry ERC20 deposit identity event"
+            );
+            identity.registry_index = Some(data.registryIndex);
+            identity.record_commitment = Some(data.recordCommitment);
+        }
+
+        let mut deposits = Vec::new();
+        for log in bridge_logs {
+            let decoded = log
+                .log_decode_validate::<IEthereumZekoBridge::BridgeDeposit>()
+                .context("decode BridgeDeposit log")?;
+            let transaction_hash = decoded
+                .transaction_hash
+                .context("BridgeDeposit log missing transaction hash")?;
+            let data = decoded.data();
+            let identity = metadata.remove(&(transaction_hash, data.nonce));
+            let (asset_id, action_encoding_version, registry_index, record_commitment) =
+                if data.token.is_zero() {
+                    anyhow::ensure!(
+                        identity.is_none(),
+                        "native deposit has an ERC20 identity event"
+                    );
+                    (None, 0, None, None)
+                } else {
+                    let identity = identity
+                        .context("ERC20 deposit is missing its immutable identity event")?;
+                    anyhow::ensure!(
+                        identity.deposit_leaf == data.depositLeaf
+                            && identity.new_deposit_state == data.newDepositState
+                            && identity.token == data.token
+                            && identity.sender == data.sender
+                            && identity.zeko_recipient
+                                == B256::from(data.zekoRecipient.to_be_bytes())
+                            && U256::from(identity.amount) == data.amount
+                            && data.amount == data.zekoAmount
+                            && identity.timeout == data.timeout,
+                        "BridgeDeposit and ERC20 identity events disagree"
+                    );
+                    let encoding_version = if identity.record_commitment.is_some() {
+                        ERC20_ACTION_ENCODING_V2
+                    } else {
+                        ERC20_ACTION_ENCODING_V1
+                    };
+                    (
+                        Some(identity.asset_id),
+                        encoding_version,
+                        identity.registry_index,
+                        identity.record_commitment,
+                    )
+                };
+            deposits.push(BridgeDepositLog {
+                nonce: data.nonce,
+                deposit_leaf: data.depositLeaf,
+                new_deposit_state: data.newDepositState,
+                old_deposit_state: data.oldDepositState,
+                token: data.token,
+                sender: data.sender,
+                zeko_recipient: B256::from(data.zekoRecipient.to_be_bytes()),
+                amount: data.amount,
+                zeko_amount: data.zekoAmount,
+                timeout: data.timeout,
+                asset_id,
+                action_encoding_version,
+                registry_index,
+                record_commitment,
+                block_number: decoded
+                    .block_number
+                    .context("BridgeDeposit log missing block number")?,
+                block_hash: decoded
+                    .block_hash
+                    .context("BridgeDeposit log missing block hash")?,
+                transaction_hash,
+                log_index: decoded
+                    .log_index
+                    .context("BridgeDeposit log missing log index")?,
+            });
+        }
+        anyhow::ensure!(
+            metadata.is_empty(),
+            "ERC20 identity event is missing its BridgeDeposit event"
+        );
+        Ok(deposits)
     }
 
     pub async fn settlement_accepted_logs(
@@ -681,6 +902,126 @@ impl Ethereum {
             .await?)
     }
 
+    pub async fn next_token_withdrawal_index(
+        &self,
+        token: Address,
+        recipient: Address,
+    ) -> Result<u32> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
+            .nextTokenWithdrawalIndex(token, recipient)
+            .call()
+            .await?)
+    }
+
+    pub async fn resolve_token_withdrawal_identities(
+        &self,
+        identities: &[TokenWithdrawalIdentity],
+    ) -> Result<HashMap<TokenWithdrawalIdentity, Address>> {
+        let identities = identities.iter().copied().collect::<HashSet<_>>();
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = IEthereumZekoBridge::new(self.bridge_address, &provider);
+        let legacy_assets = identities
+            .iter()
+            .filter(|identity| identity.encoding_version == ERC20_ACTION_ENCODING_V1)
+            .map(|identity| identity.asset_id)
+            .collect::<HashSet<_>>();
+        let mut legacy_tokens = HashMap::new();
+        if !legacy_assets.is_empty() {
+            let head = provider.get_block_number().await?;
+            let filter = Filter::new()
+                .address(self.bridge_address)
+                .event_signature(IEthereumZekoBridge::TokenRegistered::SIGNATURE_HASH)
+                .from_block(0)
+                .to_block(head);
+            for log in provider.get_logs(&filter).await? {
+                let decoded = log
+                    .log_decode_validate::<IEthereumZekoBridge::TokenRegistered>()
+                    .context("decode TokenRegistered log")?;
+                let data = decoded.data();
+                if legacy_assets.contains(&data.assetId) {
+                    anyhow::ensure!(
+                        legacy_tokens
+                            .insert(data.assetId, data.token)
+                            .is_none_or(|current| current == data.token),
+                        "multiple tokens are registered for the archived ERC20 asset"
+                    );
+                }
+            }
+        }
+
+        let mut resolved = HashMap::with_capacity(identities.len());
+        for identity in identities {
+            let (token, validation) = match identity.encoding_version {
+                ERC20_ACTION_ENCODING_V1 => {
+                    anyhow::ensure!(
+                        identity.registry_index == 0 && identity.record_commitment.is_zero(),
+                        "legacy ERC20 withdrawal has registry identity"
+                    );
+                    (
+                        *legacy_tokens
+                            .get(&identity.asset_id)
+                            .context("archived ERC20 asset is not registered on Ethereum")?,
+                        TokenWithdrawalValidation::Legacy,
+                    )
+                }
+                ERC20_ACTION_ENCODING_V2 => {
+                    anyhow::ensure!(
+                        !identity.record_commitment.is_zero(),
+                        "archived ERC20 registry identity does not match Ethereum"
+                    );
+                    (
+                        contract
+                            .assetTokenByRegistryIndex(identity.registry_index)
+                            .call()
+                            .await?,
+                        TokenWithdrawalValidation::Registry {
+                            registry_index: identity.registry_index,
+                            record_commitment: identity.record_commitment,
+                        },
+                    )
+                }
+                version => {
+                    anyhow::bail!("unsupported ERC20 withdrawal encoding version {version}")
+                }
+            };
+            anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
+            anyhow::ensure!(
+                contract.canonicalTokenRegistered(token).call().await?,
+                "archived ERC20 token is not canonically registered"
+            );
+            anyhow::ensure!(
+                contract.assetIdByToken(token).call().await? == identity.asset_id,
+                "archived ERC20 asset id does not match Ethereum"
+            );
+            match validation {
+                TokenWithdrawalValidation::Legacy => {
+                    anyhow::ensure!(
+                        contract
+                            .recordCommitmentByToken(token)
+                            .call()
+                            .await?
+                            .is_zero(),
+                        "legacy ERC20 withdrawal has registry identity"
+                    );
+                }
+                TokenWithdrawalValidation::Registry {
+                    registry_index,
+                    record_commitment,
+                } => {
+                    anyhow::ensure!(
+                        contract.registryIndexByToken(token).call().await? == registry_index
+                            && contract.recordCommitmentByToken(token).call().await?
+                                == record_commitment,
+                        "archived ERC20 registry identity does not match Ethereum"
+                    );
+                }
+            }
+            resolved.insert(identity, token);
+        }
+        Ok(resolved)
+    }
+
     pub async fn l2_action_state_info(&self, action_state: B256) -> Result<(u64, bool)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let info = IZekoSettlement::new(self.settlement_address, provider)
@@ -775,6 +1116,34 @@ mod tests {
     }
 
     #[test]
+    fn erc20_deposit_identity_signatures_match_solidity() {
+        assert_eq!(
+            IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH,
+            alloy::primitives::keccak256(
+                "ERC20DepositSubmitted(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint64,uint64)"
+            )
+        );
+        assert_eq!(
+            IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH,
+            alloy::primitives::keccak256(
+                "ERC20DepositSubmittedV2(uint64,bytes32,bytes32,bytes32,address,address,uint256,uint64,uint64,uint32,uint32,bytes32)"
+            )
+        );
+    }
+
+    #[test]
+    fn bridge_deposit_filter_uses_one_topic_zero_or_set() {
+        let filter = bridge_deposit_filter(Address::ZERO, 7, 9);
+        assert_eq!(filter.topics[0].len(), 3);
+        assert!(filter.topics[0].contains(&IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH));
+        assert!(
+            filter.topics[0].contains(&IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH)
+        );
+        assert!(filter.topics[0]
+            .contains(&IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH));
+    }
+
+    #[test]
     fn bridge_transition_signature_matches_the_recovery_event() {
         assert_eq!(
             IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH,
@@ -782,5 +1151,24 @@ mod tests {
                 "BridgeTransitionAccepted(bytes32,bytes32,bytes32,bytes32,uint64)"
             )
         );
+    }
+
+    #[test]
+    fn token_identity_resolution_dispatches_on_version_once() {
+        let source = include_str!("ethereum.rs");
+        let start = source
+            .find("pub async fn resolve_token_withdrawal_identities")
+            .unwrap();
+        let end = source[start..]
+            .find("pub async fn l2_action_state_info")
+            .map(|offset| start + offset)
+            .unwrap();
+        let resolver = &source[start..end];
+
+        assert_eq!(
+            resolver.matches("match identity.encoding_version").count(),
+            1
+        );
+        assert!(!resolver.contains("_ => unreachable!()"));
     }
 }

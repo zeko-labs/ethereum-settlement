@@ -13,10 +13,13 @@ contract PredictPocDeployment is PocDeploymentConfig {
         console2.log("ADMIN_ADDRESS", admin);
         console2.log("POC_FACTORY_ADDRESS", addresses.factory);
         console2.log("SETTLEMENT_IMPLEMENTATION_ADDRESS", addresses.settlementImplementation);
+        console2.log("ASSET_REGISTRY_MODULE_ADDRESS", addresses.assetRegistryModule);
         console2.log("BRIDGE_IMPLEMENTATION_ADDRESS", addresses.bridgeImplementation);
         console2.log("LOCAL_SP1_VERIFIER_ADDRESS", addresses.localVerifier);
         console2.log("SETTLEMENT_CONTRACT_ADDRESS", addresses.settlementProxy);
         console2.log("BRIDGE_CONTRACT_ADDRESS", addresses.bridgeProxy);
+        console2.log("ERC20_TOKEN_0_ADDRESS", addresses.erc20Token0);
+        console2.log("ERC20_TOKEN_1_ADDRESS", addresses.erc20Token1);
         console2.logBytes32(bytes32(uint256(uint160(addresses.bridgeProxy))));
     }
 }

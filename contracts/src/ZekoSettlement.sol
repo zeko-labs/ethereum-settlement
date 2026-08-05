@@ -6,11 +6,7 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
 interface ISP1Verifier {
-    function verifyProof(
-        bytes32 programVKey,
-        bytes calldata publicValues,
-        bytes calldata proofBytes
-    ) external view;
+    function verifyProof(bytes32 programVKey, bytes calldata publicValues, bytes calldata proofBytes) external view;
 }
 
 /// @title ZekoSettlement
@@ -21,9 +17,14 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     bytes4 public constant PUBLIC_VALUES_MAGIC = 0x5a4b5354; // "ZKST"
     uint16 public constant PUBLIC_VALUES_VERSION = 1;
     uint16 public constant PUBLIC_VALUES_V2_VERSION = 2;
+    uint16 public constant PUBLIC_VALUES_V3_VERSION = 3;
+    uint16 public constant PUBLIC_VALUES_V4_VERSION = 4;
     uint8 public constant DA_MODE_MULTISIG = 1;
     uint256 public constant PUBLIC_VALUES_LENGTH = 768;
     uint256 public constant PUBLIC_VALUES_V2_LENGTH = 828;
+    uint256 public constant PUBLIC_VALUES_V3_LENGTH = 932;
+    uint256 public constant PUBLIC_VALUES_V4_LENGTH = 904;
+    uint32 public constant ASSET_REGISTRY_CAPACITY = 256;
     uint256 private constant STATE_ARRAY_LENGTH = 8;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -85,6 +86,27 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     mapping(uint64 => InnerActionBatch) public innerActionBatch;
     address public bridgeContract;
 
+    // V3 universal asset-registry checkpoint. Appended for UUPS compatibility.
+    bytes32 public assetRegistryRoot;
+    uint32 public assetRegistryCount;
+    uint32 public assetRegistrySchemaVersion;
+    mapping(bytes32 => bool) public settledAssetRecord;
+
+    // V4 batched registry attestations. Appended for UUPS compatibility.
+    struct AssetRegistryRecordBatch {
+        bytes32 registryRoot;
+        uint32 registryCount;
+        uint32 registrySchemaVersion;
+        bytes32 recordBatchRoot;
+        uint32 recordBatchCount;
+        bool valid;
+    }
+
+    mapping(uint64 => AssetRegistryRecordBatch) public assetRegistryRecordBatch;
+
+    // Registry action identity. Appended after all V4 storage for UUPS compatibility.
+    mapping(bytes32 => bytes32) public settledAssetRecordCommitment;
+
     struct DecodedPublicValues {
         uint16 version;
         uint8 daMode;
@@ -108,6 +130,13 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         bytes32 innerActionRoot;
         uint32 innerActionStartIndex;
         uint32 innerActionCount;
+        bytes32 assetRegistryRoot;
+        uint32 assetRegistryCount;
+        uint32 assetRegistrySchemaVersion;
+        bytes32 assetRecordHash;
+        bytes32 assetRecordCommitment;
+        bytes32 assetRecordBatchRoot;
+        uint32 assetRecordBatchCount;
     }
 
     event VkHashUpdated(bytes32 indexed oldVkHash, bytes32 indexed newVkHash);
@@ -122,15 +151,9 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         uint32 slotLower,
         uint32 slotUpper
     );
-    event BridgeContractUpdated(
-        address indexed oldBridge,
-        address indexed newBridge
-    );
+    event BridgeContractUpdated(address indexed oldBridge, address indexed newBridge);
     event OuterWitnessBatchAppended(
-        bytes32 indexed stateBefore,
-        bytes32 indexed stateAfter,
-        uint32 count,
-        uint32 lengthAfter
+        bytes32 indexed stateBefore, bytes32 indexed stateAfter, uint32 count, uint32 lengthAfter
     );
     event InnerActionBatchAccepted(
         uint64 indexed batchSequence,
@@ -139,6 +162,22 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         uint32 startIndex,
         uint32 count,
         uint32 claimableSlot
+    );
+    event AssetRegistryCheckpointAccepted(
+        bytes32 indexed root,
+        uint32 count,
+        uint32 schemaVersion,
+        bytes32 indexed recordHash,
+        bytes32 recordCommitment,
+        uint64 indexed batchSequence
+    );
+    event AssetRegistryBatchCheckpointAccepted(
+        bytes32 indexed root,
+        uint32 count,
+        uint32 schemaVersion,
+        bytes32 indexed recordBatchRoot,
+        uint32 recordBatchCount,
+        uint64 indexed batchSequence
     );
 
     error ZeroAddress();
@@ -164,6 +203,10 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     error OutsideSlotRange(uint64 current, uint32 lower, uint32 upper);
     error InvalidSlotDuration();
     error FieldDoesNotFitUint32(bytes32 value);
+    error InvalidAssetRegistryCheckpoint(bytes32 root, uint32 count, uint32 schemaVersion, bytes32 recordHash);
+    error InvalidAssetRegistryBatch(
+        bytes32 root, uint32 count, uint32 schemaVersion, bytes32 recordBatchRoot, uint32 recordBatchCount
+    );
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -199,14 +242,9 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         forkSlot = forkSlot_;
 
         validActionState[initialOuterActionState] = true;
-        outerActionStateInfo[initialOuterActionState] = OuterActionStateInfo({
-            length: initialOuterActionStateLength,
-            valid: true
-        });
-        l2ActionStateInfo[initialOuterActionState] = L2ActionStateInfo({
-            index: 0,
-            valid: true
-        });
+        outerActionStateInfo[initialOuterActionState] =
+            OuterActionStateInfo({length: initialOuterActionStateLength, valid: true});
+        l2ActionStateInfo[initialOuterActionState] = L2ActionStateInfo({index: 0, valid: true});
         _recordAcceptedInnerState(initialOuterState[3], initialOuterState[4], 0);
 
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
@@ -222,10 +260,10 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     }
 
     function currentVirtualSlot() public view returns (uint64) {
+        // Validator timestamp influence is acceptable for coarse protocol slot timing.
+        // forge-lint: disable-next-line(block-timestamp)
         if (block.timestamp <= genesisTimestamp) return forkSlot;
-        return
-            uint64(forkSlot) +
-            uint64((block.timestamp - genesisTimestamp) / slotDuration);
+        return uint64(forkSlot) + uint64((block.timestamp - genesisTimestamp) / slotDuration);
     }
 
     function setVkHash(bytes32 newVkHash) external onlyRole(ADMIN_ROLE) {
@@ -234,9 +272,7 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         emit VkHashUpdated(oldVkHash, newVkHash);
     }
 
-    function setBridgeContract(
-        address newBridge
-    ) external onlyRole(ADMIN_ROLE) {
+    function setBridgeContract(address newBridge) external onlyRole(ADMIN_ROLE) {
         if (newBridge == address(0)) revert ZeroAddress();
         address oldBridge = bridgeContract;
         if (oldBridge != address(0)) _revokeRole(BRIDGE_ROLE, oldBridge);
@@ -248,19 +284,15 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
     /// @notice Appends a bridge-proved contiguous range of outer Witness
     /// actions. Poseidon is checked by the bridge SP1 program; this function
     /// owns only checkpoint continuity and exact length accounting.
-    function appendOuterWitnessBatch(
-        bytes32 stateBefore,
-        bytes32 stateAfter,
-        uint32 count
-    ) external onlyRole(BRIDGE_ROLE) {
+    function appendOuterWitnessBatch(bytes32 stateBefore, bytes32 stateAfter, uint32 count)
+        external
+        onlyRole(BRIDGE_ROLE)
+    {
         if (stateBefore != actionState) {
             revert InvalidActionState(actionState, stateBefore);
         }
         if (count == 0) {
-            revert InvalidActionStateTransition(
-                outerActionStateLength,
-                outerActionStateLength
-            );
+            revert InvalidActionStateTransition(outerActionStateLength, outerActionStateLength);
         }
         uint32 lengthAfter = outerActionStateLength + count;
         OuterActionStateInfo memory existing = outerActionStateInfo[stateAfter];
@@ -271,30 +303,20 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         actionState = stateAfter;
         outerActionStateLength = lengthAfter;
         validActionState[stateAfter] = true;
-        outerActionStateInfo[stateAfter] = OuterActionStateInfo({
-            length: lengthAfter,
-            valid: true
-        });
+        outerActionStateInfo[stateAfter] = OuterActionStateInfo({length: lengthAfter, valid: true});
         _recordL2ActionState(stateAfter);
 
-        emit OuterWitnessBatchAppended(
-            stateBefore,
-            stateAfter,
-            count,
-            lengthAfter
-        );
+        emit OuterWitnessBatchAppended(stateBefore, stateAfter, count, lengthAfter);
     }
 
-    function isActionStateValid(
-        bytes32 targetActionState
-    ) external view returns (bool) {
+    function isActionStateValid(bytes32 targetActionState) external view returns (bool) {
         return validActionState[targetActionState];
     }
 
-    function verifyAndUpdateRoot(
-        bytes calldata publicValues,
-        bytes calldata proofBytes
-    ) external onlyRole(PROVER_ROLE) {
+    function verifyAndUpdateRoot(bytes calldata publicValues, bytes calldata proofBytes)
+        external
+        onlyRole(PROVER_ROLE)
+    {
         verifier.verifyProof(programVKey, publicValues, proofBytes);
         DecodedPublicValues memory decoded = decodePublicValues(publicValues);
 
@@ -305,10 +327,7 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
             revert InvalidChainId(uint64(block.chainid), decoded.chainId);
         }
         if (decoded.settlementContract != address(this)) {
-            revert InvalidSettlementContract(
-                address(this),
-                decoded.settlementContract
-            );
+            revert InvalidSettlementContract(address(this), decoded.settlementContract);
         }
         uint64 expectedBatch = batchSequence + 1;
         if (decoded.batchSequence != expectedBatch) {
@@ -319,70 +338,39 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         }
         for (uint256 i = 0; i < STATE_ARRAY_LENGTH; i++) {
             if (decoded.stateBefore[i] != _outerState[i]) {
-                revert InvalidOuterState(
-                    i,
-                    _outerState[i],
-                    decoded.stateBefore[i]
-                );
+                revert InvalidOuterState(i, _outerState[i], decoded.stateBefore[i]);
             }
         }
         if (decoded.outerActionStateBefore != actionState) {
-            revert InvalidActionState(
-                actionState,
-                decoded.outerActionStateBefore
-            );
+            revert InvalidActionState(actionState, decoded.outerActionStateBefore);
         }
-        if (
-            decoded.outerActionStateLengthBefore != outerActionStateLength
-        ) {
-            revert InvalidActionStateLength(
-                outerActionStateLength,
-                decoded.outerActionStateLengthBefore
-            );
+        if (decoded.outerActionStateLengthBefore != outerActionStateLength) {
+            revert InvalidActionStateLength(outerActionStateLength, decoded.outerActionStateLengthBefore);
         }
-        if (
-            decoded.outerActionStateLengthAfter !=
-            decoded.outerActionStateLengthBefore + 1
-        ) {
+        if (decoded.outerActionStateLengthAfter != decoded.outerActionStateLengthBefore + 1) {
             revert InvalidActionStateTransition(
-                decoded.outerActionStateLengthBefore,
-                decoded.outerActionStateLengthAfter
+                decoded.outerActionStateLengthBefore, decoded.outerActionStateLengthAfter
             );
         }
-        if (
-            decoded.synchronizedOuterActionStateLength >
-            decoded.outerActionStateLengthBefore
-        ) {
+        if (decoded.synchronizedOuterActionStateLength > decoded.outerActionStateLengthBefore) {
             revert InvalidSynchronizedActionLength(
-                decoded.synchronizedOuterActionStateLength,
-                decoded.outerActionStateLengthBefore
+                decoded.synchronizedOuterActionStateLength, decoded.outerActionStateLengthBefore
             );
         }
-        OuterActionStateInfo memory synchronizedCheckpoint = outerActionStateInfo[
-            decoded.synchronizedOuterActionState
-        ];
+        OuterActionStateInfo memory synchronizedCheckpoint = outerActionStateInfo[decoded.synchronizedOuterActionState];
         if (
-            !synchronizedCheckpoint.valid ||
-            synchronizedCheckpoint.length !=
-            decoded.synchronizedOuterActionStateLength
+            !synchronizedCheckpoint.valid || synchronizedCheckpoint.length != decoded.synchronizedOuterActionStateLength
         ) {
             revert UnknownSynchronizedActionState(
-                decoded.synchronizedOuterActionState,
-                decoded.synchronizedOuterActionStateLength
+                decoded.synchronizedOuterActionState, decoded.synchronizedOuterActionStateLength
             );
         }
         if (decoded.slotLower > decoded.slotUpper) {
             revert InvalidSlotRange(decoded.slotLower, decoded.slotUpper);
         }
         uint64 currentSlot = currentVirtualSlot();
-        if (
-            currentSlot < decoded.slotLower || currentSlot > decoded.slotUpper
-        ) {
-            revert OutsideSlotRange(
-                currentSlot,
-                decoded.slotLower,
-                decoded.slotUpper
-            );
+        if (currentSlot < decoded.slotLower || currentSlot > decoded.slotUpper) {
+            revert OutsideSlotRange(currentSlot, decoded.slotLower, decoded.slotUpper);
         }
 
         _outerState = decoded.stateAfter;
@@ -391,48 +379,25 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         batchSequence = decoded.batchSequence;
         currentRoot = decoded.stateAfter[2];
         validActionState[decoded.outerActionStateAfter] = true;
-        outerActionStateInfo[
-            decoded.outerActionStateAfter
-        ] = OuterActionStateInfo({
-            length: decoded.outerActionStateLengthAfter,
-            valid: true
-        });
+        outerActionStateInfo[decoded.outerActionStateAfter] =
+            OuterActionStateInfo({length: decoded.outerActionStateLengthAfter, valid: true});
         _recordL2ActionState(decoded.outerActionStateAfter);
-        _recordAcceptedInnerState(
-            decoded.stateAfter[3],
-            decoded.stateAfter[4],
-            decoded.batchSequence
-        );
+        _recordAcceptedInnerState(decoded.stateAfter[3], decoded.stateAfter[4], decoded.batchSequence);
 
-        if (decoded.version == PUBLIC_VALUES_V2_VERSION) {
+        if (decoded.version >= PUBLIC_VALUES_V2_VERSION) {
             if (decoded.bridgeAddress != bridgeContract) {
-                revert InvalidBridgeContract(
-                    bridgeContract,
-                    decoded.bridgeAddress
-                );
+                revert InvalidBridgeContract(bridgeContract, decoded.bridgeAddress);
             }
-            uint32 innerLengthBefore = _fieldToUint32(
-                decoded.stateBefore[4]
-            );
+            uint32 innerLengthBefore = _fieldToUint32(decoded.stateBefore[4]);
             uint32 innerLengthAfter = _fieldToUint32(decoded.stateAfter[4]);
             if (
-                innerLengthAfter < innerLengthBefore ||
-                innerLengthAfter - innerLengthBefore !=
-                decoded.innerActionCount
+                innerLengthAfter < innerLengthBefore || innerLengthAfter - innerLengthBefore != decoded.innerActionCount
             ) {
-                revert InvalidInnerActionTransition(
-                    innerLengthBefore,
-                    innerLengthAfter
-                );
+                revert InvalidInnerActionTransition(innerLengthBefore, innerLengthAfter);
             }
-            if (
-                decoded.innerActionStartIndex != innerLengthBefore ||
-                decoded.innerActionRoot == bytes32(0)
-            ) {
+            if (decoded.innerActionStartIndex != innerLengthBefore || decoded.innerActionRoot == bytes32(0)) {
                 revert InvalidInnerActionBatch(
-                    decoded.innerActionRoot,
-                    decoded.innerActionStartIndex,
-                    decoded.innerActionCount
+                    decoded.innerActionRoot, decoded.innerActionStartIndex, decoded.innerActionCount
                 );
             }
             innerActionBatch[decoded.batchSequence] = InnerActionBatch({
@@ -454,6 +419,69 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
             );
         }
 
+        if (decoded.version == PUBLIC_VALUES_V3_VERSION) {
+            if (
+                decoded.assetRegistryRoot == bytes32(0) || decoded.assetRegistryCount != assetRegistryCount + 1
+                    || decoded.assetRegistryCount > ASSET_REGISTRY_CAPACITY || decoded.assetRegistrySchemaVersion != 1
+                    || decoded.assetRecordHash == bytes32(0) || decoded.assetRecordCommitment == bytes32(0)
+            ) {
+                revert InvalidAssetRegistryCheckpoint(
+                    decoded.assetRegistryRoot,
+                    decoded.assetRegistryCount,
+                    decoded.assetRegistrySchemaVersion,
+                    decoded.assetRecordHash
+                );
+            }
+            assetRegistryRoot = decoded.assetRegistryRoot;
+            assetRegistryCount = decoded.assetRegistryCount;
+            assetRegistrySchemaVersion = decoded.assetRegistrySchemaVersion;
+            settledAssetRecord[decoded.assetRecordHash] = true;
+            settledAssetRecordCommitment[decoded.assetRecordHash] = decoded.assetRecordCommitment;
+            emit AssetRegistryCheckpointAccepted(
+                decoded.assetRegistryRoot,
+                decoded.assetRegistryCount,
+                decoded.assetRegistrySchemaVersion,
+                decoded.assetRecordHash,
+                decoded.assetRecordCommitment,
+                decoded.batchSequence
+            );
+        }
+        if (decoded.version == PUBLIC_VALUES_V4_VERSION) {
+            if (
+                decoded.assetRegistryRoot == bytes32(0) || decoded.assetRecordBatchRoot == bytes32(0)
+                    || decoded.assetRecordBatchCount == 0
+                    || decoded.assetRegistryCount != assetRegistryCount + decoded.assetRecordBatchCount
+                    || decoded.assetRegistryCount > ASSET_REGISTRY_CAPACITY || decoded.assetRegistrySchemaVersion != 1
+            ) {
+                revert InvalidAssetRegistryBatch(
+                    decoded.assetRegistryRoot,
+                    decoded.assetRegistryCount,
+                    decoded.assetRegistrySchemaVersion,
+                    decoded.assetRecordBatchRoot,
+                    decoded.assetRecordBatchCount
+                );
+            }
+            assetRegistryRoot = decoded.assetRegistryRoot;
+            assetRegistryCount = decoded.assetRegistryCount;
+            assetRegistrySchemaVersion = decoded.assetRegistrySchemaVersion;
+            assetRegistryRecordBatch[decoded.batchSequence] = AssetRegistryRecordBatch({
+                registryRoot: decoded.assetRegistryRoot,
+                registryCount: decoded.assetRegistryCount,
+                registrySchemaVersion: decoded.assetRegistrySchemaVersion,
+                recordBatchRoot: decoded.assetRecordBatchRoot,
+                recordBatchCount: decoded.assetRecordBatchCount,
+                valid: true
+            });
+            emit AssetRegistryBatchCheckpointAccepted(
+                decoded.assetRegistryRoot,
+                decoded.assetRegistryCount,
+                decoded.assetRegistrySchemaVersion,
+                decoded.assetRecordBatchRoot,
+                decoded.assetRecordBatchCount,
+                decoded.batchSequence
+            );
+        }
+
         emit SettlementAccepted(
             decoded.batchSequence,
             decoded.minaTransactionHash,
@@ -467,17 +495,12 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         );
     }
 
-    function decodePublicValues(
-        bytes calldata publicValues
-    ) public pure returns (DecodedPublicValues memory decoded) {
+    function decodePublicValues(bytes calldata publicValues) public pure returns (DecodedPublicValues memory decoded) {
         if (
-            publicValues.length != PUBLIC_VALUES_LENGTH &&
-            publicValues.length != PUBLIC_VALUES_V2_LENGTH
+            publicValues.length != PUBLIC_VALUES_LENGTH && publicValues.length != PUBLIC_VALUES_V2_LENGTH
+                && publicValues.length != PUBLIC_VALUES_V3_LENGTH && publicValues.length != PUBLIC_VALUES_V4_LENGTH
         ) {
-            revert InvalidPublicValuesLength(
-                PUBLIC_VALUES_LENGTH,
-                publicValues.length
-            );
+            revert InvalidPublicValuesLength(PUBLIC_VALUES_LENGTH, publicValues.length);
         }
         bytes4 magic = bytes4(publicValues[0:4]);
         if (magic != PUBLIC_VALUES_MAGIC) {
@@ -485,21 +508,23 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         }
         uint16 version = _readUint16(publicValues, 4);
         if (
-            version != PUBLIC_VALUES_VERSION &&
-            version != PUBLIC_VALUES_V2_VERSION
+            version != PUBLIC_VALUES_VERSION && version != PUBLIC_VALUES_V2_VERSION
+                && version != PUBLIC_VALUES_V3_VERSION && version != PUBLIC_VALUES_V4_VERSION
         ) {
             revert InvalidPublicValuesVersion(version);
         }
         if (
-            (version == PUBLIC_VALUES_VERSION &&
-                publicValues.length != PUBLIC_VALUES_LENGTH) ||
-            (version == PUBLIC_VALUES_V2_VERSION &&
-                publicValues.length != PUBLIC_VALUES_V2_LENGTH)
+            (version == PUBLIC_VALUES_VERSION && publicValues.length != PUBLIC_VALUES_LENGTH)
+                || (version == PUBLIC_VALUES_V2_VERSION && publicValues.length != PUBLIC_VALUES_V2_LENGTH)
+                || (version == PUBLIC_VALUES_V3_VERSION && publicValues.length != PUBLIC_VALUES_V3_LENGTH)
+                || (version == PUBLIC_VALUES_V4_VERSION && publicValues.length != PUBLIC_VALUES_V4_LENGTH)
         ) {
             revert InvalidPublicValuesLength(
                 version == PUBLIC_VALUES_VERSION
                     ? PUBLIC_VALUES_LENGTH
-                    : PUBLIC_VALUES_V2_LENGTH,
+                    : version == PUBLIC_VALUES_V2_VERSION
+                        ? PUBLIC_VALUES_V2_LENGTH
+                        : version == PUBLIC_VALUES_V3_VERSION ? PUBLIC_VALUES_V3_LENGTH : PUBLIC_VALUES_V4_LENGTH,
                 publicValues.length
             );
         }
@@ -527,68 +552,66 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         cursor += 32;
         decoded.outerActionStateAfter = _readBytes32(publicValues, cursor);
         cursor += 32;
-        decoded.outerActionStateLengthBefore = _readUint32(
-            publicValues,
-            cursor
-        );
+        decoded.outerActionStateLengthBefore = _readUint32(publicValues, cursor);
         cursor += 4;
-        decoded.outerActionStateLengthAfter = _readUint32(
-            publicValues,
-            cursor
-        );
+        decoded.outerActionStateLengthAfter = _readUint32(publicValues, cursor);
         cursor += 4;
-        decoded.synchronizedOuterActionState = _readBytes32(
-            publicValues,
-            cursor
-        );
+        decoded.synchronizedOuterActionState = _readBytes32(publicValues, cursor);
         cursor += 32;
-        decoded.synchronizedOuterActionStateLength = _readUint32(
-            publicValues,
-            cursor
-        );
+        decoded.synchronizedOuterActionStateLength = _readUint32(publicValues, cursor);
         cursor += 4;
         decoded.slotLower = _readUint32(publicValues, cursor);
         cursor += 4;
         decoded.slotUpper = _readUint32(publicValues, cursor);
         cursor += 4;
-        if (version == PUBLIC_VALUES_V2_VERSION) {
-            decoded.bridgeAddress = address(
-                bytes20(publicValues[cursor:cursor + 20])
-            );
+        if (version >= PUBLIC_VALUES_V2_VERSION) {
+            decoded.bridgeAddress = address(bytes20(publicValues[cursor:cursor + 20]));
             cursor += 20;
             decoded.innerActionRoot = _readBytes32(publicValues, cursor);
             cursor += 32;
-            decoded.innerActionStartIndex = _readUint32(
-                publicValues,
-                cursor
-            );
+            decoded.innerActionStartIndex = _readUint32(publicValues, cursor);
             cursor += 4;
             decoded.innerActionCount = _readUint32(publicValues, cursor);
+            cursor += 4;
+        }
+        if (version == PUBLIC_VALUES_V3_VERSION) {
+            decoded.assetRegistryRoot = _readBytes32(publicValues, cursor);
+            cursor += 32;
+            decoded.assetRegistryCount = _readUint32(publicValues, cursor);
+            cursor += 4;
+            decoded.assetRegistrySchemaVersion = _readUint32(publicValues, cursor);
+            cursor += 4;
+            decoded.assetRecordHash = _readBytes32(publicValues, cursor);
+            cursor += 32;
+            decoded.assetRecordCommitment = _readBytes32(publicValues, cursor);
+            cursor += 32;
+        }
+        if (version == PUBLIC_VALUES_V4_VERSION) {
+            decoded.assetRegistryRoot = _readBytes32(publicValues, cursor);
+            cursor += 32;
+            decoded.assetRegistryCount = _readUint32(publicValues, cursor);
+            cursor += 4;
+            decoded.assetRegistrySchemaVersion = _readUint32(publicValues, cursor);
+            cursor += 4;
+            decoded.assetRecordBatchRoot = _readBytes32(publicValues, cursor);
+            cursor += 32;
+            decoded.assetRecordBatchCount = _readUint32(publicValues, cursor);
             cursor += 4;
         }
         assert(cursor == publicValues.length);
     }
 
-    function getDecodedPublicValues(
-        bytes calldata publicValues
-    ) external pure returns (DecodedPublicValues memory) {
+    function getDecodedPublicValues(bytes calldata publicValues) external pure returns (DecodedPublicValues memory) {
         return decodePublicValues(publicValues);
     }
 
     function _recordL2ActionState(bytes32 targetActionState) internal {
         if (l2ActionStateInfo[targetActionState].valid) return;
         currentL2ActionStateIndex += 1;
-        l2ActionStateInfo[targetActionState] = L2ActionStateInfo({
-            index: currentL2ActionStateIndex,
-            valid: true
-        });
+        l2ActionStateInfo[targetActionState] = L2ActionStateInfo({index: currentL2ActionStateIndex, valid: true});
     }
 
-    function _recordAcceptedInnerState(
-        bytes32 innerState,
-        bytes32 lengthField,
-        uint64 settlementIndex
-    ) internal {
+    function _recordAcceptedInnerState(bytes32 innerState, bytes32 lengthField, uint64 settlementIndex) internal {
         if (innerState == bytes32(0)) return;
         acceptedInnerActionState[innerState] = AcceptedInnerActionState({
             settlementIndex: settlementIndex,
@@ -605,39 +628,25 @@ contract ZekoSettlement is Initializable, AccessControl, UUPSUpgradeable {
         return uint32(uint256(value));
     }
 
-    function _readBytes32(
-        bytes calldata data,
-        uint256 offset
-    ) private pure returns (bytes32 value) {
+    function _readBytes32(bytes calldata data, uint256 offset) private pure returns (bytes32 value) {
         assembly {
             value := calldataload(add(data.offset, offset))
         }
     }
 
-    function _readUint16(
-        bytes calldata data,
-        uint256 offset
-    ) private pure returns (uint16) {
+    function _readUint16(bytes calldata data, uint256 offset) private pure returns (uint16) {
         return uint16(bytes2(data[offset:offset + 2]));
     }
 
-    function _readUint32(
-        bytes calldata data,
-        uint256 offset
-    ) private pure returns (uint32) {
+    function _readUint32(bytes calldata data, uint256 offset) private pure returns (uint32) {
         return uint32(bytes4(data[offset:offset + 4]));
     }
 
-    function _readUint64(
-        bytes calldata data,
-        uint256 offset
-    ) private pure returns (uint64) {
+    function _readUint64(bytes calldata data, uint256 offset) private pure returns (uint64) {
         return uint64(bytes8(data[offset:offset + 8]));
     }
 
-    function _authorizeUpgrade(
-        address newImplementation
-    ) internal view override onlyRole(UPGRADER_ROLE) {
+    function _authorizeUpgrade(address newImplementation) internal view override onlyRole(UPGRADER_ROLE) {
         newImplementation;
     }
 }

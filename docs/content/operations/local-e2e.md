@@ -1,6 +1,6 @@
 # Local E2E
 
-There are four useful local checkpoints. None requires an SP1 proof.
+There are five useful local checkpoints. None requires an SP1 proof.
 
 ::: warning Resource use
 The real settlement guest performs full Pickles verification and takes tens of
@@ -118,6 +118,41 @@ bridge and roughly 52.19 billion cycles for each settlement. The normal local
 mock path now verifies settlements natively and reports no settlement cycle
 count. See [current status](/status) for the recorded audit values.
 
+## 5. Full ERC-20 bridge round trip
+
+Run the universal two-token combined scenario:
+
+```sh
+tools/run-local-erc20-bridge-roundtrip.sh
+```
+
+The runner derives two independent Mina owner/admin identities plus a shared
+vault and recipient; predicts two deterministic Ethereum token addresses; and
+computes both canonical asset IDs. It then:
+
+1. generates one universal Zeko registry/circuit configuration
+2. runs the real OCaml sequencer, prover, and three-node DA quorum
+3. registers both immutable records through the SDK and Actions indexer
+4. settles the ordered two-record registry batch and activates both pending
+   Solidity proposals with exact batch membership proofs
+5. deploys two unmodified `mina-fungible-token` owner/admin pairs
+6. installs the same bridge VK at the shared vault key under two distinct token
+   IDs and provisions each independent inventory
+7. finalizes both asset-bound deposits and advances both replay helpers
+8. submits withdrawals for both assets and checks their independent L2 balances
+9. submits the deposit-sync and withdrawal OCaml settlements to Anvil
+10. advances the delay, claims both corresponding ERC-20s, and checks per-token
+    custody, liabilities, recipient balances, and replay cursors
+
+The local verifier accepts empty proof bytes only on chain ID 31337. The runner
+never invokes `--prove` and never creates a Succinct request. The registry
+checkpoint precedes the two bridge settlements because pending assets cannot
+accept deposits.
+
+The deterministic manifest records the registry module separately from the
+bridge proxy. Registry calls keep the bridge ABI selectors but delegate into
+that module, while custody changes return through self-only bridge callbacks.
+
 ## Regenerate the OCaml fixture
 
 The fixture must use the same deterministic bridge address and circuit config
@@ -156,4 +191,6 @@ release storage before treating it as testnet identity.
   the live sequencer GraphQL API
 - the production Actions indexer/API pair accepts the gateway archive shape
 - bridge native liability falls by the claimed value
+- the canonical ERC-20 registry, asset ID, custody, liability, and recipient
+  balance match the live standard-token L2 scenario
 - no Succinct request ID exists in the job records

@@ -45,6 +45,19 @@ The live-sequencer command uses real OCaml proving plus the Actions services and
 browser SDK, but performs no SP1 proving. The round-trip command adds local
 Ethereum custody, SP1 execution, settlement submission, and withdrawal claim.
 
+## Local ERC-20 bridge
+
+```sh
+tools/run-local-erc20-bridge-roundtrip.sh
+```
+
+This command creates two deterministic ERC-20 identities under one universal
+registry configuration, settles and activates their ordered record batch,
+deploys two unmodified Mina FungibleToken owner/admin pairs with a shared
+proof-authorized vault, and replays both deposits and withdrawals through Anvil
+custody. It uses the chain-ID-31337 mock verifier and does not request or
+generate an SP1 proof.
+
 Run the standalone browser app:
 
 ```sh

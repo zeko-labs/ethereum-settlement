@@ -134,9 +134,13 @@ The settlement guest derives versioned receipts from the verified OCaml proof:
   synchronized checkpoint, slot range, Ethereum domain, batch sequence, Mina
   transaction hash, and verification-key identifier.
 - V2 additionally binds the exact ordered inner actions to a depth-16 Keccak
-  tree used by native withdrawal claims.
+  tree used by native and registered ERC-20 withdrawal claims.
+- V3 additionally binds one proof-checked registry checkpoint, record hash, and
+  canonical Mina Poseidon record commitment.
+- V4 binds an ordered registry append batch through a depth-8 Keccak tree whose
+  leaves contain both the Solidity record hash and Mina record commitment.
 
-The remaining production limitation is data availability: neither receipt binds
+The remaining production limitation is data availability: no receipt binds
 EIP-4844 blob hashes or a canonical Zeko batch data root yet. Keep receipt and
 Solidity decoders versioned when extending the schema.
 
