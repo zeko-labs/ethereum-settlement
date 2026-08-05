@@ -436,7 +436,9 @@ without registering a program or requesting a proof:
 
 ```sh
 cargo run --release --bin network_quote -- --proof-system groth16
-# After SP1 simulation reports a PGU value:
+# Simulate settlement PGU locally without requesting a proof:
+cargo run --release --bin zkapp -- --execute --calculate-gas
+# Then quote that PGU against the live auction:
 cargo run --release --bin network_quote -- --proof-system groth16 --pgu <pgu>
 ```
 
@@ -446,3 +448,9 @@ value returned by SP1 simulation or a proof request. Actual auction cost can be
 lower. No static PROVE estimate is kept in the repository because the market
 price changes. The command only reads auction parameters and never requests a
 proof.
+
+For the approval-digest and explicit cost caps required by the fixture-only
+paid benchmark, see the
+[`network_fixture` command reference](docs/content/reference/commands.md#approval-capped-fixture-benchmark).
+Its output is not a Solidity-submittable settlement receipt; operational
+settlement proofs must use the gateway's approval-gated bundle flow.

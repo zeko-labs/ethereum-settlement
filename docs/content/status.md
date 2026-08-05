@@ -147,6 +147,16 @@ The universal registry runtime path is also implemented:
   withdrawals, and claims the corresponding Ethereum tokens without generating
   an SP1 proof.
 
+## Settlement cycle optimization benchmark
+
+A separate July 29 source benchmark on the checked-in default mainnet fixture
+reduced a full settlement guest execution from 52,159,229,071 to 5,072,572,223
+cycles by replacing the zkVM's per-scalar accumulator fallback with an
+explicitly serial windowed MSM. The valid proof and verifier hash were identical
+across both runs, and a mutated recursive challenge was rejected inside the
+guest. The retained bridge rows above are deliberately unchanged until that
+distinct two-commit OCaml checkpoint is rerun.
+
 ## Needed for the live PoC
 
 1. Build and record immutable machine-local images from the final committed

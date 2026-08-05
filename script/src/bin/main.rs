@@ -23,10 +23,19 @@ pub const ZKAPP_ELF: Elf = include_elf!("settlement-program");
 struct Args {
     #[arg(long)]
     execute: bool,
+    /// Calculate SP1 prover gas units during local execution. This is slower
+    /// than the cycle-only executor, but the resulting value can be used with
+    /// the read-only live network quote command.
+    #[arg(long, requires = "execute")]
+    calculate_gas: bool,
     #[arg(long)]
     prove: bool,
     #[arg(long, default_value = "proofs/mainnet-blockchain-snark")]
     fixture_dir: String,
+    /// Test-only: mutate a recursive challenge so the guest must reject the
+    /// resulting accumulator commitment.
+    #[arg(long, requires = "execute")]
+    corrupt_accumulator_challenge: bool,
 }
 
 fn main() {
@@ -39,17 +48,41 @@ fn main() {
         std::process::exit(1);
     }
 
-    let verifiable = load_verifiable(Path::new(&args.fixture_dir));
+    let mut verifiable = load_verifiable(Path::new(&args.fixture_dir));
+    if args.corrupt_accumulator_challenge {
+        verifiable.raw_bulletproof_challenges[0] += pickles_verifier::types::StepField::from(1u64);
+    }
     let mut stdin = SP1Stdin::new();
     stdin.write(&verifiable);
     stdin.write(&Option::<zeko_sp1_lib::SettlementWitnessV1>::None);
 
     if args.execute {
-        let (output, cycles) = execute_minimal(ZKAPP_ELF, stdin).expect("execution failed");
+        let (output, cycles, gas) = if args.calculate_gas {
+            // Force the local prover even when network prover environment
+            // variables are present. This simulates PGU without creating a
+            // paid Succinct Network request.
+            let client = ProverClient::builder().cpu().build();
+            let (output, report) = client
+                .execute(ZKAPP_ELF, stdin)
+                .calculate_gas(true)
+                .run()
+                .expect("execution failed");
+            (
+                output.as_slice().to_vec(),
+                report.total_instruction_count(),
+                report.gas(),
+            )
+        } else {
+            let (output, cycles) = execute_minimal(ZKAPP_ELF, stdin).expect("execution failed");
+            (output, cycles, None)
+        };
 
         println!("Program executed successfully");
         println!("  cycles   : {cycles}");
-        println!("  total gas: not calculated");
+        match gas {
+            Some(gas) => println!("  total gas: {gas}"),
+            None => println!("  total gas: not calculated"),
+        }
 
         let public_values: ZkappPublicValues =
             bincode::deserialize(&output).expect("decode public values");
