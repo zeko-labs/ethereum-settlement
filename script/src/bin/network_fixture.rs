@@ -3,14 +3,22 @@ use clap::Parser;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sp1_sdk::{
-    network::{proto::GetProofRequestParamsResponse, NetworkMode},
-    HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofMode,
+    network::{
+        get_default_cycle_limit_for_mode, get_default_rpc_url_for_mode,
+        proto::{
+            types::{FulfillmentStrategy, ProofMode},
+            GetProofRequestParamsResponse,
+        },
+        signer::NetworkSigner,
+        Address, NetworkClient, NetworkMode, B256,
+    },
+    HashableKey, Prover, ProverClient, ProvingKey, SP1ProofMode, SP1_CIRCUIT_VERSION,
 };
 use std::{
     fs,
     io::{self, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use zeko_sp1_lib::ZkappPublicValues;
 use zkapp_script::{execute_minimal, settlement_stdin, SETTLEMENT_ELF};
@@ -117,10 +125,19 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let network_mode = NetworkMode::Mainnet;
+    let private_key = std::env::var("NETWORK_PRIVATE_KEY")
+        .context("NETWORK_PRIVATE_KEY is required with --request")?;
+    let signer = NetworkSigner::local(&private_key).context("parse NETWORK_PRIVATE_KEY")?;
+    let rpc_url = std::env::var("NETWORK_RPC_URL")
+        .unwrap_or_else(|_| get_default_rpc_url_for_mode(network_mode));
     let client = ProverClient::builder()
-        .network_for(NetworkMode::Mainnet)
+        .network_for(network_mode)
+        .signer(signer.clone())
+        .rpc_url(&rpc_url)
         .build()
         .await;
+    let request_client = NetworkClient::new(signer, &rpc_url, network_mode);
     let balance_before = parse_u128(client.get_balance().await?.to_string(), "network balance")?;
     let GetProofRequestParamsResponse::Auction(params) = client
         .get_proof_request_params(SP1ProofMode::Groth16)
@@ -128,18 +145,16 @@ async fn main() -> Result<()> {
     else {
         anyhow::bail!("auction pricing is unavailable")
     };
-    let base_fee = parse_u128(params.base_fee, "network base fee")?;
-    let network_max_price = parse_u128(params.max_price_per_pgu, "network max price per PGU")?;
-    let maximum_cost = base_fee.saturating_add(
-        u128::from(args.max_pgu).saturating_mul(u128::from(args.max_price_per_pgu)),
-    );
+    let base_fee = parse_u64(&params.base_fee, "network base fee")?;
+    let network_max_price = parse_u64(&params.max_price_per_pgu, "network max price per PGU")?;
+    let maximum_cost = maximum_auction_cost(base_fee, args.max_pgu, args.max_price_per_pgu);
     emit(json!({
         "event": "authorization_check",
         "timestampMs": unix_time_ms()?,
         "balanceAttoProve": balance_before.to_string(),
         "balanceProve": format_prove(balance_before),
         "baseFeeAttoProve": base_fee.to_string(),
-        "baseFeeProve": format_prove(base_fee),
+        "baseFeeProve": format_prove(u128::from(base_fee)),
         "networkMaxPricePerPgu": network_max_price.to_string(),
         "approvedMaxPgu": args.max_pgu.to_string(),
         "approvedMaxPricePerPgu": args.max_price_per_pgu.to_string(),
@@ -170,20 +185,45 @@ async fn main() -> Result<()> {
         pk.verifying_key().bytes32().to_string() == program_vkey,
         "network client and local preflight program vkeys differ"
     );
+    let vk_hash = client
+        .register_program(pk.verifying_key(), pk.elf())
+        .await
+        .context("register settlement program")?;
+    let auctioneer = parse_network_address(&params.auctioneer, "network auctioneer")?;
+    let executor = parse_network_address(&params.executor, "network executor")?;
+    let verifier = parse_network_address(&params.verifier, "network verifier")?;
+    let treasury = parse_network_address(&params.treasury, "network treasury")?;
 
     let requested_at_ms = unix_time_ms()?;
     let request_started = Instant::now();
-    let request_id = client
-        .prove(&pk, stdin)
-        .groth16()
-        .timeout(Duration::from_secs(args.timeout_secs))
-        .min_auction_period(args.min_auction_period_secs)
-        .gas_limit(args.max_pgu)
-        .max_price_per_pgu(args.max_price_per_pgu)
-        .skip_simulation(true)
-        .request()
+    let response = request_client
+        .request_proof(
+            vk_hash,
+            &stdin,
+            ProofMode::Groth16,
+            SP1_CIRCUIT_VERSION,
+            FulfillmentStrategy::Auction,
+            args.timeout_secs,
+            get_default_cycle_limit_for_mode(network_mode),
+            args.max_pgu,
+            args.min_auction_period_secs,
+            None,
+            auctioneer,
+            executor,
+            verifier,
+            treasury,
+            None,
+            base_fee,
+            args.max_price_per_pgu,
+            params.domain,
+        )
         .await
         .context("create paid SP1 proof request")?;
+    anyhow::ensure!(
+        response.request_id().len() == 32,
+        "network returned an invalid proof request ID"
+    );
+    let request_id = B256::from_slice(response.request_id());
     emit(json!({
         "event": "request_created",
         "timestampMs": unix_time_ms()?,
@@ -279,6 +319,22 @@ fn parse_u128(value: impl AsRef<str>, name: &str) -> Result<u128> {
         .with_context(|| format!("invalid {name}"))
 }
 
+fn parse_u64(value: impl AsRef<str>, name: &str) -> Result<u64> {
+    value
+        .as_ref()
+        .parse::<u64>()
+        .with_context(|| format!("invalid {name}"))
+}
+
+fn parse_network_address(bytes: &[u8], name: &str) -> Result<Address> {
+    anyhow::ensure!(bytes.len() == 20, "invalid {name}");
+    Ok(Address::from_slice(bytes))
+}
+
+fn maximum_auction_cost(base_fee: u64, max_pgu: u64, max_price_per_pgu: u64) -> u128 {
+    u128::from(base_fee) + u128::from(max_pgu) * u128::from(max_price_per_pgu)
+}
+
 fn parse_optional_u128(value: Option<&str>, name: &str) -> Result<Option<u128>> {
     value
         .filter(|value| !value.is_empty())
@@ -303,8 +359,8 @@ mod tests {
 
     #[test]
     fn buffered_defaults_stay_within_the_approved_ceiling() {
-        let base_fee = 444_839_000_000_000_000u128;
-        let maximum = base_fee + 4_783_740_216u128 * 700_000_000u128;
+        let base_fee = 444_839_000_000_000_000u64;
+        let maximum = maximum_auction_cost(base_fee, 4_783_740_216, 700_000_000);
         assert_eq!(format_prove(maximum), "3.7934571512");
         assert!(maximum <= 3_810_054_280_210_000_000u128);
     }

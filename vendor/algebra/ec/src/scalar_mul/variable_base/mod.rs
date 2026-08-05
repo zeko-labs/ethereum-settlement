@@ -122,6 +122,40 @@ pub trait VariableBaseMSM: ScalarMul {
     }
 }
 
+fn variable_base_window_size(size: usize) -> usize {
+    if size < 32 {
+        3
+    } else {
+        super::ln_without_floats(size) + 2
+    }
+}
+
+fn sum_buckets<V: VariableBaseMSM>(buckets: Vec<V>, mut result: V) -> V {
+    let mut running_sum = V::zero();
+    buckets.into_iter().rev().for_each(|bucket| {
+        running_sum += &bucket;
+        result += &running_sum;
+    });
+    result
+}
+
+fn combine_window_sums<V: VariableBaseMSM>(window_sums: &[V], window_size: usize) -> V {
+    let Some((lowest, higher)) = window_sums.split_first() else {
+        return V::zero();
+    };
+    *lowest
+        + &higher
+            .iter()
+            .rev()
+            .fold(V::zero(), |mut total, window_sum| {
+                total += window_sum;
+                for _ in 0..window_size {
+                    total.double_in_place();
+                }
+                total
+            })
+}
+
 /// Serial windowed multi-scalar multiplication.
 ///
 /// This is the same Pippenger/wNAF computation used by the optimized native
@@ -154,11 +188,7 @@ fn msm_bigint_wnaf_serial<V: VariableBaseMSM>(
     let scalars = &bigints[..size];
     let bases = &bases[..size];
 
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
+    let c = variable_base_window_size(size);
 
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
     let digits_count = (num_bits + c - 1) / c;
@@ -180,28 +210,11 @@ fn msm_bigint_wnaf_serial<V: VariableBaseMSM>(
                 }
             }
 
-            let mut running_sum = V::zero();
-            let mut res = V::zero();
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            sum_buckets(buckets, V::zero())
         })
         .collect();
 
-    let lowest = window_sums[0];
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(zero, |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums(&window_sums, c)
 }
 
 fn msm_bigint_bucket_serial<V: VariableBaseMSM>(
@@ -215,11 +228,7 @@ fn msm_bigint_bucket_serial<V: VariableBaseMSM>(
     let scalars = &bigints[..size];
     let bases = &bases[..size];
 
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
+    let c = variable_base_window_size(size);
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
     let one = V::ScalarField::one().into_bigint();
     let zero = V::zero();
@@ -245,27 +254,11 @@ fn msm_bigint_bucket_serial<V: VariableBaseMSM>(
                 }
             }
 
-            let mut running_sum = V::zero();
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            sum_buckets(buckets, res)
         })
         .collect();
 
-    let lowest = window_sums[0];
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(zero, |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums(&window_sums, c)
 }
 
 // Compute msm using windowed non-adjacent form
@@ -277,11 +270,7 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
     let scalars = &bigints[..size];
     let bases = &bases[..size];
 
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
+    let c = variable_base_window_size(size);
 
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
     let digits_count = (num_bits + c - 1) / c;
@@ -310,31 +299,11 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
                 }
             }
 
-            let mut running_sum = V::zero();
-            let mut res = V::zero();
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            sum_buckets(buckets, V::zero())
         })
         .collect();
 
-    // We store the sum for the lowest window.
-    let lowest = *window_sums.first().unwrap();
-
-    // We're traversing windows from high to low.
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(zero, |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums(&window_sums, c)
 }
 
 /// Optimized implementation of multi-scalar multiplication.
@@ -347,11 +316,7 @@ fn msm_bigint<V: VariableBaseMSM>(
     let bases = &bases[..size];
     let scalars_and_bases_iter = scalars.iter().zip(bases).filter(|(s, _)| !s.is_zero());
 
-    let c = if size < 32 {
-        3
-    } else {
-        super::ln_without_floats(size) + 2
-    };
+    let c = variable_base_window_size(size);
 
     let num_bits = V::ScalarField::MODULUS_BIT_SIZE as usize;
     let one = V::ScalarField::one().into_bigint();
@@ -408,30 +373,11 @@ fn msm_bigint<V: VariableBaseMSM>(
 
             // `running_sum` = sum_{j in i..num_buckets} bucket[j],
             // where we iterate backward from i = num_buckets to 0.
-            let mut running_sum = V::zero();
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+            sum_buckets(buckets, res)
         })
         .collect();
 
-    // We store the sum for the lowest window.
-    let lowest = *window_sums.first().unwrap();
-
-    // We're traversing windows from high to low.
-    lowest
-        + &window_sums[1..]
-            .iter()
-            .rev()
-            .fold(zero, |mut total, sum_i| {
-                total += sum_i;
-                for _ in 0..c {
-                    total.double_in_place();
-                }
-                total
-            })
+    combine_window_sums(&window_sums, c)
 }
 
 // From: https://github.com/arkworks-rs/gemini/blob/main/src/kzg/msm/variable_base.rs#L20
