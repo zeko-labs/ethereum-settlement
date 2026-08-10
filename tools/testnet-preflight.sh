@@ -193,7 +193,7 @@ chain_id=$("$CAST" chain-id --rpc-url "$RPC_URL")
 }
 manifest="$DEPLOY_DIR/artifacts/manifest.json"
 [[ $(jq -r '.chainId' "$manifest") == 11155111 ]]
-[[ $(jq -r '.schemaVersion' "$manifest") == 2 ]]
+[[ $(jq -r '.schemaVersion' "$manifest") == 3 ]]
 [[ $(jq -r '.dataAvailability' "$manifest") == multisig ]]
 [[ $(jq -r '.minaSigningNetworkId' "$manifest") == testnet ]]
 [[ $(jq -r '.admin | ascii_downcase' "$manifest") == "${ADMIN_ADDRESS,,}" ]]
