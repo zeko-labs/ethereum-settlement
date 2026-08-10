@@ -1,8 +1,10 @@
 # Multisig-DA Testnet PoC
 
-This is the deployment runbook and acceptance boundary for the no-blob PoC.
-The OCaml Zeko circuits remain authoritative. Multisig DA is retained for this
-testnet milestone only; EIP-4844 remains the production direction.
+This is the proof-verified deployment runbook and acceptance boundary for the
+no-blob PoC. The OCaml Zeko circuits remain authoritative. Multisig DA is
+retained for this testnet milestone only; EIP-4844 remains the production
+direction. The separately gated, disposable Sepolia mock profile is documented
+in the [testnet operations runbook](docs/content/operations/testnet.md).
 
 ## Data flow
 
@@ -113,8 +115,8 @@ The pinned persistent profile and secret/bootstrap workflow live under
 `deploy/testnet/`. It runs one real sequencer/prover, three retained DA nodes at
 quorum two, the gateway, both databases, RabbitMQ, isolated signers, bounded DA
 bootstrap, and a prover-readiness barrier. Run `tools/testnet-preflight.sh`
-before starting it; tags, mismatched vkeys/roles/identities, bypass modes, and
-non-Sepolia RPCs are rejected.
+before starting it; tags, mismatched vkeys/roles/identities, modes that do not
+match the selected profile, and non-Sepolia RPCs are rejected.
 
 The standalone React application lives in `bridge-ui/`. It uses public gateway,
 sequencer/archive, and Actions endpoints for deposit, deposit finalization,
@@ -197,14 +199,10 @@ To advance the local contracts without proving, deploy with
 `API_LOCAL_MOCK_SUBMIT=true`. The gateway still executes and validates the
 guest first, then submits its public values with an empty proof to the marked
 local verifier. This mode defaults to chain ID 31337 and is the local path for
-testing consecutive commits and bridge synchronization. A disposable Sepolia
-PoC may opt in with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`, but only when all
-three contract verifier references point to the deployed `LocalSP1Verifier`.
-That profile provides no onchain SP1 proof security.
-On chain ID 31337, `DeployPoc` holds the local mock deployment at `FORK_SLOT`
-for one day by default so a long Pickles preflight cannot age past the proof's
-slot range; set `GENESIS_TIMESTAMP` explicitly to override that test-only
-clock. Sepolia mock deployments use the live block timestamp. The E2E runner
+testing consecutive commits and bridge synchronization. On chain ID 31337,
+`DeployPoc` holds the local mock deployment at `FORK_SLOT` for one day by
+default so a long Pickles preflight cannot age past the proof's slot range; set
+`GENESIS_TIMESTAMP` explicitly to override that test-only clock. The E2E runner
 mines only after Ethereum submission, never while SP1 is executing.
 
 With Anvil, the deterministic contracts, and the `zeko-poc-postgres` container

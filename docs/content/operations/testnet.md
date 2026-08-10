@@ -258,5 +258,6 @@ Run one native round trip with a deliberately small amount:
   availability, proof costs, Ethereum gas, and recipient cursor
 
 Stop immediately on any vkey/address mismatch, expired slot window, DA quorum
-loss, reorg, price above cap, public-values mismatch, or liability mismatch. Do
-not disable approval mode to work around a stuck job.
+loss, reorg, public-values mismatch, or liability mismatch. In the
+proof-verified profile, also stop when the price exceeds its cap and do not
+disable approval mode to work around a stuck job.
