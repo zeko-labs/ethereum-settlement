@@ -151,6 +151,10 @@ receipt. Operational proofs use the
 
 ## Testnet profile
 
+This starts the default proof-verified profile. For the disposable mock profile,
+follow the [Sepolia testnet runbook](/operations/testnet#_7-preflight-and-start)
+so the required unsafe Compose overlay is not omitted.
+
 ```sh
 tools/testnet-preflight.sh deploy/testnet
 docker compose --env-file deploy/testnet/.env \

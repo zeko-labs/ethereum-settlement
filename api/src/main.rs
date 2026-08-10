@@ -298,17 +298,18 @@ async fn main() -> Result<()> {
         .into();
     let execute_only = bool_env("API_EXECUTE_ONLY")?;
     let local_mock_submit = bool_env("API_LOCAL_MOCK_SUBMIT")?;
+    let unsafe_allow_mock_on_sepolia = bool_env("API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA")?;
     let require_proof_approval = bool_env("API_REQUIRE_PROOF_APPROVAL")?;
-    anyhow::ensure!(
-        !(execute_only && local_mock_submit),
-        "API_EXECUTE_ONLY and API_LOCAL_MOCK_SUBMIT are mutually exclusive"
-    );
-    anyhow::ensure!(
-        !(require_proof_approval && (execute_only || local_mock_submit)),
-        "API_REQUIRE_PROOF_APPROVAL is only valid for network proving"
-    );
+    validate_proof_modes(
+        execute_only,
+        local_mock_submit,
+        unsafe_allow_mock_on_sepolia,
+        require_proof_approval,
+    )?;
     if local_mock_submit {
-        ethereum.ensure_local_mock_verifiers().await?;
+        ethereum
+            .ensure_local_mock_verifiers(unsafe_allow_mock_on_sepolia)
+            .await?;
     }
     validate_program_vkeys(&ethereum).await?;
     let prover_config = prover::NetworkRequestConfig {
@@ -478,6 +479,7 @@ async fn main() -> Result<()> {
         %bind,
         execute_only,
         local_mock_submit,
+        unsafe_allow_mock_on_sepolia,
         require_proof_approval,
         "proof API listening"
     );
@@ -2240,10 +2242,6 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
                 return Result::<()>::Ok(());
             }
-            if state.local_mock_submit {
-                submit_local_mock(state, job.id, &job.kind, &preflight).await?;
-                return Result::<()>::Ok(());
-            }
             if state.require_proof_approval {
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET status = 'awaiting_approval',
@@ -2258,6 +2256,11 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             }
             (preflight, state.prover_config.clone())
         };
+
+        if state.local_mock_submit {
+            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
+            return Result::<()>::Ok(());
+        }
 
         set_status(&state.pool, job.id, "proving").await?;
 
@@ -2686,6 +2689,27 @@ fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
 }
 
+fn validate_proof_modes(
+    execute_only: bool,
+    local_mock_submit: bool,
+    unsafe_allow_mock_on_sepolia: bool,
+    require_proof_approval: bool,
+) -> Result<()> {
+    anyhow::ensure!(
+        !(execute_only && local_mock_submit),
+        "API_EXECUTE_ONLY and API_LOCAL_MOCK_SUBMIT are mutually exclusive"
+    );
+    anyhow::ensure!(
+        !(require_proof_approval && (execute_only || local_mock_submit)),
+        "API_REQUIRE_PROOF_APPROVAL is only valid for network proving"
+    );
+    anyhow::ensure!(
+        !unsafe_allow_mock_on_sepolia || local_mock_submit,
+        "API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA requires API_LOCAL_MOCK_SUBMIT=true"
+    );
+    Ok(())
+}
+
 fn validate_finality_mode(mode: indexer::FinalityMode, chain_id: u64) -> Result<()> {
     anyhow::ensure!(
         mode != indexer::FinalityMode::Confirmations || chain_id == 31_337,
@@ -2816,6 +2840,18 @@ mod tests {
     fn database_errors_escape_nul_bytes() {
         let error = anyhow::anyhow!("revert\0payload").context("submit");
         assert_eq!(database_safe_error(&error), "submit: revert\\0payload");
+    }
+
+    #[test]
+    fn proof_modes_require_an_explicit_exclusive_mock_profile() {
+        assert!(validate_proof_modes(false, false, false, true).is_ok());
+        assert!(validate_proof_modes(false, true, false, false).is_ok());
+        assert!(validate_proof_modes(false, true, true, false).is_ok());
+
+        assert!(validate_proof_modes(true, true, false, false).is_err());
+        assert!(validate_proof_modes(false, true, false, true).is_err());
+        assert!(validate_proof_modes(true, false, false, true).is_err());
+        assert!(validate_proof_modes(false, false, true, false).is_err());
     }
 
     #[test]

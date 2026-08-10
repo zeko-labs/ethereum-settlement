@@ -161,13 +161,17 @@ distinct two-commit OCaml checkpoint is rerun.
 
 1. Build and record immutable machine-local images from the final committed
    source and retained verifier index.
-2. Provide a funded Sepolia RPC/admin/gateway identity and a funded Succinct
-   requester, deploy the registry module plus settlement and bridge proxies,
-   and pass preflight.
-3. Obtain a network-simulation PGU value for each genuine job, review the
-   capped quote, and explicitly approve the three paid proofs used by the demo.
+2. Provide a funded Sepolia RPC/admin/gateway identity, deploy the registry
+   module plus settlement and bridge proxies under the selected security
+   profile, and pass preflight. Fund the Succinct requester only for the
+   proof-verified profile.
+3. For the proof-verified profile, obtain a network-simulation PGU value for
+   each genuine job, review the capped quote, and explicitly approve the three
+   paid proofs used by the demo. For the disposable mock profile, verify both
+   unsafe acknowledgements and all three `LocalSP1Verifier` references instead.
 4. Complete one browser-driven Sepolia round trip and archive transaction,
-   proof-request, cost, confirmation, DA, and balance/liability evidence.
+   confirmation, DA, and balance/liability evidence, plus proof-request and
+   cost evidence when using the proof-verified profile.
 
 No Sepolia deployment or paid Succinct proof has been performed by the checked
 in delivery workflow yet. Those remain credential-, funding-, and

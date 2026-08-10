@@ -32,8 +32,8 @@ machines flake a baseline, not an Ethereum-PoC deployment.
 | Gateway host/service | Run the pinned `zeko-proof-api` image or Nix package with a dedicated system user. It performs CPU-heavy local SP1 execution, so a separate x86_64 host is preferred over sharing the sequencer. |
 | Gateway PostgreSQL | Persistent private database for jobs, virtual Mina accounts/actions, Ethereum blocks, bridge logs, proof metrics, and rollback snapshots. Protocol state is replayable, but retain backups for proof-cost/audit history. |
 | Ethereum RPC | Reliable Sepolia JSON-RPC with archive/log access from the deployment block. Use a redundant provider pair or operate synchronized execution and consensus clients. |
-| Ethereum contracts | Real SP1 verifier plus deterministic asset-registry module and settlement/bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
-| Succinct requester | Network private key, funded PROVE balance, Groth16 configuration, hard PGU/price caps, and six-hour worker timeout. |
+| Ethereum contracts | The proof-verified profile uses the official SP1 verifier; the disposable unsafe profile uses the explicitly gated `LocalSP1Verifier`. Both use deterministic asset-registry module and settlement/bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
+| Succinct requester | The proof-verified profile needs a network private key, funded PROVE balance, Groth16 configuration, hard PGU/price caps, and six-hour worker timeout. The unsafe profile leaves this identity unused and unfunded. |
 | Ethereum transaction signer | Funded Sepolia EOA holding only `PROVER_ROLE`. Current preflight expects the settlement, bridge, and legacy-withdraw submitter files to resolve to this same address. |
 | Retained PoC identity | Final bridge and registry-module addresses, circuit config, genesis ledger, three DA keys, sequencer/recipient keys, verifier index, SP1 vkeys, and manifest stored as one release unit. |
 | Three managed DA nodes | For this PoC, deploy exactly three retained DA identities and configure quorum two. Existing external/quorum-one testnet settings are not the target identity. |
@@ -157,9 +157,12 @@ the gateway and its PostgreSQL instance. At minimum alert on:
 - `/health` failure or Ethereum chain-ID mismatch
 - a job stuck in `validating`, `awaiting_approval`, `proving`, `submitted`, or
   `reorged` beyond its expected window
-- remaining settlement slots approaching `PROVER_MIN_REMAINING_SLOTS`
-- Succinct requester or Ethereum submitter balance below reserve
-- proof quote/cost above policy, network proof failure, or contract revert
+- remaining settlement slots approaching `PROVER_MIN_REMAINING_SLOTS` in the
+  proof-verified profile
+- Ethereum submitter balance below reserve; in the proof-verified profile,
+  Succinct requester balance below reserve
+- contract revert; in the proof-verified profile, proof quote/cost above policy
+  or network proof failure
 - finalized-head lag/reorg and indexer head lag
 - bridge deposit nonce divergence or native liability exceeding contract balance
 - fewer than two healthy retained DA nodes
@@ -183,7 +186,9 @@ unbounded journal fields.
 8. Deploy three DA nodes/signers, bootstrap the exact ledger, and verify 2-of-3.
 9. Start RabbitMQ/prover; wait for the consumer readiness barrier.
 10. Start the sequencer pointed at gateway GraphQL.
-11. Run execute-only acceptance, then the approval-gated Sepolia round trip.
+11. Run execute-only acceptance, then the Sepolia round trip for the selected
+    security profile. The proof-verified profile uses the approval gate; the
+    unsafe profile follows the separately gated mock runbook.
 
 Rollback means stopping new sequencer commits and bridge proof requests,
 preserving databases and manifests, and diagnosing the canonical state. Do not

@@ -101,6 +101,7 @@ write_secret bridge-private-key "$gateway_private_key"
 write_secret withdraw-private-key "$gateway_private_key"
 write_secret postgres-gateway-password "$(openssl rand -hex 32)"
 write_secret postgres-sequencer-password "$(openssl rand -hex 32)"
+write_secret postgres-explorer-password "$(openssl rand -hex 32)"
 write_secret rabbitmq-password "$(openssl rand -hex 32)"
 write_secret sequencer-private-key "$sequencer_private"
 write_secret sequencer-signer-token "$(openssl rand -hex 32)"
@@ -164,4 +165,4 @@ jq -n --arg directory "$TESTNET_DIR" --arg sequencer "$sequencer_public" \
     daPublicKeys:[$da1,$da2,$da3],gatewayProverAddress:$gatewayProver,
     networkRequesterAddress:$networkRequester,bridgeRecipientPublicKey:$bridgeRecipient,
     minaSigningNetworkId:$minaSigningNetworkId,
-    next:"fill immutable image digests, fund role/requester keys, source secrets/fixture-keys.env, then export the bridge fixtures"}'
+    next:"fill immutable image digests, fund role keys, fund the network requester only for the proof-secured profile, source secrets/fixture-keys.env, then export the bridge fixtures"}'

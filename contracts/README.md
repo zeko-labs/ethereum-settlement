@@ -60,11 +60,11 @@ predicted bridge proxy for the OCaml circuit config. It also derives `FORK_SLOT`
 from the selected fixture's proof-bound slot range. The same admin and bytecode
 produce the same proxy addresses on Anvil and Sepolia.
 
-Deploy only after reviewing the manifest. `SP1_VERIFIER_ADDRESS` must be a real
-SP1 verifier on testnet. For local contract-transition tests, set
+Deploy only after reviewing the manifest. The secure Sepolia profile requires
+the official SP1 verifier. For local contract-transition tests, set
 `LOCAL_MOCK_VERIFIER=true`; the factory deploys `LocalSP1Verifier` at the
-manifest's predicted address. Local mock deployments default their genesis
-timestamp one day into the future so long execute-only checks remain at
+manifest's predicted address. Local Anvil mock deployments default their
+genesis timestamp one day into the future so long execute-only checks remain at
 `FORK_SLOT`; set `GENESIS_TIMESTAMP` to override it:
 
 ```sh
@@ -74,10 +74,26 @@ set +a
 export PRIVATE_KEY=0x<admin-private-key>
 export LOCAL_MOCK_VERIFIER=true
 
-# Testnet alternative:
+# Proof-secured Sepolia alternative:
+# export LOCAL_MOCK_VERIFIER=false
 # export SP1_VERIFIER_ADDRESS=0x<real-sp1-verifier>
 
 cd contracts
 forge script script/DeployPoc.s.sol:DeployPoc \
   --rpc-url "$RPC_URL" --broadcast
 ```
+
+The explicitly insecure, disposable Sepolia exception must be prepared with
+`ZEKO_UNSAFE_SEPOLIA_MOCK=true`. It binds every settlement and bridge verifier
+reference to the predicted `LocalSP1Verifier`, uses the live Sepolia timestamp,
+and must be deployed through the guarded wrapper with both confirmations:
+
+```sh
+CONFIRM_SEPOLIA_DEPLOY=yes CONFIRM_UNSAFE_SEPOLIA_MOCK=yes \
+  tools/deploy-machine-poc.sh build/poc-sepolia deploy/testnet
+```
+
+Do not invoke the Forge script directly for this exception. The runtime must
+also use the separately gated unsafe mock-submit profile described in
+[`deploy/testnet/README.md`](../deploy/testnet/README.md); it retains local
+native Pickles and zkVM guest validation but creates no Succinct proof request.

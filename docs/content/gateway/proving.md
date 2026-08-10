@@ -5,7 +5,7 @@ Succinct requester key and never generate a proof themselves.
 
 ## Job lifecycle
 
-In the testnet profile, a new job follows:
+In the proof-verified testnet profile, a new job follows:
 
 ```text
 queued -> validating -> awaiting_approval -> approved
@@ -33,7 +33,7 @@ Other terminal or recovery states include `executed` (execute-only), `rejected`,
 
 ## Approval boundary
 
-Persistent deployments set:
+Proof-verified persistent deployments set:
 
 ```text
 API_REQUIRE_PROOF_APPROVAL=true
@@ -95,9 +95,10 @@ When available, each job records:
 Network prices are live auction values. There is intentionally no static
 currency estimate in the docs.
 
-The expected native round trip uses three paid proofs: one deposit bridge proof,
-one deposit-synchronizing settlement, and one withdrawal-bearing settlement.
-The user's final Merkle claim is an ordinary Ethereum transaction.
+In the proof-verified profile, the expected native round trip uses three paid
+proofs: one deposit bridge proof, one deposit-synchronizing settlement, and one
+withdrawal-bearing settlement. The user's final Merkle claim is an ordinary
+Ethereum transaction.
 
 ## Restarts and reorgs
 
@@ -120,8 +121,10 @@ The gateway rejects it on other chain IDs, and testnet preflight rejects it.
 | Mode | Behavior | Allowed environment |
 | --- | --- | --- |
 | `API_EXECUTE_ONLY=true` | Forces every guest, including settlement, through the zkVM and stops at `executed`; no proof and no Ethereum write. | Development and pre-deployment audit. |
-| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier` only. |
-| Approval mode | Uses the operational preflight, pauses, then obtains a network proof with the approved explicit PGU cap. | Persistent testnet. |
+| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier`; or an explicitly insecure Sepolia PoC with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`. |
+| Approval mode | Uses the operational preflight, pauses, then obtains a network proof with the approved explicit PGU cap. | Proof-verified persistent testnet. |
 
-Execute-only and local-mock-submit are mutually exclusive. The gateway refuses
-mock mode on Sepolia.
+Execute-only and local-mock-submit are mutually exclusive. Sepolia mock mode
+also requires every configured contract to use `LocalSP1Verifier`. This removes
+the Ethereum proof-verification security boundary and must not be used for a
+public or production network.
