@@ -101,4 +101,4 @@ jq -n --arg admin "$admin_address" --arg upgrader "$upgrader_address" \
 jq -n --arg directory "$TESTNET_DIR" \
   --slurpfile identity "$TESTNET_DIR/config/identity.json" \
   '{directory:$directory,identity:$identity[0],
-    next:"fund admin, gateway prover, and network requester; then prepare and deploy the PoC"}'
+    next:"fund admin and gateway prover; fund the network requester only for the proof-secured profile; then prepare and deploy the PoC"}'

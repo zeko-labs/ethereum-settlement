@@ -165,4 +165,4 @@ jq -n --arg directory "$TESTNET_DIR" --arg sequencer "$sequencer_public" \
     daPublicKeys:[$da1,$da2,$da3],gatewayProverAddress:$gatewayProver,
     networkRequesterAddress:$networkRequester,bridgeRecipientPublicKey:$bridgeRecipient,
     minaSigningNetworkId:$minaSigningNetworkId,
-    next:"fill immutable image digests, fund role/requester keys, source secrets/fixture-keys.env, then export the bridge fixtures"}'
+    next:"fill immutable image digests, fund role keys, fund the network requester only for the proof-secured profile, source secrets/fixture-keys.env, then export the bridge fixtures"}'
