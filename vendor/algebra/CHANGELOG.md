@@ -8,6 +8,8 @@
 
 ### Improvements
 
+- (`ark-ec`) Use a serial windowed variable-base MSM on zkVM targets.
+
 ### Bugfixes
 
 ## v0.5.0

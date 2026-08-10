@@ -53,12 +53,14 @@ cargo run --release --bin zkapp -- --execute
 It completed with:
 
 - `proof_valid: true`
-- `cycles: 52146595101`
 - `total gas: not calculated`
 
-This command is CPU-heavy and can take around tens of minutes, but the direct
-minimal-executor path should have much lower memory usage than the SP1 SDK
-execute wrapper.
+Cycle counts depend on the guest and fixture revision. The authoritative
+optimization measurements are in the
+[project status](docs/content/status.md#settlement-cycle-optimization-benchmark).
+
+This command remains CPU-heavy, but the direct minimal-executor path should
+have much lower memory usage than the SP1 SDK execute wrapper.
 
 ## Resource Safety
 
