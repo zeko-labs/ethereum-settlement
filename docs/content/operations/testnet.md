@@ -7,6 +7,12 @@ the Ethereum settlement/bridge contracts.
 The pinned Compose reference lives in `deploy/testnet`. For a NixOS deployment,
 implement the same topology and invariants described in the [DevOps guide](/operations/devops).
 
+The default profile verifies Groth16 proofs through the official SP1 verifier.
+For an initial disposable PoC, `ZEKO_UNSAFE_SEPOLIA_MOCK=true` instead deploys
+and binds `LocalSP1Verifier`, validates each job locally, and submits empty proof
+bytes. That mode creates no Succinct proof request and provides no onchain proof
+security.
+
 ## 1. Freeze the release identity
 
 The following values must be chosen together and never mixed across builds:
@@ -49,6 +55,10 @@ the preflight enforces that identity. Admin, upgrader, gateway prover, and
 network requester are distinct; only the gateway prover key belongs on the
 runtime host.
 
+The initializer always creates the Succinct requester identity for portable
+release artifacts. It remains unused and should not be funded in the unsafe
+Sepolia mock profile.
+
 ## 3. Generate genuine OCaml artifacts
 
 Load the retained fixture keys and generate the bridge scenario:
@@ -87,6 +97,16 @@ tools/prepare-poc.sh "$RPC_URL" "$ADMIN_ADDRESS" \
   build/poc/testnet-bridge-fixtures/deposit-sync build/poc-sepolia
 ```
 
+For the no-SP1 PoC, set the explicit profile flag on this command. The selected
+mode is recorded in `build/poc-sepolia/deployment.env` and carried through later
+steps:
+
+```sh
+ZEKO_UNSAFE_SEPOLIA_MOCK=true \
+  tools/prepare-poc.sh "$RPC_URL" "$ADMIN_ADDRESS" \
+    build/poc/testnet-bridge-fixtures/deposit-sync build/poc-sepolia
+```
+
 Then build the gateway and OCaml runtime images from clean, committed source
 revisions and pin them in the machine-local loopback registry:
 
@@ -104,9 +124,10 @@ do not match the live contracts.
 
 ## 5. Deploy Ethereum contracts
 
-Use a real SP1 6.1-compatible verifier, deploy the deterministic immutable
-`ZekoAssetRegistry` module, then deploy and atomically initialize the
-`ZekoSettlement` and `EthereumZekoBridge` proxies. Initialize:
+The default profile uses the real SP1 6.1-compatible verifier. The unsafe mock
+profile deploys the deterministic `LocalSP1Verifier` instead. Both profiles
+deploy the immutable `ZekoAssetRegistry` module, then deploy and atomically
+initialize the `ZekoSettlement` and `EthereumZekoBridge` proxies. Initialize:
 
 - all eight outer-state fields
 - initial outer action state and length
@@ -119,12 +140,20 @@ Grant the gateway prover address `PROVER_ROLE` and the upgrader address
 settlement through `setBridgeContract`. The deployment script revokes prover
 and upgrader roles from admin; preflight verifies the complete role matrix.
 
-Fund admin for the one-time deployment, the gateway prover with Sepolia ETH,
-and the Succinct requester with enough PROVE for three capped requests plus
-retry margin. Deployment is an explicit write boundary:
+Fund admin for the one-time deployment and the gateway prover with Sepolia ETH.
+Only the proof-verified profile needs the Succinct requester funded with enough
+PROVE for three capped requests plus retry margin. Deployment is an explicit
+write boundary:
 
 ```sh
 CONFIRM_SEPOLIA_DEPLOY=yes \
+  tools/deploy-machine-poc.sh build/poc-sepolia deploy/testnet
+```
+
+The unsafe profile has a second acknowledgement:
+
+```sh
+CONFIRM_SEPOLIA_DEPLOY=yes CONFIRM_UNSAFE_SEPOLIA_MOCK=yes \
   tools/deploy-machine-poc.sh build/poc-sepolia deploy/testnet
 ```
 
@@ -145,6 +174,10 @@ tools/materialize-testnet-config.sh \
   deploy/testnet/config/circuits.json build/poc-sepolia
 ```
 
+Omit both prover caps in the unsafe mock profile; materialization writes
+`API_LOCAL_MOCK_SUBMIT=true`, `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`, and
+`API_REQUIRE_PROOF_APPROVAL=false`.
+
 Set the indexer start block to the deployment block, not the current head. The
 outer and fee-payer virtual accounts must match the first settlement's genesis
 state and nonce.
@@ -160,9 +193,20 @@ docker compose --env-file deploy/testnet/.env \
 tools/machine-actions-services.sh start deploy/testnet
 ```
 
-Preflight rejects mutable image tags, non-Sepolia RPC, bypass modes, missing
-price caps, bad secret permissions, wrong roles/vkeys/addresses, mismatched
-identities, non-2-of-3 DA, and invalid Compose.
+For the unsafe profile, include the explicit overlay when starting or updating
+the gateway:
+
+```sh
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml \
+  -f deploy/testnet/compose.unsafe-sepolia-mock.yaml up -d
+```
+
+Preflight rejects mutable image tags, non-Sepolia RPC, unacknowledged bypass
+modes, missing price caps in the proof-verified profile, bad secret permissions,
+wrong roles/vkeys/addresses, mismatched identities, non-2-of-3 DA, and invalid
+Compose. In unsafe mode it also calls `isLocalSP1Verifier()` and verifies that
+all three contract verifier references use that exact address.
 
 `bootstrap-da` posts the retained genesis ledger idempotently. `prover-ready`
 waits for a RabbitMQ consumer before the sequencer starts, avoiding
@@ -182,7 +226,7 @@ Before enabling paid testnet operation, replay every genuine input through an
 equivalent gateway built with `API_EXECUTE_ONLY=true` and compare its public
 values with the initialized contracts.
 
-The persistent profile forces approval mode. For each of the three demo jobs:
+The proof-verified profile forces approval mode. For each of the three demo jobs:
 
 1. wait for `awaiting_approval`
 2. inspect public values and live contract preconditions
@@ -191,6 +235,10 @@ The persistent profile forces approval mode. For each of the three demo jobs:
 5. approve the exact digest with explicit PGU and price caps
 6. wait until the transaction block is at or below the Sepolia JSON-RPC
    `finalized` head before advancing the next state writer
+
+The unsafe mock profile skips quoting and approval. Each queued job completes
+the same local validation, submits empty proof bytes to `LocalSP1Verifier`, and
+then waits for the same Sepolia finality boundary.
 
 The order is bridge proof, deposit-synchronizing settlement, then
 withdrawal-bearing settlement.

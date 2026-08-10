@@ -35,7 +35,22 @@ set -a
 source "$POC_OUTPUT/deployment.env"
 set +a
 PRIVATE_KEY=$(tr -d '\r\n' <"$TESTNET_DIR/secrets/admin-private-key")
-export PRIVATE_KEY LOCAL_MOCK_VERIFIER=false
+ZEKO_UNSAFE_SEPOLIA_MOCK=${ZEKO_UNSAFE_SEPOLIA_MOCK:-false}
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  [[ ${CONFIRM_UNSAFE_SEPOLIA_MOCK:-} == yes ]] || {
+    echo "Set CONFIRM_UNSAFE_SEPOLIA_MOCK=yes to deploy the insecure verifier on Sepolia" >&2
+    exit 1
+  }
+  LOCAL_MOCK_VERIFIER=true
+  [[ ${SP1_VERIFIER_ADDRESS,,} == "${LOCAL_SP1_VERIFIER_ADDRESS,,}" ]] || {
+    echo "Unsafe Sepolia deployment must use the predicted LocalSP1Verifier" >&2
+    exit 1
+  }
+  echo "WARNING: deploying an insecure no-op SP1 verifier on Sepolia" >&2
+else
+  LOCAL_MOCK_VERIFIER=false
+fi
+export PRIVATE_KEY LOCAL_MOCK_VERIFIER
 [[ $("$CAST" chain-id --rpc-url "$RPC_URL") == 11155111 ]] || {
   echo "RPC_URL is not Sepolia" >&2
   exit 1

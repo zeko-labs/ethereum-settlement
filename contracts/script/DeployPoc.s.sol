@@ -36,7 +36,11 @@ contract DeployPoc is PocDeploymentConfig {
             require(upgrader != admin, "upgrader must be separate from admin");
             require(upgrader != gatewayProver, "upgrader must be separate from prover");
         }
-        uint256 defaultGenesisTimestamp = localMockVerifier ? block.timestamp + 1 days : block.timestamp;
+        // Anvil mock runs leave a full day for slow local execution. A Sepolia
+        // mock deployment must start from the live block timestamp just like
+        // the proof-verified profile.
+        uint256 defaultGenesisTimestamp =
+            localMockVerifier && block.chainid == 31337 ? block.timestamp + 1 days : block.timestamp;
         uint64 genesisTimestamp = uint64(vm.envOr("GENESIS_TIMESTAMP", defaultGenesisTimestamp));
         uint32 slotDuration = uint32(vm.envOr("SLOT_DURATION", uint256(12)));
         uint32 forkSlot = uint32(vm.envOr("FORK_SLOT", uint256(0)));

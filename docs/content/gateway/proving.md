@@ -120,8 +120,10 @@ The gateway rejects it on other chain IDs, and testnet preflight rejects it.
 | Mode | Behavior | Allowed environment |
 | --- | --- | --- |
 | `API_EXECUTE_ONLY=true` | Forces every guest, including settlement, through the zkVM and stops at `executed`; no proof and no Ethereum write. | Development and pre-deployment audit. |
-| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier` only. |
+| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier`; or an explicitly insecure Sepolia PoC with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`. |
 | Approval mode | Uses the operational preflight, pauses, then obtains a network proof with the approved explicit PGU cap. | Persistent testnet. |
 
-Execute-only and local-mock-submit are mutually exclusive. The gateway refuses
-mock mode on Sepolia.
+Execute-only and local-mock-submit are mutually exclusive. Sepolia mock mode
+also requires every configured contract to use `LocalSP1Verifier`. This removes
+the Ethereum proof-verification security boundary and must not be used for a
+public or production network.

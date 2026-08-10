@@ -39,6 +39,17 @@ set +a
   echo "The prepared RPC is not Sepolia" >&2
   exit 1
 }
+ZEKO_UNSAFE_SEPOLIA_MOCK=${ZEKO_UNSAFE_SEPOLIA_MOCK:-false}
+[[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true || $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]] || {
+  echo "ZEKO_UNSAFE_SEPOLIA_MOCK must be true or false" >&2
+  exit 1
+}
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  [[ ${SP1_VERIFIER_ADDRESS,,} == "${LOCAL_SP1_VERIFIER_ADDRESS,,}" ]] || {
+    echo "Unsafe Sepolia config is not bound to LocalSP1Verifier" >&2
+    exit 1
+  }
+fi
 [[ ${ETHEREUM_INDEXER_START_BLOCK:-} =~ ^[0-9]+$ ]] || {
   echo "Set ETHEREUM_INDEXER_START_BLOCK to the deployment block" >&2
   exit 1
@@ -109,8 +120,15 @@ genesis_rfc3339=$(date -u -d "@$genesis_timestamp" +%Y-%m-%dT%H:%M:%SZ)
 {
   echo "API_BIND=0.0.0.0:8080"
   echo "API_EXECUTE_ONLY=false"
-  echo "API_LOCAL_MOCK_SUBMIT=false"
-  echo "API_REQUIRE_PROOF_APPROVAL=true"
+  if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+    echo "API_LOCAL_MOCK_SUBMIT=true"
+    echo "API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true"
+    echo "API_REQUIRE_PROOF_APPROVAL=false"
+  else
+    echo "API_LOCAL_MOCK_SUBMIT=false"
+    echo "API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=false"
+    echo "API_REQUIRE_PROOF_APPROVAL=true"
+  fi
   echo "RPC_URL=$RPC_URL"
   echo "SETTLEMENT_CONTRACT_ADDRESS=$SETTLEMENT_CONTRACT_ADDRESS"
   echo "BRIDGE_CONTRACT_ADDRESS=$BRIDGE_CONTRACT_ADDRESS"
@@ -143,9 +161,13 @@ sequencer_public_key=$(jq -r '.sequencerPublicKey' \
   echo "Initialize the retained machine identity before materializing config" >&2
   exit 1
 }
-awk -v da="$da_public_keys" -v sequencer="$sequencer_public_key" '
+awk -v da="$da_public_keys" -v sequencer="$sequencer_public_key" \
+  -v unsafe_sepolia_mock="$ZEKO_UNSAFE_SEPOLIA_MOCK" '
   /^DA_PUBLIC_KEYS=/ { print "DA_PUBLIC_KEYS=" da; next }
   /^SEQUENCER_PUBLIC_KEY=/ { print "SEQUENCER_PUBLIC_KEY=" sequencer; next }
+  /^ZEKO_UNSAFE_SEPOLIA_MOCK=/ {
+    print "ZEKO_UNSAFE_SEPOLIA_MOCK=" unsafe_sepolia_mock; next
+  }
   { print }
 ' "$TESTNET_DIR/.env" >"$TESTNET_DIR/.env.tmp"
 mv "$TESTNET_DIR/.env.tmp" "$TESTNET_DIR/.env"
@@ -153,7 +175,9 @@ chmod 0600 "$TESTNET_DIR/.env"
 
 jq -n --arg directory "$TESTNET_DIR" --arg daPublicKeys "$da_public_keys" \
   --arg sequencerPublicKey "$sequencer_public_key" \
+  --argjson unsafeSepoliaMock "$ZEKO_UNSAFE_SEPOLIA_MOCK" \
   '{directory:$directory,daPublicKeys:$daPublicKeys,
     sequencerPublicKey:$sequencerPublicKey,
+    securityMode:(if $unsafeSepoliaMock then "unsafe-sepolia-mock" else "sp1-groth16" end),
     minaSigningNetworkId:"testnet",
     next:"set proof cost hard caps, pin images, then run the testnet preflight"}'

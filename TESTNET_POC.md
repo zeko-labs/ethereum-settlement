@@ -196,12 +196,16 @@ To advance the local contracts without proving, deploy with
 `LOCAL_MOCK_VERIFIER=true` and replace `API_EXECUTE_ONLY=true` with
 `API_LOCAL_MOCK_SUBMIT=true`. The gateway still executes and validates the
 guest first, then submits its public values with an empty proof to the marked
-local verifier. This mode is hard-limited to chain ID 31337 and is the local
-path for testing consecutive commits and bridge synchronization.
-`DeployPoc` holds the local mock deployment at `FORK_SLOT` for one day by
-default so a long Pickles preflight cannot age past the proof's slot range;
-set `GENESIS_TIMESTAMP` explicitly to override that test-only clock. The E2E
-runner mines only after Ethereum submission, never while SP1 is executing.
+local verifier. This mode defaults to chain ID 31337 and is the local path for
+testing consecutive commits and bridge synchronization. A disposable Sepolia
+PoC may opt in with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`, but only when all
+three contract verifier references point to the deployed `LocalSP1Verifier`.
+That profile provides no onchain SP1 proof security.
+On chain ID 31337, `DeployPoc` holds the local mock deployment at `FORK_SLOT`
+for one day by default so a long Pickles preflight cannot age past the proof's
+slot range; set `GENESIS_TIMESTAMP` explicitly to override that test-only
+clock. Sepolia mock deployments use the live block timestamp. The E2E runner
+mines only after Ethereum submission, never while SP1 is executing.
 
 With Anvil, the deterministic contracts, and the `zeko-poc-postgres` container
 running, the canonical native-deposit portion is automated by:

@@ -100,5 +100,7 @@ investigate the RPC or chain before recovery.
 - Public bridge discovery endpoints need rate limiting and abuse monitoring.
 - The gateway GraphQL compatibility handler is not intended as a general
   Internet-facing Mina node.
-- `LocalSP1Verifier` and empty proof bytes are safe only on local chain ID
-  31337 and must never appear in a testnet manifest.
+- `LocalSP1Verifier` and empty proof bytes provide no onchain proof security.
+  They are the default only on local chain ID 31337. The explicitly gated
+  Sepolia mock profile is suitable only for a disposable PoC whose users know
+  that the gateway prover role can advance state without an SP1 proof.

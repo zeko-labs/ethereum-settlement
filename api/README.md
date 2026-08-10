@@ -124,8 +124,10 @@ API_LOCAL_MOCK_SUBMIT=true docker compose up --build -d
 
 This mode submits the preflight public values with an empty proof. Startup
 fails unless every configured verifier is the repository's
-`LocalSP1Verifier` and the chain ID is exactly `31337`. It is mutually
-exclusive with `API_EXECUTE_ONLY` and cannot be used for testnet proving.
+`LocalSP1Verifier`. It is restricted to chain ID `31337` unless the explicitly
+insecure `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true` PoC override is also set on
+Sepolia. It is mutually exclusive with `API_EXECUTE_ONLY` and
+`API_REQUIRE_PROOF_APPROVAL`; no Succinct proof request is created.
 
 Locally:
 

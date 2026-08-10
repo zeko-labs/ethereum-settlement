@@ -342,11 +342,15 @@ impl Ethereum {
             .await?)
     }
 
-    pub async fn ensure_local_mock_verifiers(&self) -> Result<()> {
+    pub async fn ensure_local_mock_verifiers(
+        &self,
+        unsafe_allow_mock_on_sepolia: bool,
+    ) -> Result<()> {
         let chain_id = self.chain_id().await?;
         anyhow::ensure!(
-            chain_id == 31_337,
-            "API_LOCAL_MOCK_SUBMIT is restricted to chain ID 31337"
+            local_mock_chain_allowed(chain_id, unsafe_allow_mock_on_sepolia),
+            "API_LOCAL_MOCK_SUBMIT is restricted to chain ID 31337 unless \
+             API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true is explicitly set on Sepolia"
         );
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let settlement_verifier = IZekoSettlement::new(self.settlement_address, &provider)
@@ -1101,9 +1105,22 @@ impl Ethereum {
     }
 }
 
+fn local_mock_chain_allowed(chain_id: u64, unsafe_allow_mock_on_sepolia: bool) -> bool {
+    chain_id == 31_337 || (chain_id == 11_155_111 && unsafe_allow_mock_on_sepolia)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_mock_chain_policy_requires_an_explicit_sepolia_opt_in() {
+        assert!(local_mock_chain_allowed(31_337, false));
+        assert!(local_mock_chain_allowed(31_337, true));
+        assert!(!local_mock_chain_allowed(11_155_111, false));
+        assert!(local_mock_chain_allowed(11_155_111, true));
+        assert!(!local_mock_chain_allowed(1, true));
+    }
 
     #[test]
     fn bridge_deposit_signature_uses_the_solidity_value_type_abi() {

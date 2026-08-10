@@ -1,0 +1,7 @@
+services:
+  gateway:
+    environment:
+      API_EXECUTE_ONLY: "false"
+      API_LOCAL_MOCK_SUBMIT: "true"
+      API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA: "true"
+      API_REQUIRE_PROOF_APPROVAL: "false"

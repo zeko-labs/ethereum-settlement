@@ -35,6 +35,11 @@ set -a
 source "$DEPLOY_DIR/.env"
 source "$DEPLOY_DIR/gateway.env"
 set +a
+ZEKO_UNSAFE_SEPOLIA_MOCK=${ZEKO_UNSAFE_SEPOLIA_MOCK:-false}
+[[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true || $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]] || {
+  echo "ZEKO_UNSAFE_SEPOLIA_MOCK must be true or false" >&2
+  exit 1
+}
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 
@@ -71,16 +76,27 @@ zeko_is_clean_checkout "${ZEKO_UI_ROOT:-}" || {
   echo "Zeko UI checkout must be at ZEKO_UI_COMMIT" >&2
   exit 1
 }
-[[ ${API_REQUIRE_PROOF_APPROVAL,,} == true ]]
-[[ ${API_EXECUTE_ONLY,,} == false && ${API_LOCAL_MOCK_SUBMIT,,} == false ]]
+[[ ${API_EXECUTE_ONLY,,} == false ]]
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  [[ ${API_LOCAL_MOCK_SUBMIT,,} == true ]]
+  [[ ${API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA,,} == true ]]
+  [[ ${API_REQUIRE_PROOF_APPROVAL,,} == false ]]
+  echo "WARNING: validating the insecure Sepolia mock-verifier profile" >&2
+else
+  [[ ${API_LOCAL_MOCK_SUBMIT,,} == false ]]
+  [[ ${API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA:-false} == false ]]
+  [[ ${API_REQUIRE_PROOF_APPROVAL,,} == true ]]
+fi
 [[ ${ETHEREUM_FINALITY_MODE:-} == finalized ]] || {
   echo "ETHEREUM_FINALITY_MODE must be finalized on testnet" >&2
   exit 1
 }
-[[ -n ${PROVER_GAS_LIMIT:-} && -n ${PROVER_MAX_PRICE_PER_PGU:-} ]] || {
-  echo "Set deployment-wide PROVER_GAS_LIMIT and PROVER_MAX_PRICE_PER_PGU hard caps" >&2
-  exit 1
-}
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]]; then
+  [[ -n ${PROVER_GAS_LIMIT:-} && -n ${PROVER_MAX_PRICE_PER_PGU:-} ]] || {
+    echo "Set deployment-wide PROVER_GAS_LIMIT and PROVER_MAX_PRICE_PER_PGU hard caps" >&2
+    exit 1
+  }
+fi
 
 IFS=',' read -r -a da_keys <<<"${DA_PUBLIC_KEYS:-}"
 [[ ${#da_keys[@]} -eq 3 ]] || {
@@ -115,7 +131,8 @@ for secret in proof-api-key actions-indexer-token network-private-key \
   deployment-roles.env \
   settlement-private-key \
   bridge-private-key withdraw-private-key postgres-gateway-password \
-  postgres-sequencer-password rabbitmq-password sequencer-private-key \
+  postgres-sequencer-password postgres-explorer-password rabbitmq-password \
+  sequencer-private-key \
   sequencer-signer-token da1-private-key da1-signer-token da2-private-key \
   da2-signer-token da3-private-key da3-signer-token \
   bridge-recipient-private-key signer-tls.crt signer-tls.key; do
@@ -205,25 +222,42 @@ done
 official_verifier=$(jq -er '.V6_1_0_SP1_VERIFIER_GROTH16' \
   "$ROOT/contracts/lib/sp1-contracts/contracts/deployments/11155111.json")
 manifest_verifier=$(jq -r '.sp1Verifier | ascii_downcase' "$manifest")
-[[ $manifest_verifier == "${official_verifier,,}" && \
-   $manifest_verifier != $(jq -r '.localSp1Verifier | ascii_downcase' "$manifest") ]] || {
-  echo "Manifest does not bind the official SP1 v6.1 Groth16 verifier" >&2
-  exit 1
-}
-verifier_code=$("$CAST" code "$official_verifier" --rpc-url "$RPC_URL")
+local_verifier=$(jq -r '.localSp1Verifier | ascii_downcase' "$manifest")
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  [[ $manifest_verifier == "$local_verifier" ]] || {
+    echo "Unsafe Sepolia manifest does not bind LocalSP1Verifier" >&2
+    exit 1
+  }
+  expected_verifier=$local_verifier
+else
+  [[ $manifest_verifier == "${official_verifier,,}" && \
+     $manifest_verifier != "$local_verifier" ]] || {
+    echo "Manifest does not bind the official SP1 v6.1 Groth16 verifier" >&2
+    exit 1
+  }
+  expected_verifier=${official_verifier,,}
+fi
+verifier_code=$("$CAST" code "$expected_verifier" --rpc-url "$RPC_URL")
 [[ $verifier_code != 0x && ${#verifier_code} -gt 4 ]] || {
-  echo "Official SP1 verifier is missing on Sepolia" >&2
+  echo "Configured SP1 verifier is missing on Sepolia" >&2
   exit 1
 }
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  [[ $("$CAST" call "$expected_verifier" \
+    'isLocalSP1Verifier()(bool)' --rpc-url "$RPC_URL") == true ]] || {
+    echo "Configured unsafe verifier is not LocalSP1Verifier" >&2
+    exit 1
+  }
+fi
 settlement_verifier=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'verifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 bridge_verifier=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'bridgeVerifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 withdraw_verifier=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'withdrawVerifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
-[[ $settlement_verifier == "${official_verifier,,}" && \
-   $bridge_verifier == "${official_verifier,,}" && \
-   $withdraw_verifier == "${official_verifier,,}" ]] || {
+[[ $settlement_verifier == "$expected_verifier" && \
+   $bridge_verifier == "$expected_verifier" && \
+   $withdraw_verifier == "$expected_verifier" ]] || {
   echo "Settlement or bridge is wired to the wrong SP1 verifier" >&2
   exit 1
 }
@@ -310,10 +344,18 @@ if [[ -n $manifest_da && $manifest_da != "$DA_PUBLIC_KEYS" ]]; then
   exit 1
 fi
 
-(cd "$DEPLOY_DIR" && "${COMPOSE[@]}" --env-file .env -f compose.yaml config --quiet)
+compose_files=(-f compose.yaml)
+if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+  compose_files+=(-f compose.unsafe-sepolia-mock.yaml)
+fi
+(cd "$DEPLOY_DIR" && "${COMPOSE[@]}" --env-file .env \
+  "${compose_files[@]}" config --quiet)
 
 jq -n --arg rpc "$RPC_URL" --arg settlement "$SETTLEMENT_CONTRACT_ADDRESS" \
   --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
+  --argjson unsafeSepoliaMock "$ZEKO_UNSAFE_SEPOLIA_MOCK" \
   '{status:"ready",chainId:11155111,rpc:$rpc,settlement:$settlement,
-    bridge:$bridge,daQuorum:"2-of-3",proofApprovalRequired:true,
+    bridge:$bridge,daQuorum:"2-of-3",
+    securityMode:(if $unsafeSepoliaMock then "unsafe-sepolia-mock" else "sp1-groth16" end),
+    proofApprovalRequired:($unsafeSepoliaMock | not),
     confirmations:12}'

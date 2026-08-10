@@ -6,6 +6,12 @@ GraphQL ports may be published; PostgreSQL, RabbitMQ, DA RPC, and all signer
 RPCs stay on Docker's internal network. Multisig DA is a PoC milestone, not the
 production replacement for blob DA.
 
+The default profile uses the official SP1 Groth16 verifier. A disposable,
+explicitly insecure PoC can set `ZEKO_UNSAFE_SEPOLIA_MOCK=true` during
+`prepare-poc.sh`; this deploys `LocalSP1Verifier`, keeps local guest validation,
+and submits empty proof bytes without creating Succinct proof requests. It must
+not be treated as a proof-secured public testnet.
+
 ## Immutable inputs
 
 Build the gateway from the exact exported OCaml VK and build the Zeko images
@@ -68,6 +74,9 @@ tools/materialize-testnet-config.sh \
   deploy/testnet/config/circuits.json build/poc-sepolia
 ```
 
+The unsafe mock profile does not require prover caps. Its selected security
+mode is read from `build/poc-sepolia/deployment.env`.
+
 ## Secrets
 
 Create these newline-terminated files with mode `0600`:
@@ -99,6 +108,9 @@ signer-tls.crt
 signer-tls.key
 ```
 
+`network-private-key` is generated for portable release identity but is unused
+and should remain unfunded in the unsafe mock profile.
+
 `init-machine-testnet-identity.sh` also creates the private Zeko deploy config
 and fixture-only environment file. Neither is mounted into the running gateway
 or published as an artifact. The TLS certificate must have SAN entries for `sequencer-signer`,
@@ -126,10 +138,14 @@ CONFIRM_SEPOLIA_DEPLOY=yes \
   tools/deploy-machine-poc.sh build/poc-sepolia deploy/testnet
 ```
 
+The unsafe profile additionally requires
+`CONFIRM_UNSAFE_SEPOLIA_MOCK=yes` at this write boundary.
+
 Copy `gateway.env.example` to `gateway.env` and fill the Sepolia RPC, deployed
 contracts, genesis timestamp/fork slot, outer public key, and indexer start
-block. The Compose profile overrides all bypass modes and forces
-`API_REQUIRE_PROOF_APPROVAL=true`.
+block. The base Compose profile overrides all bypass modes and forces
+`API_REQUIRE_PROOF_APPROVAL=true`; the separately named unsafe overlay is the
+only supported override.
 
 `archive-db-reader` creates a dedicated `zeko_explorer` PostgreSQL role with
 read-only defaults, a five-second statement timeout, and `SELECT` privileges
@@ -150,6 +166,14 @@ docker compose --env-file deploy/testnet/.env \
   -f deploy/testnet/compose.yaml up -d
 
 tools/machine-actions-services.sh start deploy/testnet
+```
+
+Start the unsafe profile with both Compose files:
+
+```sh
+docker compose --env-file deploy/testnet/.env \
+  -f deploy/testnet/compose.yaml \
+  -f deploy/testnet/compose.unsafe-sepolia-mock.yaml up -d
 ```
 
 `bootstrap-da` is a bounded, idempotent one-shot. It reconstructs the deploy
@@ -183,10 +207,10 @@ connects to PostgreSQL and never calls proof-operator routes.
 
 ## Proof runbook
 
-Every bridge or settlement job is verified locally and stops in
-`awaiting_approval`. Settlement verification uses the pinned native Pickles
-path; bridge validation executes its guest. For each of the three paid
-boundaries in the demo:
+In the proof-verified profile, every bridge or settlement job is verified
+locally and stops in `awaiting_approval`. Settlement verification uses the
+pinned native Pickles path; bridge validation executes its guest. For each of
+the three paid boundaries in the demo:
 
 1. Inspect the job public values and live contract state.
 2. Call `GET /v1/proofs/:id/quote` with a simulation-derived PGU cap.
@@ -206,3 +230,7 @@ fourth Ethereum proof.
 Stop immediately on a vkey/address mismatch, expired slot window, DA quorum
 loss, reorg, or quote above the approved budget. Never switch approval mode off
 to bypass a stuck job.
+
+In the unsafe mock profile, jobs instead proceed from local validation directly
+to empty-proof submission. There is no quote, PROVE funding, approval, or SP1
+network request; Sepolia finality and all non-proof contract checks still apply.

@@ -14,8 +14,9 @@ environment file.
 | `PROOF_API_KEY` | GraphQL mutation token and operator REST API key. |
 | `API_BIND` | Listen address; use loopback/private networking. |
 | `API_EXECUTE_ONLY` | Execute SP1 and stop without proving or submission. |
-| `API_LOCAL_MOCK_SUBMIT` | Chain-31337-only empty-proof submission mode. |
-| `API_REQUIRE_PROOF_APPROVAL` | Pause every paid job after preflight. Must be true on testnet. |
+| `API_LOCAL_MOCK_SUBMIT` | Empty-proof submission mode. Restricted to chain 31337 unless the explicit Sepolia PoC override is enabled. |
+| `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA` | Permit `API_LOCAL_MOCK_SUBMIT` on Sepolia when every contract is wired to `LocalSP1Verifier`. Insecure PoC use only. |
+| `API_REQUIRE_PROOF_APPROVAL` | Pause every paid job after preflight. Must be true on proof-verified testnet and false in mock mode. |
 | `RPC_URL` | Sepolia JSON-RPC endpoint. |
 | `SETTLEMENT_CONTRACT_ADDRESS` | Settlement proxy address. |
 | `BRIDGE_CONTRACT_ADDRESS` | Bridge proxy address. |

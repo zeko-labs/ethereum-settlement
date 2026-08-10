@@ -92,19 +92,29 @@ CHAIN_ID=$("$CAST" chain-id --rpc-url "$RPC_URL")
 MINA_SIGNING_NETWORK_ID=${MINA_SIGNING_NETWORK_ID:-testnet}
 UPGRADER_ADDRESS=${UPGRADER_ADDRESS:-$ADMIN_ADDRESS}
 GATEWAY_PROVER_ADDRESS=${GATEWAY_PROVER_ADDRESS:-$ADMIN_ADDRESS}
+ZEKO_UNSAFE_SEPOLIA_MOCK=${ZEKO_UNSAFE_SEPOLIA_MOCK:-false}
+[[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true || $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]] || {
+  echo "ZEKO_UNSAFE_SEPOLIA_MOCK must be true or false" >&2
+  exit 1
+}
 if [[ $CHAIN_ID == 11155111 ]]; then
-  official_verifier=$(jq -er '.V6_1_0_SP1_VERIFIER_GROTH16' \
-    "$ROOT/contracts/lib/sp1-contracts/contracts/deployments/11155111.json")
-  SP1_VERIFIER_ADDRESS=${SP1_VERIFIER_ADDRESS:-$official_verifier}
-  [[ ${SP1_VERIFIER_ADDRESS,,} == "${official_verifier,,}" ]] || {
-    echo "Sepolia PoC must use the bundled SP1 v6.1 Groth16 verifier" >&2
-    exit 1
-  }
-  verifier_code=$("$CAST" code "$SP1_VERIFIER_ADDRESS" --rpc-url "$RPC_URL")
-  [[ $verifier_code != 0x && ${#verifier_code} -gt 4 ]] || {
-    echo "No SP1 verifier code at $SP1_VERIFIER_ADDRESS" >&2
-    exit 1
-  }
+  if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
+    SP1_VERIFIER_ADDRESS=$LOCAL_SP1_VERIFIER_ADDRESS
+    echo "WARNING: preparing Sepolia with the insecure LocalSP1Verifier" >&2
+  else
+    official_verifier=$(jq -er '.V6_1_0_SP1_VERIFIER_GROTH16' \
+      "$ROOT/contracts/lib/sp1-contracts/contracts/deployments/11155111.json")
+    SP1_VERIFIER_ADDRESS=${SP1_VERIFIER_ADDRESS:-$official_verifier}
+    [[ ${SP1_VERIFIER_ADDRESS,,} == "${official_verifier,,}" ]] || {
+      echo "Sepolia PoC must use the bundled SP1 v6.1 Groth16 verifier" >&2
+      exit 1
+    }
+    verifier_code=$("$CAST" code "$SP1_VERIFIER_ADDRESS" --rpc-url "$RPC_URL")
+    [[ $verifier_code != 0x && ${#verifier_code} -gt 4 ]] || {
+      echo "No SP1 verifier code at $SP1_VERIFIER_ADDRESS" >&2
+      exit 1
+    }
+  fi
   [[ ${UPGRADER_ADDRESS,,} != "${ADMIN_ADDRESS,,}" && \
      ${GATEWAY_PROVER_ADDRESS,,} != "${ADMIN_ADDRESS,,}" && \
      ${GATEWAY_PROVER_ADDRESS,,} != "${UPGRADER_ADDRESS,,}" ]] || {
@@ -112,6 +122,10 @@ if [[ $CHAIN_ID == 11155111 ]]; then
     exit 1
   }
 else
+  [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]] || {
+    echo "ZEKO_UNSAFE_SEPOLIA_MOCK is supported only on Sepolia" >&2
+    exit 1
+  }
   SP1_VERIFIER_ADDRESS=${SP1_VERIFIER_ADDRESS:-$LOCAL_SP1_VERIFIER_ADDRESS}
 fi
 
@@ -187,6 +201,7 @@ mv "$manifest_tmp" "$POC_MANIFEST_PATH"
   echo "FIXTURE_SLOT_UPPER=$FIXTURE_SLOT_UPPER"
   echo "ZEKO_CIRCUITS_CONFIG=test"
   echo "MINA_SIGNING_NETWORK_ID=$MINA_SIGNING_NETWORK_ID"
+  echo "ZEKO_UNSAFE_SEPOLIA_MOCK=$ZEKO_UNSAFE_SEPOLIA_MOCK"
   echo "ZEKO_ETHEREUM_BRIDGE_ADDRESS=$BRIDGE_CONTRACT_ADDRESS"
   echo "POC_MANIFEST_PATH=$POC_MANIFEST_PATH"
   for index in $(seq 0 7); do
