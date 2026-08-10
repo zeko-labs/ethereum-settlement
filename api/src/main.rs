@@ -2242,10 +2242,6 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
                 return Result::<()>::Ok(());
             }
-            if state.local_mock_submit {
-                submit_local_mock(state, job.id, &job.kind, &preflight).await?;
-                return Result::<()>::Ok(());
-            }
             if state.require_proof_approval {
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET status = 'awaiting_approval',
@@ -2260,6 +2256,11 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             }
             (preflight, state.prover_config.clone())
         };
+
+        if state.local_mock_submit {
+            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
+            return Result::<()>::Ok(());
+        }
 
         set_status(&state.pool, job.id, "proving").await?;
 
