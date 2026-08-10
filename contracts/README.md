@@ -75,6 +75,7 @@ export PRIVATE_KEY=0x<admin-private-key>
 export LOCAL_MOCK_VERIFIER=true
 
 # Proof-secured Sepolia alternative:
+# export LOCAL_MOCK_VERIFIER=false
 # export SP1_VERIFIER_ADDRESS=0x<real-sp1-verifier>
 
 cd contracts
