@@ -180,4 +180,8 @@ jq -n --arg directory "$TESTNET_DIR" --arg daPublicKeys "$da_public_keys" \
     sequencerPublicKey:$sequencerPublicKey,
     securityMode:(if $unsafeSepoliaMock then "unsafe-sepolia-mock" else "sp1-groth16" end),
     minaSigningNetworkId:"testnet",
-    next:"set proof cost hard caps, pin images, then run the testnet preflight"}'
+    next:(if $unsafeSepoliaMock then
+      "pin images, then run the testnet preflight"
+    else
+      "set proof cost hard caps, pin images, then run the testnet preflight"
+    end)}'

@@ -369,6 +369,26 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "slow SP1 execution test"]
+    async fn validates_settlement_preflight_natively() {
+        let mut input: Value = serde_json::from_str(include_str!(
+            "../../fixtures/zeko-local-e2e/settlement.json"
+        ))
+        .unwrap();
+        input["proof"]["context"] = serde_json::json!({
+            "chainId": 11_155_111,
+            "settlementContract": "0x1111111111111111111111111111111111111111",
+            "batchSequence": 1,
+            "minaTransactionHash": input["minaTransactionHash"].clone(),
+            "outerActionStateLengthBefore": 0
+        });
+        assert!(matches!(
+            preflight("settlement", &input, false).await.unwrap(),
+            Preflight::Settlement { cycles: None, .. }
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "slow SP1 execution test"]
     async fn executes_bridge_preflight_in_process() {
         let input: Value =
             serde_json::from_str(include_str!("../../proofs/bridge-input.json")).unwrap();
