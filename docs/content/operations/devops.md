@@ -157,9 +157,12 @@ the gateway and its PostgreSQL instance. At minimum alert on:
 - `/health` failure or Ethereum chain-ID mismatch
 - a job stuck in `validating`, `awaiting_approval`, `proving`, `submitted`, or
   `reorged` beyond its expected window
-- remaining settlement slots approaching `PROVER_MIN_REMAINING_SLOTS`
-- Succinct requester or Ethereum submitter balance below reserve
-- proof quote/cost above policy, network proof failure, or contract revert
+- remaining settlement slots approaching `PROVER_MIN_REMAINING_SLOTS` in the
+  proof-verified profile
+- Ethereum submitter balance below reserve; in the proof-verified profile,
+  Succinct requester balance below reserve
+- contract revert; in the proof-verified profile, proof quote/cost above policy
+  or network proof failure
 - finalized-head lag/reorg and indexer head lag
 - bridge deposit nonce divergence or native liability exceeding contract balance
 - fewer than two healthy retained DA nodes
@@ -183,7 +186,9 @@ unbounded journal fields.
 8. Deploy three DA nodes/signers, bootstrap the exact ledger, and verify 2-of-3.
 9. Start RabbitMQ/prover; wait for the consumer readiness barrier.
 10. Start the sequencer pointed at gateway GraphQL.
-11. Run execute-only acceptance, then the approval-gated Sepolia round trip.
+11. Run execute-only acceptance, then the Sepolia round trip for the selected
+    security profile. The proof-verified profile uses the approval gate; the
+    unsafe profile follows the separately gated mock runbook.
 
 Rollback means stopping new sequencer commits and bridge proof requests,
 preserving databases and manifests, and diagnosing the canonical state. Do not
