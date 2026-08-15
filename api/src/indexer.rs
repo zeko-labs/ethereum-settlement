@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::ethereum::{BlockRef, Ethereum};
+use crate::proof_kind::ProofKind;
 use serde_json::{json, Value};
 use zeko_sp1_lib::inner_action_commitment::{
     action_fields_hash as hash_action_fields, erc20_withdrawal_leaf as hash_erc20_withdrawal_leaf,
@@ -768,7 +769,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
     .await?;
 
     for event in events {
-        let kind: String = event.try_get("kind")?;
+        let kind: ProofKind = event.try_get::<String, _>("kind")?.parse()?;
         let block_number = u64::try_from(event.try_get::<i64, _>("ethereum_block_number")?)?;
         let block_hash: String = event.try_get("ethereum_block_hash")?;
         let transaction_hash: String = event.try_get("ethereum_tx_hash")?;
@@ -787,7 +788,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         }
 
         let public_values = ethereum
-            .accepted_public_values(&kind, &transaction_hash)
+            .accepted_public_values(kind, &transaction_hash)
             .await?;
         let public_values_hex = format!("0x{}", hex::encode(&public_values));
         let existing = sqlx::query(
@@ -801,7 +802,8 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let (job_id, input) = match existing {
             Some(row) => {
                 let original: Value = row.try_get("input")?;
-                let input = if kind == "settlement" && original.get("submission").is_none() {
+                let input = if kind == ProofKind::Settlement && original.get("submission").is_none()
+                {
                     recovered_settlement_input(pool, config, &public_values).await?
                 } else {
                     original
@@ -809,7 +811,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                 (row.try_get("id")?, input)
             }
             None => {
-                let input = if kind == "settlement" {
+                let input = if kind == ProofKind::Settlement {
                     recovered_settlement_input(pool, config, &public_values).await?
                 } else {
                     json!({ "recoveredFromEthereum": true })
@@ -825,7 +827,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                              $7, $8, 1, NOW())",
                 )
                 .bind(id)
-                .bind(&kind)
+                .bind(kind.as_str())
                 .bind(format!(
                     "recovered:{kind}:{}",
                     transaction_hash.to_lowercase()
@@ -841,8 +843,8 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
             }
         };
 
-        match kind.as_str() {
-            "bridge" => {
+        match kind {
+            ProofKind::Bridge => {
                 apply_confirmed_bridge(
                     pool,
                     job_id,
@@ -853,7 +855,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                 )
                 .await?;
             }
-            "settlement" => {
+            ProofKind::Settlement => {
                 apply_confirmed_settlement(
                     pool,
                     job_id,
@@ -865,7 +867,6 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                 )
                 .await?;
             }
-            _ => unreachable!(),
         }
         sqlx::query(
             "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
@@ -960,7 +961,7 @@ async fn reconcile_jobs(
     .await?;
     for row in rows {
         let id: uuid::Uuid = row.try_get("id")?;
-        let kind: String = row.try_get("kind")?;
+        let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
         let input: Value = row.try_get("input")?;
         let public_values: Option<String> = row.try_get("public_values")?;
         let previous_status: String = row.try_get("status")?;
@@ -1005,7 +1006,7 @@ async fn reconcile_jobs(
             config.confirmations,
             finalized_block.map(|block| block.number),
         );
-        if confirmed && previous_status != "confirmed" && kind == "settlement" {
+        if confirmed && previous_status != "confirmed" && kind == ProofKind::Settlement {
             apply_confirmed_settlement(
                 pool,
                 id,
@@ -1019,7 +1020,7 @@ async fn reconcile_jobs(
             )
             .await?;
         }
-        if confirmed && previous_status != "confirmed" && kind == "bridge" {
+        if confirmed && previous_status != "confirmed" && kind == ProofKind::Bridge {
             apply_confirmed_bridge(
                 pool,
                 id,

@@ -47,7 +47,7 @@ contract to append bridge-proven outer Witness checkpoints.
 | 2-of-3 DA signers | Keep batch/checkpoint data available for the current milestone. This is not the production Ethereum DA design. |
 | Gateway operator | Selects when to request proofs and submits transactions. Contract continuity limits forged state, but liveness and censorship remain permissioned. |
 | `PROVER_ROLE` EOA | Can submit valid proofs, not alter admin configuration. |
-| `ADMIN_ROLE` | Can change the PoC VK identifier, pause, set bridge/delay, manage registry proposals, and emergency-withdraw unencumbered custody. This is a strong trust assumption. |
+| `ADMIN_ROLE` | Can change the PoC VK identifier, pause, set bridge/delay, manage registry proposals, emergency-withdraw any native custody, and emergency-withdraw unencumbered ERC-20 custody. This is a strong trust assumption. |
 | `UPGRADER_ROLE` | Can replace implementation logic and therefore has full protocol power. |
 | `DEFAULT_ADMIN_ROLE` | Can grant/revoke roles. |
 

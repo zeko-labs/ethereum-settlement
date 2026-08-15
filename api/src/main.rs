@@ -30,8 +30,11 @@ mod ethereum;
 mod explorer;
 mod graphql;
 mod indexer;
+mod proof_kind;
 mod prover;
 mod withdrawal_activity;
+
+use proof_kind::ProofKind;
 
 #[derive(Clone)]
 struct AppState {
@@ -552,7 +555,7 @@ async fn get_bridge_config(State(state): State<AppState>) -> Response {
 
 async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
     let configured = ethereum.configured_program_vkeys().await?;
-    for (index, kind) in ["settlement", "bridge"].iter().enumerate() {
+    for (index, kind) in ProofKind::ALL.into_iter().enumerate() {
         let embedded = prover::program_vkey(kind)
             .await?
             .parse::<B256>()
@@ -604,7 +607,7 @@ async fn create_settlement(
             "settlement proof must include the OCaml account-update binding",
         );
     }
-    match conflicting_outer_writer(&state.pool, "settlement").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Settlement).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -635,7 +638,7 @@ async fn create_settlement(
     create_job(
         &state,
         &headers,
-        "settlement",
+        ProofKind::Settlement,
         serde_json::to_value(request).unwrap(),
     )
     .await
@@ -683,7 +686,7 @@ async fn create_bridge(
     headers: HeaderMap,
     Json(input): Json<BridgeTransitionInput>,
 ) -> Response {
-    match conflicting_outer_writer(&state.pool, "bridge").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -702,7 +705,7 @@ async fn create_bridge(
     create_job(
         &state,
         &headers,
-        "bridge",
+        ProofKind::Bridge,
         serde_json::to_value(input).unwrap(),
     )
     .await
@@ -712,7 +715,7 @@ async fn create_bridge(
 /// This is the PoC production endpoint; `/v1/proofs/bridge` is retained only
 /// for explicit fixture/debug inputs.
 async fn create_deposit_batch(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match conflicting_outer_writer(&state.pool, "bridge").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -820,7 +823,7 @@ async fn queue_canonical_deposit_batch(
 
 async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
     loop {
-        match conflicting_outer_writer(&state.pool, "bridge").await {
+        match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
             Ok(false) => {
                 match queue_canonical_deposit_batch(&state, &HeaderMap::new(), false).await {
                     Ok(job) => {
@@ -1643,7 +1646,12 @@ fn withdrawal_progress(
     }
 }
 
-async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Value) -> Response {
+async fn create_job(
+    state: &AppState,
+    headers: &HeaderMap,
+    kind: ProofKind,
+    input: Value,
+) -> Response {
     let id = Uuid::new_v4();
     let input_digest = proof_input_digest(&input);
     let idempotency_key = headers
@@ -1658,7 +1666,7 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
          RETURNING id",
     )
     .bind(id)
-    .bind(kind)
+    .bind(kind.as_str())
     .bind(input)
     .bind(idempotency_key)
     .bind(input_digest)
@@ -1709,12 +1717,8 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
     }
 }
 
-async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result<bool> {
-    let conflicting_kind = match requested_kind {
-        "settlement" => "bridge",
-        "bridge" => "settlement",
-        _ => return Ok(false),
-    };
+async fn conflicting_outer_writer(pool: &PgPool, requested_kind: ProofKind) -> Result<bool> {
+    let conflicting_kind = requested_kind.conflicting();
     Ok(sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
              SELECT 1 FROM proof_jobs
@@ -1725,7 +1729,7 @@ async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result
                )
          )",
     )
-    .bind(conflicting_kind)
+    .bind(conflicting_kind.as_str())
     .fetch_one(pool)
     .await?)
 }
@@ -1757,7 +1761,7 @@ async fn load_proof_quote(
     .fetch_optional(&state.pool)
     .await?
     .context("proof job not found")?;
-    let kind: String = row.try_get("kind")?;
+    let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
     let status: String = row.try_get("status")?;
     anyhow::ensure!(
         !matches!(
@@ -1790,10 +1794,10 @@ async fn load_proof_quote(
     let public_values: String = row
         .try_get::<Option<String>, _>("public_values")?
         .context("proof job has no public values")?;
-    let remaining_slots = proof_remaining_slots(state, &kind, &public_values).await?;
+    let remaining_slots = proof_remaining_slots(state, kind, &public_values).await?;
     Ok(ProofQuoteResponse {
         id,
-        kind,
+        kind: kind.to_string(),
         status,
         input_digest: row.try_get("input_digest")?,
         cycle_count,
@@ -1860,7 +1864,7 @@ async fn approve_proof_inner(
         request.input_digest == input_digest,
         "approval input digest does not match the preflighted job"
     );
-    let kind: String = row.try_get("kind")?;
+    let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
     let public_values_hex: String = row
         .try_get::<Option<String>, _>("public_values")?
         .context("proof job has no public values")?;
@@ -1869,9 +1873,9 @@ async fn approve_proof_inner(
         .try_get::<Option<i64>, _>("cycle_count")?
         .map(u64::try_from)
         .transpose()?;
-    let preflight = prover::Preflight::decode(&kind, public_values, cycles)?;
-    validate_preflight(state, &kind, &row.try_get::<Value, _>("input")?, &preflight).await?;
-    require_proof_lifetime(state, &kind, &public_values_hex).await?;
+    let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
+    validate_preflight(state, &row.try_get::<Value, _>("input")?, &preflight).await?;
+    require_proof_lifetime(state, kind, &public_values_hex).await?;
     let quote =
         prover::auction_quote(&state.proof_system, max_pgu, Some(max_price_per_pgu)).await?;
     let result = sqlx::query(
@@ -1936,10 +1940,10 @@ async fn cancel_proof(State(state): State<AppState>, Path(id): Path<Uuid>) -> Re
 
 async fn proof_remaining_slots(
     state: &AppState,
-    kind: &str,
+    kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<Option<u64>> {
-    if kind != "settlement" {
+    if kind != ProofKind::Settlement {
         return Ok(None);
     }
     let public_values = decode_hex_bytes(public_values_hex, "settlement public values")?;
@@ -1952,7 +1956,7 @@ async fn proof_remaining_slots(
 
 async fn require_proof_lifetime(
     state: &AppState,
-    kind: &str,
+    kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<()> {
     if let Some(remaining) = proof_remaining_slots(state, kind, public_values_hex).await? {
@@ -2147,16 +2151,17 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
 
 async fn process_job(state: &AppState, mut job: ClaimedJob) {
     let result = async {
+        let kind: ProofKind = job.kind.parse()?;
         let (preflight, request_config) = if job.claimed_status == "approved" {
             let public_values_hex = job
                 .public_values
                 .as_deref()
                 .context("approved proof job has no public values")?;
-            require_proof_lifetime(state, &job.kind, public_values_hex).await?;
+            require_proof_lifetime(state, kind, public_values_hex).await?;
             let public_values = decode_hex_bytes(public_values_hex, "public values")?;
             let cycles = job.cycle_count.map(u64::try_from).transpose()?;
-            let preflight = prover::Preflight::decode(&job.kind, public_values, cycles)?;
-            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
+            validate_preflight(state, &job.input, &preflight).await?;
             let mut config = state.prover_config.clone();
             config.gas_limit = Some(u64::try_from(
                 job.approval_max_pgu
@@ -2168,7 +2173,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             )?);
             (preflight, config)
         } else {
-            if job.kind == "settlement" {
+            if kind == ProofKind::Settlement {
                 hydrate_queued_settlement(state, &mut job.input).await?;
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET input = $2, updated_at = NOW()
@@ -2193,8 +2198,8 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 digest_result.rows_affected() == 1,
                 "proof job was cancelled"
             );
-            let preflight = prover::preflight(&job.kind, &job.input, state.execute_only).await?;
-            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let preflight = prover::preflight(kind, &job.input, state.execute_only).await?;
+            validate_preflight(state, &job.input, &preflight).await?;
             let cycle_count = preflight
                 .cycles()
                 .map(i64::try_from)
@@ -2240,7 +2245,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         };
 
         if state.local_mock_submit {
-            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
+            submit_local_mock(state, job.id, kind, &preflight).await?;
             return Result::<()>::Ok(());
         }
 
@@ -2249,13 +2254,9 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         let request_id = match job.proof_request_id {
             Some(request_id) => request_id,
             None => {
-                let request_id = prover::request_proof(
-                    &job.kind,
-                    &job.input,
-                    &state.proof_system,
-                    &request_config,
-                )
-                .await?;
+                let request_id =
+                    prover::request_proof(kind, &job.input, &state.proof_system, &request_config)
+                        .await?;
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET proof_request_id = $2, updated_at = NOW()
                      WHERE id = $1 AND status = 'proving'",
@@ -2269,7 +2270,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 request_id
             }
         };
-        let proof = prover::wait_proof(&job.kind, &request_id).await?;
+        let proof = prover::wait_proof(kind, &request_id).await?;
         anyhow::ensure!(
             proof.public_values == preflight.public_values(),
             "network proof public values differ from local SP1 preflight"
@@ -2297,7 +2298,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         );
         let transaction_hash = state
             .ethereum
-            .submit(&job.kind, proof.public_values.clone(), proof.proof.bytes())
+            .submit(kind, proof.public_values.clone(), proof.proof.bytes())
             .await?;
         let result = sqlx::query(
             "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
@@ -2363,7 +2364,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
 async fn submit_local_mock(
     state: &AppState,
     job_id: Uuid,
-    kind: &str,
+    kind: ProofKind,
     preflight: &prover::Preflight,
 ) -> Result<()> {
     set_status(&state.pool, job_id, "submitting").await?;
@@ -2432,10 +2433,10 @@ async fn hydrate_queued_settlement(state: &AppState, input: &mut Value) -> Resul
 
 async fn validate_preflight(
     state: &AppState,
-    kind: &str,
     input: &Value,
     preflight: &prover::Preflight,
 ) -> Result<()> {
+    let kind = preflight.kind();
     let local_vkey = prover::program_vkey(kind).await?;
     match preflight {
         prover::Preflight::Settlement { values, .. } => {

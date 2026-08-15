@@ -16,6 +16,8 @@ use std::{
 };
 use zeko_sp1_lib::ERC20_ACTION_ENCODING_V2;
 
+use crate::proof_kind::ProofKind;
+
 sol! {
     #[sol(rpc)]
     interface IZekoSettlement {
@@ -136,6 +138,20 @@ sol! {
     }
 }
 
+mod legacy_bridge_events {
+    use alloy::sol;
+
+    sol! {
+        event BridgeTransitionAccepted(
+            bytes32 indexed oldActionState,
+            bytes32 indexed newActionState,
+            bytes32 indexed newDepositState,
+            bytes32 newWithdrawState,
+            uint64 newDepositNonce
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct Ethereum {
     rpc_url: String,
@@ -215,6 +231,17 @@ fn bridge_deposit_filter(bridge_address: Address, from_block: u64, to_block: u64
             IEthereumZekoBridge::BridgeDeposit::SIGNATURE_HASH,
             IEthereumZekoBridge::ERC20DepositSubmitted::SIGNATURE_HASH,
             IEthereumZekoBridge::ERC20DepositSubmittedV2::SIGNATURE_HASH,
+        ])
+        .from_block(from_block)
+        .to_block(to_block)
+}
+
+fn bridge_transition_filter(bridge_address: Address, from_block: u64, to_block: u64) -> Filter {
+    Filter::new()
+        .address(bridge_address)
+        .event_signature(vec![
+            IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH,
+            legacy_bridge_events::BridgeTransitionAccepted::SIGNATURE_HASH,
         ])
         .from_block(from_block)
         .to_block(to_block)
@@ -777,45 +804,77 @@ impl Ethereum {
         to_block: u64,
     ) -> Result<Vec<BridgeTransitionAcceptedLog>> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let filter = Filter::new()
-            .address(self.bridge_address)
-            .event_signature(IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH)
-            .from_block(from_block)
-            .to_block(to_block);
+        let filter = bridge_transition_filter(self.bridge_address, from_block, to_block);
         provider
             .get_logs(&filter)
             .await?
             .into_iter()
-            .map(|log| {
-                let decoded = log
-                    .log_decode_validate::<IEthereumZekoBridge::BridgeTransitionAccepted>()
-                    .context("decode BridgeTransitionAccepted log")?;
-                let data = decoded.data();
-                Ok(BridgeTransitionAcceptedLog {
-                    old_action_state: data.oldActionState,
-                    new_action_state: data.newActionState,
-                    new_deposit_state: data.newDepositState,
-                    new_deposit_nonce: data.newDepositNonce,
-                    block_number: decoded
-                        .block_number
-                        .context("BridgeTransitionAccepted log missing block number")?,
-                    block_hash: decoded
-                        .block_hash
-                        .context("BridgeTransitionAccepted log missing block hash")?,
-                    transaction_hash: decoded
-                        .transaction_hash
-                        .context("BridgeTransitionAccepted log missing transaction hash")?,
-                    log_index: decoded
-                        .log_index
-                        .context("BridgeTransitionAccepted log missing log index")?,
-                })
+            .map(|log| match log.topic0().copied() {
+                Some(signature)
+                    if signature
+                        == IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH =>
+                {
+                    let decoded = log
+                        .log_decode_validate::<IEthereumZekoBridge::BridgeTransitionAccepted>()
+                        .context("decode BridgeTransitionAccepted log")?;
+                    let data = decoded.data();
+                    Ok(BridgeTransitionAcceptedLog {
+                        old_action_state: data.oldActionState,
+                        new_action_state: data.newActionState,
+                        new_deposit_state: data.newDepositState,
+                        new_deposit_nonce: data.newDepositNonce,
+                        block_number: decoded
+                            .block_number
+                            .context("BridgeTransitionAccepted log missing block number")?,
+                        block_hash: decoded
+                            .block_hash
+                            .context("BridgeTransitionAccepted log missing block hash")?,
+                        transaction_hash: decoded
+                            .transaction_hash
+                            .context("BridgeTransitionAccepted log missing transaction hash")?,
+                        log_index: decoded
+                            .log_index
+                            .context("BridgeTransitionAccepted log missing log index")?,
+                    })
+                }
+                Some(signature)
+                    if signature
+                        == legacy_bridge_events::BridgeTransitionAccepted::SIGNATURE_HASH =>
+                {
+                    let decoded = log
+                        .log_decode_validate::<legacy_bridge_events::BridgeTransitionAccepted>()
+                        .context("decode legacy BridgeTransitionAccepted log")?;
+                    let data = decoded.data();
+                    Ok(BridgeTransitionAcceptedLog {
+                        old_action_state: data.oldActionState,
+                        new_action_state: data.newActionState,
+                        new_deposit_state: data.newDepositState,
+                        new_deposit_nonce: data.newDepositNonce,
+                        block_number: decoded
+                            .block_number
+                            .context("legacy BridgeTransitionAccepted log missing block number")?,
+                        block_hash: decoded
+                            .block_hash
+                            .context("legacy BridgeTransitionAccepted log missing block hash")?,
+                        transaction_hash: decoded.transaction_hash.context(
+                            "legacy BridgeTransitionAccepted log missing transaction hash",
+                        )?,
+                        log_index: decoded
+                            .log_index
+                            .context("legacy BridgeTransitionAccepted log missing log index")?,
+                    })
+                }
+                Some(signature) => {
+                    anyhow::bail!("unexpected bridge transition event {signature}")
+                }
+                None => anyhow::bail!("bridge transition event is missing topic zero"),
             })
             .collect()
     }
 
     pub async fn accepted_public_values(
         &self,
-        kind: &str,
+        kind: ProofKind,
         transaction_hash: &str,
     ) -> Result<Vec<u8>> {
         let hash: TxHash = transaction_hash
@@ -828,17 +887,16 @@ impl Ethereum {
             .context("accepted Ethereum transaction is unavailable")?;
         let input = transaction.input();
         let public_values = match kind {
-            "settlement" => {
+            ProofKind::Settlement => {
                 IZekoSettlement::verifyAndUpdateRootCall::abi_decode_validate(input)
                     .context("decode accepted settlement transaction calldata")?
                     .publicValues
             }
-            "bridge" => {
+            ProofKind::Bridge => {
                 IEthereumZekoBridge::submitBridgeTransitionCall::abi_decode_validate(input)
                     .context("decode accepted bridge transaction calldata")?
                     .publicValues
             }
-            _ => anyhow::bail!("unsupported accepted transaction kind: {kind}"),
         };
         Ok(public_values.to_vec())
     }
@@ -927,14 +985,13 @@ impl Ethereum {
 
     pub async fn submit(
         &self,
-        kind: &str,
+        kind: ProofKind,
         public_values: Vec<u8>,
         proof: Vec<u8>,
     ) -> Result<TxHash> {
         let key = match kind {
-            "settlement" => &self.settlement_key,
-            "bridge" => &self.bridge_key,
-            _ => anyhow::bail!("unsupported proof kind: {kind}"),
+            ProofKind::Settlement => &self.settlement_key,
+            ProofKind::Bridge => &self.bridge_key,
         };
         let signer = PrivateKeySigner::from_str(key).context("invalid Ethereum private key")?;
         let wallet = EthereumWallet::from(signer);
@@ -945,7 +1002,7 @@ impl Ethereum {
         let proof = Bytes::from(proof);
 
         let transaction_hash = match kind {
-            "settlement" => {
+            ProofKind::Settlement => {
                 let contract = IZekoSettlement::new(self.settlement_address, provider.clone());
                 contract
                     .verifyAndUpdateRoot(public_values.clone(), proof.clone())
@@ -958,7 +1015,7 @@ impl Ethereum {
                     .await?;
                 *pending.tx_hash()
             }
-            "bridge" => {
+            ProofKind::Bridge => {
                 let contract = IEthereumZekoBridge::new(self.bridge_address, provider.clone());
                 contract
                     .submitBridgeTransition(public_values.clone(), proof.clone())
@@ -971,7 +1028,6 @@ impl Ethereum {
                     .await?;
                 *pending.tx_hash()
             }
-            _ => unreachable!(),
         };
         Ok(transaction_hash)
     }
@@ -1040,6 +1096,18 @@ mod tests {
                 "BridgeTransitionAccepted(bytes32,bytes32,bytes32,uint64)"
             )
         );
+        assert_eq!(
+            legacy_bridge_events::BridgeTransitionAccepted::SIGNATURE_HASH,
+            alloy::primitives::keccak256(
+                "BridgeTransitionAccepted(bytes32,bytes32,bytes32,bytes32,uint64)"
+            )
+        );
+        let filter = bridge_transition_filter(Address::ZERO, 7, 9);
+        assert_eq!(filter.topics[0].len(), 2);
+        assert!(filter.topics[0]
+            .contains(&IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH));
+        assert!(filter.topics[0]
+            .contains(&legacy_bridge_events::BridgeTransitionAccepted::SIGNATURE_HASH));
     }
 
     #[test]
