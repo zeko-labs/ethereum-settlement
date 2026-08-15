@@ -75,7 +75,7 @@ Build all guests reproducibly without proving:
 ```sh
 cargo prove build --docker --tag v6.1.0 --locked \
   --rustflags=-C,passes=lower-atomic \
-  -p settlement-program -p bridge-program -p withdraw-program
+  -p settlement-program -p bridge-program
 ```
 
 The lower-atomic pass and the workspace's zkVM atomic shims are required by the

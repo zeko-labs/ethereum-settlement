@@ -16,6 +16,8 @@ FORGE=${FORGE:-$HOME/.foundry/bin/forge}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+[[ $TARGET_DIR == /* ]] || TARGET_DIR="$ROOT/$TARGET_DIR"
 source "$ROOT/tools/lib/workspace.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
@@ -42,7 +44,7 @@ BRIDGE_SCENARIO="$FIXTURE_DIR/../bridge-scenario.json"
 
 vkey() {
   local program=$1
-  "$ROOT/target/release/vkey" --program "$program" \
+  "$TARGET_DIR/release/vkey" --program "$program" \
     | awk '/^0x[0-9a-fA-F]{64}$/ { value=$0 } END { if (value == "") exit 1; print value }'
 }
 
@@ -54,7 +56,6 @@ SETTLEMENT_VK_JSON="$FIXTURE_DIR/vk.serde.json" \
   cargo build --quiet --release -p zeko-proof-api
 SETTLEMENT_PROGRAM_VKEY=$(vkey settlement)
 BRIDGE_PROGRAM_VKEY=$(vkey bridge)
-WITHDRAW_PROGRAM_VKEY=$(vkey withdraw)
 SETTLEMENT_VK_HASH=0x$(sha256sum "$FIXTURE_DIR/vk.serde.json" | awk '{print $1}')
 FIXTURE_SLOT_LOWER_HEX=$(jq -er '.proof.binding.actions[0][6]' \
   "$FIXTURE_DIR/settlement.json")
@@ -136,7 +137,7 @@ export MINA_SIGNING_NETWORK_ID
 export SETTLEMENT_IMPLEMENTATION_ADDRESS ASSET_REGISTRY_MODULE_ADDRESS
 export BRIDGE_IMPLEMENTATION_ADDRESS
 export SETTLEMENT_CONTRACT_ADDRESS BRIDGE_CONTRACT_ADDRESS
-export SETTLEMENT_PROGRAM_VKEY BRIDGE_PROGRAM_VKEY WITHDRAW_PROGRAM_VKEY
+export SETTLEMENT_PROGRAM_VKEY BRIDGE_PROGRAM_VKEY
 export SETTLEMENT_VK_HASH POC_MANIFEST_PATH
 export SETTLEMENT_SOURCE_REVISION ZEKO_SOURCE_REVISION ZEKO_UI_SOURCE_REVISION
 SETTLEMENT_SOURCE_REVISION=$(git -C "$ROOT" rev-parse HEAD)
@@ -194,7 +195,6 @@ mv "$manifest_tmp" "$POC_MANIFEST_PATH"
   echo "BRIDGE_CONTRACT_ADDRESS=$BRIDGE_CONTRACT_ADDRESS"
   echo "SETTLEMENT_PROGRAM_VKEY=$SETTLEMENT_PROGRAM_VKEY"
   echo "BRIDGE_PROGRAM_VKEY=$BRIDGE_PROGRAM_VKEY"
-  echo "WITHDRAW_PROGRAM_VKEY=$WITHDRAW_PROGRAM_VKEY"
   echo "SETTLEMENT_VK_HASH=$SETTLEMENT_VK_HASH"
   echo "FORK_SLOT=$FORK_SLOT"
   echo "FIXTURE_SLOT_LOWER=$FORK_SLOT"

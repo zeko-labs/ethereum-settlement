@@ -14,7 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
 };
-use zeko_sp1_lib::{ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2};
+use zeko_sp1_lib::ERC20_ACTION_ENCODING_V2;
 
 sol! {
     #[sol(rpc)]
@@ -28,7 +28,6 @@ sol! {
         function outerActionStateLength() external view returns (uint32);
         function batchSequence() external view returns (uint64);
         function currentVirtualSlot() external view returns (uint64);
-        function l2ActionStateInfo(bytes32 actionState) external view returns (uint64 index, bool valid);
         function verifyAndUpdateRoot(bytes publicValues, bytes proofBytes) external;
         event SettlementAccepted(
             uint64 indexed batchSequence,
@@ -54,13 +53,9 @@ sol! {
     #[sol(rpc)]
     interface IEthereumZekoBridge {
         function bridgeVerifier() external view returns (address);
-        function withdrawVerifier() external view returns (address);
         function bridgeProgramVKey() external view returns (bytes32);
-        function withdrawProgramVKey() external view returns (bytes32);
         function depositNonce() external view returns (uint64);
         function currentDepositState() external view returns (bytes32);
-        function currentWithdrawState() external view returns (bytes32);
-        function currentWithdrawActionStateIndex() external view returns (uint64);
         function bridgedDepositNonce() external view returns (uint64);
         function withdrawalDelaySlots() external view returns (uint32);
         function nextWithdrawalIndex(address recipient) external view returns (uint32);
@@ -74,7 +69,6 @@ sol! {
         function paused() external view returns (bool);
         function depositStateByNonce(uint64 nonce) external view returns (bytes32);
         function submitBridgeTransition(bytes publicValues, bytes proofBytes) external;
-        function submitWithdrawTransition(bytes publicValues, bytes proofBytes) external;
         event BridgeDeposit(
             uint64 indexed nonce,
             bytes32 indexed depositLeaf,
@@ -132,7 +126,6 @@ sol! {
             bytes32 indexed oldActionState,
             bytes32 indexed newActionState,
             bytes32 indexed newDepositState,
-            bytes32 newWithdrawState,
             uint64 newDepositNonce
         );
     }
@@ -150,7 +143,6 @@ pub struct Ethereum {
     bridge_address: Address,
     settlement_key: String,
     bridge_key: String,
-    withdraw_key: String,
 }
 
 pub struct SettlementState {
@@ -167,8 +159,6 @@ pub struct BridgeState {
     pub program_vkey: B256,
     pub deposit_nonce: u64,
     pub current_deposit_state: B256,
-    pub current_withdraw_state: B256,
-    pub current_withdraw_action_state_index: u64,
     pub bridged_deposit_nonce: u64,
     pub action_state_processed: Option<bool>,
     pub paused: bool,
@@ -180,14 +170,6 @@ pub struct TokenWithdrawalIdentity {
     pub registry_index: u32,
     pub record_commitment: B256,
     pub asset_id: B256,
-}
-
-enum TokenWithdrawalValidation {
-    Legacy,
-    Registry {
-        registry_index: u32,
-        record_commitment: B256,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -285,7 +267,6 @@ pub struct BridgeTransitionAcceptedLog {
     pub old_action_state: B256,
     pub new_action_state: B256,
     pub new_deposit_state: B256,
-    pub new_withdraw_state: B256,
     pub new_deposit_nonce: u64,
     pub block_number: u64,
     pub block_hash: B256,
@@ -315,14 +296,12 @@ impl Ethereum {
         bridge_address: String,
         settlement_key: String,
         bridge_key: String,
-        withdraw_key: String,
     ) -> Result<Self> {
         anyhow::ensure!(
             !settlement_key.is_empty(),
             "SETTLEMENT_PRIVATE_KEY is required"
         );
         anyhow::ensure!(!bridge_key.is_empty(), "BRIDGE_PRIVATE_KEY is required");
-        anyhow::ensure!(!withdraw_key.is_empty(), "WITHDRAW_PRIVATE_KEY is required");
         Ok(Self {
             rpc_url,
             settlement_address: settlement_address
@@ -331,7 +310,6 @@ impl Ethereum {
             bridge_address: bridge_address.parse().context("invalid bridge address")?,
             settlement_key,
             bridge_key,
-            withdraw_key,
         })
     }
 
@@ -359,10 +337,9 @@ impl Ethereum {
             .await?;
         let bridge = IEthereumZekoBridge::new(self.bridge_address, &provider);
         let bridge_verifier = bridge.bridgeVerifier().call().await?;
-        let withdraw_verifier = bridge.withdrawVerifier().call().await?;
         anyhow::ensure!(
-            settlement_verifier == bridge_verifier && settlement_verifier == withdraw_verifier,
-            "local settlement, bridge, and withdrawal verifiers must be identical"
+            settlement_verifier == bridge_verifier,
+            "local settlement and bridge verifiers must be identical"
         );
         let is_local = ILocalSP1Verifier::new(settlement_verifier, provider)
             .isLocalSP1Verifier()
@@ -373,18 +350,14 @@ impl Ethereum {
         Ok(())
     }
 
-    pub async fn configured_program_vkeys(&self) -> Result<[B256; 3]> {
+    pub async fn configured_program_vkeys(&self) -> Result<[B256; 2]> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let settlement = IZekoSettlement::new(self.settlement_address, &provider)
             .programVKey()
             .call()
             .await?;
         let bridge = IEthereumZekoBridge::new(self.bridge_address, provider);
-        Ok([
-            settlement,
-            bridge.bridgeProgramVKey().call().await?,
-            bridge.withdrawProgramVKey().call().await?,
-        ])
+        Ok([settlement, bridge.bridgeProgramVKey().call().await?])
     }
 
     pub fn settlement_address(&self) -> Address {
@@ -465,17 +438,12 @@ impl Ethereum {
 
     pub async fn bridge_state(
         &self,
-        kind: &str,
         nonce: Option<u64>,
         action_state_after: Option<B256>,
     ) -> Result<(BridgeState, Option<B256>)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
         let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-        let program_vkey = match kind {
-            "bridge" => contract.bridgeProgramVKey().call().await?,
-            "withdraw" => contract.withdrawProgramVKey().call().await?,
-            _ => anyhow::bail!("unsupported bridge proof kind: {kind}"),
-        };
+        let program_vkey = contract.bridgeProgramVKey().call().await?;
         let historical = match nonce {
             Some(nonce) => Some(contract.depositStateByNonce(nonce).call().await?),
             None => None,
@@ -485,11 +453,6 @@ impl Ethereum {
                 program_vkey,
                 deposit_nonce: contract.depositNonce().call().await?,
                 current_deposit_state: contract.currentDepositState().call().await?,
-                current_withdraw_state: contract.currentWithdrawState().call().await?,
-                current_withdraw_action_state_index: contract
-                    .currentWithdrawActionStateIndex()
-                    .call()
-                    .await?,
                 bridged_deposit_nonce: contract.bridgedDepositNonce().call().await?,
                 action_state_processed: match action_state_after {
                     Some(action_state) => {
@@ -637,14 +600,13 @@ impl Ethereum {
                             && identity.timeout == data.timeout,
                         "BridgeDeposit and ERC20 identity events disagree"
                     );
-                    let encoding_version = if identity.record_commitment.is_some() {
-                        ERC20_ACTION_ENCODING_V2
-                    } else {
-                        ERC20_ACTION_ENCODING_V1
-                    };
+                    anyhow::ensure!(
+                        identity.registry_index.is_some() && identity.record_commitment.is_some(),
+                        "ERC20 deposit is missing its registry-bound identity event"
+                    );
                     (
                         Some(identity.asset_id),
-                        encoding_version,
+                        ERC20_ACTION_ENCODING_V2,
                         identity.registry_index,
                         identity.record_commitment,
                     )
@@ -833,7 +795,6 @@ impl Ethereum {
                     old_action_state: data.oldActionState,
                     new_action_state: data.newActionState,
                     new_deposit_state: data.newDepositState,
-                    new_withdraw_state: data.newWithdrawState,
                     new_deposit_nonce: data.newDepositNonce,
                     block_number: decoded
                         .block_number
@@ -924,71 +885,22 @@ impl Ethereum {
     ) -> Result<HashMap<TokenWithdrawalIdentity, Address>> {
         let identities = identities.iter().copied().collect::<HashSet<_>>();
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let contract = IEthereumZekoBridge::new(self.bridge_address, &provider);
-        let legacy_assets = identities
-            .iter()
-            .filter(|identity| identity.encoding_version == ERC20_ACTION_ENCODING_V1)
-            .map(|identity| identity.asset_id)
-            .collect::<HashSet<_>>();
-        let mut legacy_tokens = HashMap::new();
-        if !legacy_assets.is_empty() {
-            let head = provider.get_block_number().await?;
-            let filter = Filter::new()
-                .address(self.bridge_address)
-                .event_signature(IEthereumZekoBridge::TokenRegistered::SIGNATURE_HASH)
-                .from_block(0)
-                .to_block(head);
-            for log in provider.get_logs(&filter).await? {
-                let decoded = log
-                    .log_decode_validate::<IEthereumZekoBridge::TokenRegistered>()
-                    .context("decode TokenRegistered log")?;
-                let data = decoded.data();
-                if legacy_assets.contains(&data.assetId) {
-                    anyhow::ensure!(
-                        legacy_tokens
-                            .insert(data.assetId, data.token)
-                            .is_none_or(|current| current == data.token),
-                        "multiple tokens are registered for the archived ERC20 asset"
-                    );
-                }
-            }
-        }
-
+        let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
         let mut resolved = HashMap::with_capacity(identities.len());
         for identity in identities {
-            let (token, validation) = match identity.encoding_version {
-                ERC20_ACTION_ENCODING_V1 => {
-                    anyhow::ensure!(
-                        identity.registry_index == 0 && identity.record_commitment.is_zero(),
-                        "legacy ERC20 withdrawal has registry identity"
-                    );
-                    (
-                        *legacy_tokens
-                            .get(&identity.asset_id)
-                            .context("archived ERC20 asset is not registered on Ethereum")?,
-                        TokenWithdrawalValidation::Legacy,
-                    )
-                }
-                ERC20_ACTION_ENCODING_V2 => {
-                    anyhow::ensure!(
-                        !identity.record_commitment.is_zero(),
-                        "archived ERC20 registry identity does not match Ethereum"
-                    );
-                    (
-                        contract
-                            .assetTokenByRegistryIndex(identity.registry_index)
-                            .call()
-                            .await?,
-                        TokenWithdrawalValidation::Registry {
-                            registry_index: identity.registry_index,
-                            record_commitment: identity.record_commitment,
-                        },
-                    )
-                }
-                version => {
-                    anyhow::bail!("unsupported ERC20 withdrawal encoding version {version}")
-                }
-            };
+            anyhow::ensure!(
+                identity.encoding_version == ERC20_ACTION_ENCODING_V2,
+                "unsupported ERC20 withdrawal encoding version {}",
+                identity.encoding_version
+            );
+            anyhow::ensure!(
+                !identity.record_commitment.is_zero(),
+                "archived ERC20 registry identity is zero"
+            );
+            let token = contract
+                .assetTokenByRegistryIndex(identity.registry_index)
+                .call()
+                .await?;
             anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
             anyhow::ensure!(
                 contract.canonicalTokenRegistered(token).call().await?,
@@ -998,41 +910,15 @@ impl Ethereum {
                 contract.assetIdByToken(token).call().await? == identity.asset_id,
                 "archived ERC20 asset id does not match Ethereum"
             );
-            match validation {
-                TokenWithdrawalValidation::Legacy => {
-                    anyhow::ensure!(
-                        contract
-                            .recordCommitmentByToken(token)
-                            .call()
-                            .await?
-                            .is_zero(),
-                        "legacy ERC20 withdrawal has registry identity"
-                    );
-                }
-                TokenWithdrawalValidation::Registry {
-                    registry_index,
-                    record_commitment,
-                } => {
-                    anyhow::ensure!(
-                        contract.registryIndexByToken(token).call().await? == registry_index
-                            && contract.recordCommitmentByToken(token).call().await?
-                                == record_commitment,
-                        "archived ERC20 registry identity does not match Ethereum"
-                    );
-                }
-            }
+            anyhow::ensure!(
+                contract.registryIndexByToken(token).call().await? == identity.registry_index
+                    && contract.recordCommitmentByToken(token).call().await?
+                        == identity.record_commitment,
+                "archived ERC20 registry identity does not match Ethereum"
+            );
             resolved.insert(identity, token);
         }
         Ok(resolved)
-    }
-
-    pub async fn l2_action_state_info(&self, action_state: B256) -> Result<(u64, bool)> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let info = IZekoSettlement::new(self.settlement_address, provider)
-            .l2ActionStateInfo(action_state)
-            .call()
-            .await?;
-        Ok((info.index, info.valid))
     }
 
     pub fn bridge_address(&self) -> Address {
@@ -1048,7 +934,6 @@ impl Ethereum {
         let key = match kind {
             "settlement" => &self.settlement_key,
             "bridge" => &self.bridge_key,
-            "withdraw" => &self.withdraw_key,
             _ => anyhow::bail!("unsupported proof kind: {kind}"),
         };
         let signer = PrivateKeySigner::from_str(key).context("invalid Ethereum private key")?;
@@ -1082,19 +967,6 @@ impl Ethereum {
                     .context("simulate bridge submission")?;
                 let pending = contract
                     .submitBridgeTransition(public_values, proof)
-                    .send()
-                    .await?;
-                *pending.tx_hash()
-            }
-            "withdraw" => {
-                let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-                contract
-                    .submitWithdrawTransition(public_values.clone(), proof.clone())
-                    .call()
-                    .await
-                    .context("simulate withdraw submission")?;
-                let pending = contract
-                    .submitWithdrawTransition(public_values, proof)
                     .send()
                     .await?;
                 *pending.tx_hash()
@@ -1165,27 +1037,24 @@ mod tests {
         assert_eq!(
             IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH,
             alloy::primitives::keccak256(
-                "BridgeTransitionAccepted(bytes32,bytes32,bytes32,bytes32,uint64)"
+                "BridgeTransitionAccepted(bytes32,bytes32,bytes32,uint64)"
             )
         );
     }
 
     #[test]
-    fn token_identity_resolution_dispatches_on_version_once() {
+    fn token_identity_resolution_accepts_only_registry_bound_actions() {
         let source = include_str!("ethereum.rs");
         let start = source
             .find("pub async fn resolve_token_withdrawal_identities")
             .unwrap();
         let end = source[start..]
-            .find("pub async fn l2_action_state_info")
+            .find("pub fn bridge_address")
             .map(|offset| start + offset)
             .unwrap();
         let resolver = &source[start..end];
 
-        assert_eq!(
-            resolver.matches("match identity.encoding_version").count(),
-            1
-        );
-        assert!(!resolver.contains("_ => unreachable!()"));
+        assert!(resolver.contains("identity.encoding_version == ERC20_ACTION_ENCODING_V2"));
+        assert!(!resolver.contains("ERC20_ACTION_ENCODING_V1"));
     }
 }

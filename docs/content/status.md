@@ -92,20 +92,18 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   deposit-capacity ceiling, takes exact ERC-20 custody, emits the canonical
   deposit fields, and protects the locked liability from emergency withdrawal.
 - The gateway indexes finalized `BridgeDeposit` and immutable ERC-20 identity
-  events. Legacy one-token deposits remain encoding V1 with the
-  `ZEKO_ERC20_DEPOSIT_LEAF_V2`/`Ethereum ERC20 deposit V1` wire. Universal
-  registry deposits use encoding V2 and bind the registry index plus canonical
-  Mina record commitment in the `ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak leaf and
-  `Ethereum ERC20 deposit V2` Poseidon preimage.
+  events. Registry deposits use encoding V2 and bind the registry index plus
+  canonical Mina record commitment in the `ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak
+  leaf and `Ethereum ERC20 deposit V2` Poseidon preimage.
 - Zeko's hybrid Ethereum/custom-token circuit authenticates that record,
   registry index, and both 128-bit asset-ID limbs before an accepted deposit
   can move a bounded, pre-minted Mina Fungible Token inventory from the bridge
   vault to the user.
-- Withdrawal settlement retains the V3 leaf for legacy encoding V1 and uses a
-  V4 leaf for registry encoding V2, binding the registry index and record
-  commitment alongside the exact inner action, asset ID, ERC-20 token,
-  recipient, and UInt64 amount. Solidity releases only the matching token
-  after the settlement delay, with per-token replay cursors and liabilities.
+- Withdrawal settlement uses the V4 leaf for registry encoding V2, binding the
+  registry index and record commitment alongside the exact inner action, asset
+  ID, ERC-20 token, recipient, and UInt64 amount. Solidity releases only the
+  matching token after the settlement delay, with per-token replay cursors and
+  liabilities.
 - The gateway and `@zeko-labs/eth-bridge-sdk` expose ERC-20 deposit status and
   delayed token-withdrawal claims. Solidity/Rust share the exact accumulator
   leaf schema, SP1/OCaml share the exact Poseidon action vector, and the
@@ -132,8 +130,10 @@ The universal registry runtime path is also implemented:
   records without requiring Solidity to evaluate Poseidon.
 - Registry selectors execute in a dedicated immutable module against
   namespaced proxy storage. The bridge retains custody configuration behind
-  self-only callbacks; deterministic deployment records the module address and
-  keeps both implementations below Ethereum's EIP-170 bytecode limit.
+  self-only callbacks. With the production optimizer settings, the bridge
+  implementation is 16,855 bytes and the registry module is 9,053 bytes, both
+  below Ethereum's 24,576-byte EIP-170 runtime limit. A contract test caps the
+  bridge implementation at 22,000 bytes to preserve deployment headroom.
 - The browser SDK validates the returned vault forest and exact full token-owner
   account-update body, then composes and proves the transaction with the
   unmodified `mina-fungible-token` owner's `approveBase` method.

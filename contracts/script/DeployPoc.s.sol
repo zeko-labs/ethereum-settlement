@@ -114,14 +114,7 @@ contract DeployPoc is PocDeploymentConfig {
                 predicted.bridgeImplementation,
                 abi.encodeCall(
                     EthereumZekoBridge.initialize,
-                    (
-                        admin,
-                        address(settlement),
-                        verifier,
-                        vm.envBytes32("BRIDGE_PROGRAM_VKEY"),
-                        verifier,
-                        vm.envBytes32("WITHDRAW_PROGRAM_VKEY")
-                    )
+                    (admin, address(settlement), verifier, vm.envBytes32("BRIDGE_PROGRAM_VKEY"))
                 )
             );
         }

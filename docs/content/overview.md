@@ -51,7 +51,6 @@ Keccak Merkle path to Ethereum.
 | --- | --- |
 | `program/settlement` | SP1 guest for Pickles verification and settlement receipts. |
 | `program/bridge` | SP1 guest for canonical native and registered ERC-20 deposit batches. |
-| `program/withdraw` | Legacy compatibility guest; disabled in the current native PoC. |
 | `crates/pickles-verifier` | o1 `o1js-to-zkvm` Pickles verifier adapted to SP1. |
 | `lib` | Shared, versioned host/guest public-value and witness types. |
 | `api` | Gateway, Mina GraphQL façade, proof worker, and Ethereum indexer. |

@@ -55,7 +55,6 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | `POST /v1/settlements` | Queue a settlement proof bundle. Alias: `/v1/proofs/settlement`. |
 | `POST /v1/bridge/deposits/prove` | Queue the next canonical finalized deposit batch. |
 | `POST /v1/proofs/bridge` | Low-level bridge fixture endpoint; not the production deposit entry point. |
-| `POST /v1/proofs/withdraw` | Legacy withdrawal fixture endpoint. |
 | `GET /v1/proofs` | List jobs, optionally filtered by kind/status. |
 | `GET /v1/proofs/:id` | Inspect input digest, public values, costs, request and transaction state. |
 | `GET /v1/proofs/:id/quote` | Read live auction parameters without creating a proof request. |
@@ -77,10 +76,9 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 
 Deposit and ERC-20 withdrawal responses expose `encodingVersion`,
 `registryIndex`, and `recordCommitment`. Native deposits use version `0`,
-legacy one-token actions use version `1`, and both have null registry fields.
-Universal registry actions use version `2` and carry the exact index and
-canonical Mina Poseidon record commitment persisted from their accepted
-events.
+with null registry fields. Universal registry actions use version `2` and carry
+the exact index and canonical Mina Poseidon record commitment persisted from
+their accepted events.
 
 ### Public explorer routes
 

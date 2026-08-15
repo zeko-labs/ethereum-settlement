@@ -31,7 +31,8 @@ set +a
 if [[ ${POC_REUSE_OCAML_EXPORT:-false} != true ]]; then
   rm -f "$OUTPUT_DIR"/settlement-*.json "$OUTPUT_DIR"/bridge-scenario.json \
     "$OUTPUT_DIR"/bridge-genesis-ledger.json
-  rm -rf "$OUTPUT_DIR"/registration "$OUTPUT_DIR"/deposit-sync \
+  rm -rf "$OUTPUT_DIR"/registration "$OUTPUT_DIR"/registration-0 \
+    "$OUTPUT_DIR"/registration-1 "$OUTPUT_DIR"/deposit-sync \
     "$OUTPUT_DIR"/withdrawal
 
   export ZEKO_ETHEREUM_SETTLEMENT_FIXTURE_DIR="$OUTPUT_DIR"
@@ -54,7 +55,7 @@ mapfile -t exports < <(find "$OUTPUT_DIR" -maxdepth 1 -type f \
   -name 'settlement-*.json' -print | sort)
 expected_exports=2
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  expected_exports=3
+  expected_exports=4
 fi
 if [[ ${#exports[@]} -ne $expected_exports ]]; then
   echo "Expected $expected_exports bridge settlement exports, got ${#exports[@]}" >&2
@@ -122,26 +123,28 @@ for fixture in "${fixtures[@]}"; do
 done
 
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  registration=${fixtures[0]}
-  deposit_sync=${fixtures[1]}
-  withdrawal=${fixtures[2]}
-  [[ $(jq '.proof.assetRegistryBatch.appends | length' "$registration") == 2 ]] || {
-    echo "Registration commit must bind exactly two registry appends" >&2
-    exit 1
-  }
-  [[ $(jq '.proof.innerActionBatch.actions | length' "$registration") == 0 ]] || {
-    echo "Registration commit unexpectedly contains inner actions" >&2
-    exit 1
-  }
+  registrations=("${fixtures[0]}" "${fixtures[1]}")
+  deposit_sync=${fixtures[2]}
+  withdrawal=${fixtures[3]}
+  for registration in "${registrations[@]}"; do
+    [[ $(jq '.proof.assetRegistryBatch.appends | length' "$registration") == 1 ]] || {
+      echo "Each registration commit must bind exactly one registry append" >&2
+      exit 1
+    }
+    [[ $(jq '.proof.innerActionBatch.actions | length' "$registration") == 0 ]] || {
+      echo "Registration commit unexpectedly contains inner actions" >&2
+      exit 1
+    }
+  done
   [[ $(jq '.proof.assetRegistryBatch == null' "$deposit_sync") == true ]] || {
     echo "Deposit synchronization commit unexpectedly contains registry appends" >&2
     exit 1
   }
   expected_withdrawals=2
-  # One registry checkpoint precedes the two deposits in the outer stream.
-  expected_outer_actions=3
+  # Two separately committed registry checkpoints precede the two deposits.
+  expected_outer_actions=4
 else
-  registration=
+  registrations=()
   deposit_sync=${fixtures[0]}
   withdrawal=${fixtures[1]}
   expected_withdrawals=1
@@ -231,10 +234,37 @@ else
     params_length=$(jq --argjson index "$index" \
       '.proof.innerActionBatch.actions[$index].tokenWithdrawal.paramsFields | length' \
       "$withdrawal")
+    encoding_version=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.encodingVersion' \
+      "$withdrawal")
+    registry_index=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.registryIndex' \
+      "$withdrawal")
+    record_commitment=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.recordCommitment | ascii_downcase' \
+      "$withdrawal")
+    params_encoding_version=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.paramsFields[0]' \
+      "$withdrawal")
+    params_registry_index=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.paramsFields[1]' \
+      "$withdrawal")
+    params_record_commitment=$(jq -r --argjson index "$index" \
+      '.proof.innerActionBatch.actions[$index].tokenWithdrawal.paramsFields[2] | ascii_downcase' \
+      "$withdrawal")
+    expected_registry_index=$(jq -r --argjson index "$index" \
+      '.ethereumAssets[$index].record.registryIndex' \
+      "$OUTPUT_DIR/bridge-scenario.json")
     [[ $actual_token == "$expected_token" && \
        $actual_asset == "$expected_asset" && \
        $actual_recipient == "$expected_recipient" && \
-       $actual_amount == "$expected_amount" && $params_length -gt 0 ]] || {
+       $actual_amount == "$expected_amount" && $params_length -ge 9 && \
+       $encoding_version == 2 && \
+       $registry_index == "$expected_registry_index" && \
+       $params_encoding_version == 0x0000000000000000000000000000000000000000000000000000000000000002 && \
+       $params_registry_index == "$(printf '0x%064x' "$registry_index")" && \
+       $record_commitment != 0x0000000000000000000000000000000000000000000000000000000000000000 && \
+       $record_commitment == "$params_record_commitment" ]] || {
       echo "Exported ERC20 withdrawal $index does not match the OCaml scenario" >&2
       exit 1
     }
@@ -259,7 +289,7 @@ commit_action_state=$(jq -r \
 if [[ $BRIDGE_ASSET == erc20 ]]; then
   registration_action_state=$(jq -r \
     '.proof.binding.accountUpdateBody.fieldElements[36] | ascii_downcase' \
-    "$registration")
+    "${registrations[0]}")
   [[ $registration_action_state == "$initial_registration_action_state" ]] || {
     echo "Registry-only commit unexpectedly changed the outer action state" >&2
     exit 1
@@ -269,7 +299,8 @@ fi
 reference_vk_sha=
 entries=("deposit-sync:$deposit_sync" "withdrawal:$withdrawal")
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  entries=("registration:$registration" "${entries[@]}")
+  entries=("registration-0:${registrations[0]}" \
+    "registration-1:${registrations[1]}" "${entries[@]}")
 fi
 for entry in "${entries[@]}"; do
   name=${entry%%:*}
@@ -294,7 +325,7 @@ done
 
 jq -n --arg directory "$OUTPUT_DIR" --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
   --arg vkSha256 "$reference_vk_sha" --argjson settlements "$expected_exports" \
-  --argjson registrationSettlements "$([[ $BRIDGE_ASSET == erc20 ]] && echo 1 || echo 0)" \
+  --argjson registrationSettlements "$([[ $BRIDGE_ASSET == erc20 ]] && echo 2 || echo 0)" \
   --argjson bridgeSettlements 2 \
   '{directory:$directory,settlements:$settlements,daQuorum:"2-of-3",
     bridgeAddress:$bridge,vkSha256:$vkSha256,

@@ -47,11 +47,11 @@ no administrator can submit a separate withdrawal root.
 
 ## Registry ERC-20 withdrawals
 
-The legacy one-token encoding V1 uses the
-`ZEKO_ERC20_WITHDRAWAL_LEAF_V3` domain and binds the token and asset ID. The
-universal registry encoding V2 uses `ZEKO_ERC20_WITHDRAWAL_LEAF_V4` and also
-binds `encoding_version = 2`, the registry index, and the canonical Mina
-Poseidon record commitment.
+Registry withdrawals use `ZEKO_ERC20_WITHDRAWAL_LEAF_V4` and bind the token,
+asset ID, `encoding_version = 2`, registry index, and canonical Mina Poseidon
+record commitment. The settlement guest rejects the retired one-token V1
+encoding so that every accepted ERC-20 withdrawal remains claimable by the
+current bridge contract.
 
 `GET /v1/bridge/token-withdrawals/:sequence/:offset` returns that immutable
 identity as `encodingVersion`, `registryIndex`, and `recordCommitment` together
@@ -102,9 +102,3 @@ but funds always go to the address committed in the leaf.
 The cursor permits a recipient to skip to a later global index. Doing so makes
 any earlier withdrawal for that recipient unclaimable, matching the helper
 account's monotonic processing model.
-
-## Legacy path
-
-`program/withdraw`, `submitWithdrawTransition`, and `claimWithdraw` remain for
-older fixtures. New deployments leave `legacyWithdrawEnabled` false. The
-separate withdrawal accumulator is not used by the native PoC described here.

@@ -135,7 +135,6 @@ services:
       - ./secrets/network-private-key:/run/zeko-secrets/network-private-key:ro
       - ./secrets/settlement-private-key:/run/zeko-secrets/settlement-private-key:ro
       - ./secrets/bridge-private-key:/run/zeko-secrets/bridge-private-key:ro
-      - ./secrets/withdraw-private-key:/run/zeko-secrets/withdraw-private-key:ro
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
@@ -145,7 +144,6 @@ services:
         export NETWORK_PRIVATE_KEY="$$(cat /run/zeko-secrets/network-private-key)"
         export SETTLEMENT_PRIVATE_KEY="$$(cat /run/zeko-secrets/settlement-private-key)"
         export BRIDGE_PRIVATE_KEY="$$(cat /run/zeko-secrets/bridge-private-key)"
-        export WITHDRAW_PRIVATE_KEY="$$(cat /run/zeko-secrets/withdraw-private-key)"
         exec zeko-proof-api
     ports:
       - "${GATEWAY_BIND_ADDRESS:-127.0.0.1}:${GATEWAY_PORT:-8080}:8080"

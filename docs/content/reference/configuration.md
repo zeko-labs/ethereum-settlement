@@ -22,7 +22,6 @@ environment file.
 | `BRIDGE_CONTRACT_ADDRESS` | Bridge proxy address. |
 | `SETTLEMENT_PRIVATE_KEY` | Settlement submitter key. |
 | `BRIDGE_PRIVATE_KEY` | Bridge submitter key. |
-| `WITHDRAW_PRIVATE_KEY` | Legacy withdraw submitter key; current preflight expects the same EOA as the other two. |
 | `NETWORK_PRIVATE_KEY` | Succinct requester key. |
 | `PROOF_SYSTEM` | `groth16` for EVM testnet submission. |
 | `PROVER_TIMEOUT_SECS` | Maximum network proof wait; reference value 21600. |

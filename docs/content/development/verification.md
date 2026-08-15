@@ -15,7 +15,6 @@ cargo check --offline \
 cargo test --offline -p pickles-verifier
 cargo test --offline -p settlement-program
 cargo test --offline -p bridge-program
-cargo test --offline -p withdraw-program
 cargo test --offline -p zeko_sp1_lib
 cargo test --offline -p zeko-proof-api
 ```

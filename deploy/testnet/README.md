@@ -90,7 +90,6 @@ upgrader-private-key
 deployment-roles.env
 settlement-private-key
 bridge-private-key
-withdraw-private-key
 postgres-gateway-password
 postgres-sequencer-password
 postgres-explorer-password

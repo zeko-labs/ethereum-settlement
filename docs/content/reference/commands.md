@@ -10,7 +10,7 @@ cargo check --offline \
   -p settlement-program -p zkapp-script -p zeko_sp1_lib -p zeko-proof-api
 cargo test --offline -p pickles-verifier
 cargo test --offline -p settlement-program -p bridge-program \
-  -p withdraw-program -p zeko_sp1_lib -p zeko-proof-api
+  -p zeko_sp1_lib -p zeko-proof-api
 
 (cd contracts && forge build --sizes && forge test -vv)
 (cd docs && pnpm install --frozen-lockfile && pnpm build)
@@ -24,7 +24,6 @@ git diff --check
 ```sh
 cargo run --release --bin zkapp -- --execute
 cargo run --release --bin bridge -- --execute
-cargo run --release --bin withdraw -- --execute
 ```
 
 Use a genuine settlement fixture:

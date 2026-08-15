@@ -15,8 +15,7 @@ use zeko_sp1_lib::{
     Bytes32, CallForestNodeV3, CanonicalAssetRecordV1, ChunkedRandomOracleInputV1,
     InnerActionBatchWitnessV2, MinaSignatureKindV1, NativeWithdrawalV2, OuterStateV1,
     SettlementDaMode, SettlementPublicValuesV1, SettlementPublicValuesV2, SettlementPublicValuesV3,
-    SettlementPublicValuesV4, SettlementWitnessV1, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V1,
-    ERC20_ACTION_ENCODING_V2,
+    SettlementPublicValuesV4, SettlementWitnessV1, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V2,
 };
 
 const BODY_UPDATE_STATE_START: usize = 2;
@@ -572,54 +571,39 @@ fn assert_erc20_withdrawal_preimage(fields: &[StepField], withdrawal: &TokenWith
         .map(field_from_bytes)
         .collect::<Vec<_>>();
     assert!(
-        params.len() >= 6,
-        "ERC20 withdrawal parameter preimage is truncated"
+        params.len() >= 9,
+        "registry ERC20 withdrawal parameter preimage is truncated"
     );
 
     let mut asset_high = [0u8; 32];
     asset_high[16..].copy_from_slice(&withdrawal.asset_id[..16]);
     let mut asset_low = [0u8; 32];
     asset_low[16..].copy_from_slice(&withdrawal.asset_id[16..]);
-    let (asset_offset, prefix) = match withdrawal.encoding_version {
-        ERC20_ACTION_ENCODING_V1 => {
-            assert_eq!(
-                withdrawal.registry_index, 0,
-                "legacy ERC20 withdrawal has a registry index"
-            );
-            assert_eq!(
-                withdrawal.record_commitment, [0u8; 32],
-                "legacy ERC20 withdrawal has a record commitment"
-            );
-            (0, "Ethereum ERC20 withdrawal V1")
-        }
-        ERC20_ACTION_ENCODING_V2 => {
-            assert!(
-                params.len() >= 9,
-                "registry ERC20 withdrawal parameter preimage is truncated"
-            );
-            assert_ne!(
-                withdrawal.record_commitment, [0u8; 32],
-                "registry ERC20 withdrawal record commitment is zero"
-            );
-            assert_eq!(
-                params[0],
-                StepField::from(ERC20_ACTION_ENCODING_V2),
-                "ERC20 withdrawal encoding version mismatch"
-            );
-            assert_eq!(
-                params[1],
-                StepField::from(withdrawal.registry_index),
-                "ERC20 withdrawal registry index mismatch"
-            );
-            assert_eq!(
-                params[2],
-                field_from_bytes(&withdrawal.record_commitment),
-                "ERC20 withdrawal record commitment mismatch"
-            );
-            (3, "Ethereum ERC20 withdrawal V2")
-        }
-        version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
-    };
+    assert_eq!(
+        withdrawal.encoding_version, ERC20_ACTION_ENCODING_V2,
+        "unsupported ERC20 withdrawal encoding version"
+    );
+    assert_ne!(
+        withdrawal.record_commitment, [0u8; 32],
+        "registry ERC20 withdrawal record commitment is zero"
+    );
+    assert_eq!(
+        params[0],
+        StepField::from(ERC20_ACTION_ENCODING_V2),
+        "ERC20 withdrawal encoding version mismatch"
+    );
+    assert_eq!(
+        params[1],
+        StepField::from(withdrawal.registry_index),
+        "ERC20 withdrawal registry index mismatch"
+    );
+    assert_eq!(
+        params[2],
+        field_from_bytes(&withdrawal.record_commitment),
+        "ERC20 withdrawal record commitment mismatch"
+    );
+    let asset_offset = 3;
+    let prefix = "Ethereum ERC20 withdrawal V2";
     assert_eq!(
         params[asset_offset],
         field_from_bytes(&asset_high),

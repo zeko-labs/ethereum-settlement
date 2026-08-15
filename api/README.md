@@ -17,7 +17,6 @@ Network, submits it to Ethereum, and waits for configurable finality.
 - `POST /v1/bridge/deposits/prove` — builds a deposit proof job from the next
   contiguous finalized `BridgeDeposit` logs; callers cannot supply deposit
   contents
-- `POST /v1/proofs/withdraw`
 - `GET /v1/bridge/deposits/:nonce` — reports immutable action encoding and
   registry identity, Ethereum finality, the exact bridge-proved outer action,
   synchronization, and the next user action

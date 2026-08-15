@@ -7,13 +7,10 @@ use sp1_sdk::{
     HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofMode,
     SP1ProofWithPublicValues, SP1Stdin,
 };
-use zeko_sp1_lib::{
-    BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues,
-    WithdrawTransitionInput, WithdrawTransitionPublicValues,
-};
+use zeko_sp1_lib::{BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues};
 use zkapp_script::{
     execute_minimal, native_settlement_preflight, settlement_stdin_from_bundle,
-    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF, WITHDRAW_ELF,
+    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF,
 };
 
 pub struct ProofOutput {
@@ -62,27 +59,19 @@ pub enum Preflight {
         public_values: Vec<u8>,
         cycles: Option<u64>,
     },
-    Withdraw {
-        values: WithdrawTransitionPublicValues,
-        public_values: Vec<u8>,
-        cycles: Option<u64>,
-    },
 }
 
 impl Preflight {
     pub fn public_values(&self) -> &[u8] {
         match self {
             Preflight::Settlement { public_values, .. }
-            | Preflight::Bridge { public_values, .. }
-            | Preflight::Withdraw { public_values, .. } => public_values,
+            | Preflight::Bridge { public_values, .. } => public_values,
         }
     }
 
     pub fn cycles(&self) -> Option<u64> {
         match self {
-            Preflight::Settlement { cycles, .. }
-            | Preflight::Bridge { cycles, .. }
-            | Preflight::Withdraw { cycles, .. } => *cycles,
+            Preflight::Settlement { cycles, .. } | Preflight::Bridge { cycles, .. } => *cycles,
         }
     }
 
@@ -97,11 +86,6 @@ impl Preflight {
             "bridge" => Ok(Self::Bridge {
                 values: BridgeTransitionPublicValuesV2::decode(&public_values)
                     .map_err(anyhow::Error::msg)?,
-                public_values,
-                cycles,
-            }),
-            "withdraw" => Ok(Self::Withdraw {
-                values: bincode::deserialize(&public_values)?,
                 public_values,
                 cycles,
             }),
@@ -310,7 +294,6 @@ fn elf_for(kind: &str) -> Result<sp1_sdk::Elf> {
     match kind {
         "settlement" => Ok(SETTLEMENT_ELF),
         "bridge" => Ok(BRIDGE_ELF),
-        "withdraw" => Ok(WITHDRAW_ELF),
         _ => anyhow::bail!("unsupported proof kind: {kind}"),
     }
 }
@@ -331,12 +314,6 @@ fn stdin_for(kind: &str, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
             let mut stdin = SP1Stdin::new();
             stdin.write(&input);
             Ok((BRIDGE_ELF, stdin))
-        }
-        "withdraw" => {
-            let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
-            let mut stdin = SP1Stdin::new();
-            stdin.write(&input);
-            Ok((WITHDRAW_ELF, stdin))
         }
         _ => anyhow::bail!("unsupported proof kind: {kind}"),
     }
@@ -375,17 +352,6 @@ mod tests {
         assert!(matches!(
             preflight("bridge", &input, false).await.unwrap(),
             Preflight::Bridge { .. }
-        ));
-    }
-
-    #[tokio::test]
-    #[ignore = "slow SP1 execution test"]
-    async fn executes_withdraw_preflight_in_process() {
-        let input: Value =
-            serde_json::from_str(include_str!("../../proofs/withdraw-input.json")).unwrap();
-        assert!(matches!(
-            preflight("withdraw", &input, false).await.unwrap(),
-            Preflight::Withdraw { .. }
         ));
     }
 }

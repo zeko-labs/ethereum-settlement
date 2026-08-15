@@ -12,7 +12,7 @@ contract WritePocManifest is PocDeploymentConfig {
         Addresses memory addresses = _predict(admin);
         string memory object = "poc";
 
-        vm.serializeUint(object, "schemaVersion", 3);
+        vm.serializeUint(object, "schemaVersion", 4);
         vm.serializeUint(object, "chainId", block.chainid);
         vm.serializeString(object, "dataAvailability", "multisig");
         vm.serializeString(object, "minaSigningNetworkId", vm.envOr("MINA_SIGNING_NETWORK_ID", string("testnet")));
@@ -41,7 +41,6 @@ contract WritePocManifest is PocDeploymentConfig {
         vm.serializeBytes32(object, "ocamlEthereumHolderX", bytes32(uint256(uint160(addresses.bridgeProxy))));
         vm.serializeBytes32(object, "settlementProgramVkey", vm.envBytes32("SETTLEMENT_PROGRAM_VKEY"));
         vm.serializeBytes32(object, "bridgeProgramVkey", vm.envBytes32("BRIDGE_PROGRAM_VKEY"));
-        vm.serializeBytes32(object, "withdrawProgramVkey", vm.envBytes32("WITHDRAW_PROGRAM_VKEY"));
         manifest = vm.serializeBytes32(object, "settlementVkHash", vm.envBytes32("SETTLEMENT_VK_HASH"));
         vm.writeJson(manifest, vm.envString("POC_MANIFEST_PATH"));
     }

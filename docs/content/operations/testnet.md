@@ -22,7 +22,7 @@ The following values must be chosen together and never mixed across builds:
 - sequencer, three DA, and bridge-recipient public identities
 - exact genesis ledger and two-commit bridge scenario
 - OCaml wrap verifier index and its PoC SHA-256 identifier
-- settlement, bridge, and withdrawal SP1 program vkeys
+- settlement and bridge SP1 program vkeys
 - settlement/bridge proxy addresses, registry-module address, and Sepolia
   chain ID
 

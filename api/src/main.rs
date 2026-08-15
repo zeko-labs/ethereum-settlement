@@ -22,7 +22,7 @@ use tower_http::{
 use uuid::Uuid;
 use zeko_sp1_lib::{
     inner_action_commitment, BridgeDeposit, BridgeTransitionInput, EthereumBridgeState,
-    SettlementContextV1, SettlementPublicValues, WithdrawTransitionInput, ZekoBridgeState,
+    SettlementContextV1, SettlementPublicValues, ZekoBridgeState,
 };
 use zkapp_script::SettlementProofBundle;
 
@@ -286,8 +286,7 @@ async fn main() -> Result<()> {
         required_env("SETTLEMENT_CONTRACT_ADDRESS")?,
         required_env("BRIDGE_CONTRACT_ADDRESS")?,
         nonempty_env("SETTLEMENT_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
-        nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
-        nonempty_env("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
+        nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or(default_key),
     )?;
     let ethereum_finality_mode = indexer::FinalityMode::parse(
         &env::var("ETHEREUM_FINALITY_MODE").unwrap_or_else(|_| "finalized".to_owned()),
@@ -440,7 +439,6 @@ async fn main() -> Result<()> {
         .route("/v1/settlements", post(create_settlement))
         .route("/v1/proofs/bridge", post(create_bridge))
         .route("/v1/bridge/deposits/prove", post(create_deposit_batch))
-        .route("/v1/proofs/withdraw", post(create_withdraw))
         .route("/v1/proofs/:id/quote", get(get_proof_quote))
         .route("/v1/proofs/:id/approve", post(approve_proof))
         .route("/v1/proofs/:id/cancel", post(cancel_proof))
@@ -554,7 +552,7 @@ async fn get_bridge_config(State(state): State<AppState>) -> Response {
 
 async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
     let configured = ethereum.configured_program_vkeys().await?;
-    for (index, kind) in ["settlement", "bridge", "withdraw"].iter().enumerate() {
+    for (index, kind) in ["settlement", "bridge"].iter().enumerate() {
         let embedded = prover::program_vkey(kind)
             .await?
             .parse::<B256>()
@@ -843,7 +841,7 @@ async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
 }
 
 async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInput> {
-    let (bridge, _historical) = state.ethereum.bridge_state("bridge", None, None).await?;
+    let (bridge, _historical) = state.ethereum.bridge_state(None, None).await?;
     anyhow::ensure!(!bridge.paused, "bridge contract is paused");
     anyhow::ensure!(
         bridge.deposit_nonce > bridge.bridged_deposit_nonce,
@@ -851,7 +849,7 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     );
     let (_, historical) = state
         .ethereum
-        .bridge_state("bridge", Some(bridge.bridged_deposit_nonce), None)
+        .bridge_state(Some(bridge.bridged_deposit_nonce), None)
         .await?;
     let historical = historical.context("missing bridged deposit checkpoint")?;
     let settlement = state.ethereum.settlement_state().await?;
@@ -934,7 +932,6 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .context("indexed ERC20 asset id is invalid")?;
             anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
             match action_encoding_version {
-                1 => (asset_id, 0, B256::ZERO, u64::try_from(zeko_amount)?),
                 2 => {
                     let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
                     let record_commitment = row
@@ -994,7 +991,6 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .expect("Ethereum address length"),
             deposit_nonce: bridge.bridged_deposit_nonce,
             deposit_state: historical.0,
-            withdraw_state: bridge.current_withdraw_state.0,
         },
         zeko: ZekoBridgeState {
             action_state: settlement.action_state.0,
@@ -1185,10 +1181,10 @@ fn decode_action_identity(
 ) -> Result<ActionIdentity> {
     let encoding_version = u32::try_from(encoding_version)?;
     let (registry_index, record_commitment) = match encoding_version {
-        0 | 1 => {
+        0 => {
             anyhow::ensure!(
                 registry_index.is_none() && record_commitment.is_none(),
-                "legacy action has registry identity"
+                "native action has registry identity"
             );
             (None, None)
         }
@@ -1645,20 +1641,6 @@ fn withdrawal_progress(
     } else {
         ("claimable", claim_action)
     }
-}
-
-async fn create_withdraw(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<WithdrawTransitionInput>,
-) -> Response {
-    create_job(
-        &state,
-        &headers,
-        "withdraw",
-        serde_json::to_value(input).unwrap(),
-    )
-    .await
 }
 
 async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Value) -> Response {
@@ -2517,7 +2499,6 @@ async fn validate_preflight(
             let (chain, historical) = state
                 .ethereum
                 .bridge_state(
-                    "bridge",
                     Some(values.ethereum_nonce_before),
                     Some(values.zeko_action_state_after.into()),
                 )
@@ -2572,56 +2553,6 @@ async fn validate_preflight(
                 values.actions.last().map(|action| action.state_after)
                     == Some(values.zeko_action_state_after),
                 "bridge final action-state checkpoint mismatch"
-            );
-        }
-        prover::Preflight::Withdraw { values, .. } => {
-            let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
-            let chain_id = state.ethereum.chain_id().await?;
-            anyhow::ensure!(input.ethereum.chain_id == chain_id, "chain id mismatch");
-            anyhow::ensure!(
-                input.ethereum.bridge_address.as_slice()
-                    == state.ethereum.bridge_address().as_slice(),
-                "bridge address mismatch"
-            );
-            let (chain, _) = state
-                .ethereum
-                .bridge_state(
-                    "withdraw",
-                    None,
-                    Some(values.zeko_action_state_after.into()),
-                )
-                .await?;
-            anyhow::ensure!(!chain.paused, "bridge contract is paused");
-            anyhow::ensure!(
-                chain.action_state_processed == Some(false),
-                "withdraw action state already processed"
-            );
-            ensure_hex_eq(
-                &local_vkey,
-                &chain.program_vkey.to_string(),
-                "withdraw program vkey",
-            )?;
-            ensure_bytes_eq(
-                values.ethereum_withdraw_state_before,
-                chain.current_withdraw_state,
-                "current withdraw state",
-            )?;
-            let old_info = state
-                .ethereum
-                .l2_action_state_info(values.zeko_action_state_before.into())
-                .await?;
-            let new_info = state
-                .ethereum
-                .l2_action_state_info(values.zeko_action_state_after.into())
-                .await?;
-            anyhow::ensure!(
-                old_info.1 && new_info.1,
-                "withdraw action state is not settled"
-            );
-            anyhow::ensure!(
-                old_info.0 == chain.current_withdraw_action_state_index
-                    && new_info.0 == old_info.0 + 1,
-                "invalid withdraw action state transition"
             );
         }
     }
@@ -2906,12 +2837,12 @@ mod tests {
     }
 
     #[test]
-    fn action_identity_serializes_legacy_and_registry_response_fields() {
-        let legacy = decode_action_identity(1, None, None).unwrap();
+    fn action_identity_serializes_native_and_registry_response_fields() {
+        let native = decode_action_identity(0, None, None).unwrap();
         assert_eq!(
-            serde_json::to_value(legacy).unwrap(),
+            serde_json::to_value(native).unwrap(),
             serde_json::json!({
-                "encodingVersion": 1,
+                "encodingVersion": 0,
                 "registryIndex": null,
                 "recordCommitment": null
             })
@@ -2928,7 +2859,8 @@ mod tests {
             })
         );
 
-        assert!(decode_action_identity(1, Some(7), None).is_err());
+        assert!(decode_action_identity(1, None, None).is_err());
+        assert!(decode_action_identity(0, Some(7), None).is_err());
         assert!(decode_action_identity(2, None, None).is_err());
     }
 

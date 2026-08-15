@@ -76,7 +76,10 @@ required_fixtures=(
   "$FIXTURE_ROOT/withdrawal/settlement.json"
 )
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  required_fixtures+=("$FIXTURE_ROOT/registration/settlement.json")
+  required_fixtures+=(
+    "$FIXTURE_ROOT/registration-0/settlement.json"
+    "$FIXTURE_ROOT/registration-1/settlement.json"
+  )
 fi
 for fixture in "${required_fixtures[@]}"; do
   [[ -f "$fixture" ]] || {
@@ -109,6 +112,7 @@ cleanup() {
   rm -f "${ACCOUNT_FILE:-}"
   rm -f "${SDK_OUTPUT:-}"
   rm -f "${ASSET_BATCH_OUTPUT:-}"
+  rm -f "${ASSET_SCENARIO_OUTPUT:-}"
   if [[ $status -ne 0 ]]; then
     echo "Gateway log: $LOG_FILE" >&2
     echo "Anvil log: $ANVIL_LOG" >&2
@@ -170,7 +174,7 @@ mkdir -p "$DEPLOY_DIR"
 initial_fixture_dir="$FIXTURE_ROOT/deposit-sync"
 initial_action_state_field=outerActionStateBeforeDeposit
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  initial_fixture_dir="$FIXTURE_ROOT/registration"
+  initial_fixture_dir="$FIXTURE_ROOT/registration-0"
   initial_action_state_field=outerActionStateBeforeRegistration
 fi
 "$ROOT/tools/prepare-poc.sh" "$RPC_URL" "$ADMIN_ADDRESS" \
@@ -464,34 +468,38 @@ submit_settlement() {
 }
 
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  submit_settlement "$FIXTURE_ROOT/registration/settlement.json"
-  registration_sequence=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
-    'batchSequence()(uint64)' --rpc-url "$RPC_URL" | awk '{print $1}')
-  [[ $registration_sequence == 1 ]]
-
   ASSET_BATCH_OUTPUT=$(mktemp)
-  (
-    cd "$ZEKO_UI_ROOT"
-    "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:asset-record-batch -- \
-      "$FIXTURE_ROOT/bridge-scenario.json" "$ASSET_BATCH_OUTPUT"
-  ) >/dev/null
-  [[ $(jq 'length' "$ASSET_BATCH_OUTPUT") == 2 ]]
-  batch_root=$(jq -r '.[0].root | ascii_downcase' "$ASSET_BATCH_OUTPUT")
-  [[ $(jq -r '.[1].root | ascii_downcase' "$ASSET_BATCH_OUTPUT") == \
-    "$batch_root" ]]
-  settled_batch_root=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
-    'assetRegistryRecordBatch(uint64)(bytes32,uint32,uint32,bytes32,uint32,bool)' \
-    "$registration_sequence" --rpc-url "$RPC_URL" | sed -n '4p' \
-    | tr '[:upper:]' '[:lower:]')
-  [[ $settled_batch_root == "$batch_root" ]]
+  ASSET_SCENARIO_OUTPUT=$(mktemp)
+  asset_record_commitments=()
 
   for index in 0 1; do
+    submit_settlement "$FIXTURE_ROOT/registration-$index/settlement.json"
+    registration_sequence=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
+      'batchSequence()(uint64)' --rpc-url "$RPC_URL" | awk '{print $1}')
+    [[ $registration_sequence == $((index + 1)) ]]
+
+    jq --argjson index "$index" \
+      '.ethereumAssets = [.ethereumAssets[$index]]' \
+      "$FIXTURE_ROOT/bridge-scenario.json" >"$ASSET_SCENARIO_OUTPUT"
+    (
+      cd "$ZEKO_UI_ROOT"
+      "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:asset-record-batch -- \
+        "$ASSET_SCENARIO_OUTPUT" "$ASSET_BATCH_OUTPUT"
+    ) >/dev/null
+    [[ $(jq 'length' "$ASSET_BATCH_OUTPUT") == 1 ]]
+    batch_root=$(jq -r '.[0].root | ascii_downcase' "$ASSET_BATCH_OUTPUT")
+    settled_batch_root=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
+      'assetRegistryRecordBatch(uint64)(bytes32,uint32,uint32,bytes32,uint32,bool)' \
+      "$registration_sequence" --rpc-url "$RPC_URL" | sed -n '4p' \
+      | tr '[:upper:]' '[:lower:]')
+    [[ $settled_batch_root == "$batch_root" ]]
+
     address_var=ERC20_TOKEN_${index}_ADDRESS
-    record_commitment=$(jq -er --argjson index "$index" \
-      '.[ $index ].recordCommitment' "$ASSET_BATCH_OUTPUT")
+    record_commitment=$(jq -er '.[0].recordCommitment' "$ASSET_BATCH_OUTPUT")
     [[ $record_commitment =~ ^0x[0-9a-fA-F]{64}$ ]]
-    proof=$(jq -r --argjson index "$index" \
-      '.[ $index ].proof | "[" + join(",") + "]"' "$ASSET_BATCH_OUTPUT")
+    asset_record_commitments[index]=$record_commitment
+    proof=$(jq -r '.[0].proof | "[" + join(",") + "]"' \
+      "$ASSET_BATCH_OUTPUT")
     "$CAST" send "$BRIDGE_CONTRACT_ADDRESS" \
       'activateAssetFromBatch(address,uint64,bytes32,bytes32[8])' \
       "${!address_var}" "$registration_sequence" "$record_commitment" "$proof" \
@@ -554,8 +562,7 @@ for index in "${!deposit_nonces[@]}"; do
     expected_registry_index=$(jq -er --argjson index "$index" \
       '.ethereumAssets[$index].record.registryIndex' \
       "$FIXTURE_ROOT/bridge-scenario.json")
-    expected_record_commitment=$(jq -er --argjson index "$index" \
-      '.[ $index ].recordCommitment | ascii_downcase' "$ASSET_BATCH_OUTPUT")
+    expected_record_commitment=${asset_record_commitments[index],,}
     [[ $(jq -r '.encodingVersion' <<<"$deposit") == 2 ]]
     [[ $(jq -r '.registryIndex' <<<"$deposit") == \
       "$expected_registry_index" ]]
@@ -633,8 +640,7 @@ else
     expected_registry_index=$(jq -er --argjson index "$index" \
       '.ethereumAssets[$index].record.registryIndex' \
       "$FIXTURE_ROOT/bridge-scenario.json")
-    expected_record_commitment=$(jq -er --argjson index "$index" \
-      '.[ $index ].recordCommitment | ascii_downcase' "$ASSET_BATCH_OUTPUT")
+    expected_record_commitment=${asset_record_commitments[index],,}
     [[ $(jq -r '.encodingVersion' <<<"$withdrawal") == 2 ]]
     [[ $(jq -r '.registryIndex' <<<"$withdrawal") == \
       "$expected_registry_index" ]]
@@ -744,12 +750,12 @@ jq -n --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
     tokens:$tokens,assetIds:$assetIds,
     actionsWitnessIndexed:true,
     withdrawalRecipient:$recipient,
-    registrationSettlements:(if $bridgeAsset == "erc20" then 1 else 0 end),
+    registrationSettlements:(if $bridgeAsset == "erc20" then 2 else 0 end),
     bridgeSettlements:2,
-    ocamlCommits:(if $bridgeAsset == "erc20" then 3 else 2 end),
+    ocamlCommits:(if $bridgeAsset == "erc20" then 4 else 2 end),
     sp1ProofsGenerated:0}'
 if [[ $BRIDGE_ASSET == erc20 ]]; then
-  echo "Two pending ERC20s -> registry settlement -> activation -> two deposits -> two bridge settlements -> two token claims passed."
+  echo "Two pending ERC20s -> two registry settlements -> activation -> two deposits -> two bridge settlements -> two token claims passed."
 else
   echo "ETH deposit -> bridge execute -> two real OCaml settlements -> Merkle withdrawal claim passed."
 fi

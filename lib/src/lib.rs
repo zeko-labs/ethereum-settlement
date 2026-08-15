@@ -118,13 +118,11 @@ pub const SETTLEMENT_PUBLIC_VALUES_V1_LENGTH: usize = 768;
 pub const SETTLEMENT_PUBLIC_VALUES_V2_LENGTH: usize = 828;
 pub const SETTLEMENT_PUBLIC_VALUES_V3_LENGTH: usize = 932;
 pub const SETTLEMENT_PUBLIC_VALUES_V4_LENGTH: usize = 904;
-pub const ERC20_ACTION_ENCODING_V1: u32 = 1;
 pub const ERC20_ACTION_ENCODING_V2: u32 = 2;
 
 pub mod inner_action_commitment {
     use super::{
-        Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V1,
-        ERC20_ACTION_ENCODING_V2,
+        Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3, ERC20_ACTION_ENCODING_V2,
     };
     use alloy_primitives::keccak256;
 
@@ -133,7 +131,6 @@ pub mod inner_action_commitment {
 
     const ACTION_FIELDS_DOMAIN: &str = "ZEKO_INNER_ACTION_FIELDS_V2";
     const NATIVE_WITHDRAWAL_LEAF_DOMAIN: &str = "ZEKO_NATIVE_WITHDRAWAL_LEAF_V2";
-    const ERC20_WITHDRAWAL_LEAF_V1_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V3";
     const ERC20_WITHDRAWAL_LEAF_V2_DOMAIN: &str = "ZEKO_ERC20_WITHDRAWAL_LEAF_V4";
     const RAW_INNER_ACTION_LEAF_DOMAIN: &str = "ZEKO_RAW_INNER_ACTION_LEAF_V2";
     const INNER_ACTION_NODE_DOMAIN: &str = "ZEKO_INNER_ACTION_NODE_V2";
@@ -176,21 +173,18 @@ pub mod inner_action_commitment {
         action_fields_hash: Bytes32,
     ) -> Bytes32 {
         let mut encoded = Vec::with_capacity(32 * 12);
-        let domain = match withdrawal.encoding_version {
-            ERC20_ACTION_ENCODING_V1 => ERC20_WITHDRAWAL_LEAF_V1_DOMAIN,
-            ERC20_ACTION_ENCODING_V2 => ERC20_WITHDRAWAL_LEAF_V2_DOMAIN,
-            version => panic!("unsupported ERC20 withdrawal encoding version {version}"),
-        };
-        encoded.extend_from_slice(&keccak256(domain.as_bytes()).0);
+        assert_eq!(
+            withdrawal.encoding_version, ERC20_ACTION_ENCODING_V2,
+            "unsupported ERC20 withdrawal encoding version"
+        );
+        encoded.extend_from_slice(&keccak256(ERC20_WITHDRAWAL_LEAF_V2_DOMAIN.as_bytes()).0);
         encoded.extend_from_slice(&u64_word(chain_id));
         encoded.extend_from_slice(&address_word(bridge_address));
         encoded.extend_from_slice(&u32_word(global_index));
         encoded.extend_from_slice(&address_word(withdrawal.token));
-        if withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2 {
-            encoded.extend_from_slice(&u32_word(withdrawal.encoding_version));
-            encoded.extend_from_slice(&u32_word(withdrawal.registry_index));
-            encoded.extend_from_slice(&withdrawal.record_commitment);
-        }
+        encoded.extend_from_slice(&u32_word(withdrawal.encoding_version));
+        encoded.extend_from_slice(&u32_word(withdrawal.registry_index));
+        encoded.extend_from_slice(&withdrawal.record_commitment);
         encoded.extend_from_slice(&withdrawal.asset_id);
         encoded.extend_from_slice(&address_word(withdrawal.recipient));
         encoded.extend_from_slice(&u64_word(withdrawal.amount));
@@ -491,9 +485,8 @@ pub struct NativeWithdrawalV2 {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenWithdrawalV3 {
-    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
-    /// universal-registry withdrawals must use V2.
-    #[serde(default = "default_erc20_action_encoding")]
+    /// Explicit universal-registry action encoding.
+    #[serde(default = "default_erc20_withdrawal_encoding")]
     pub encoding_version: u32,
     #[serde(default)]
     pub registry_index: u32,
@@ -1045,9 +1038,9 @@ pub struct BridgeDeposit {
     /// Canonical registry identity. Native ETH uses zero for compatibility.
     #[serde(default, with = "serde_bytes32")]
     pub asset_id: Bytes32,
-    /// Explicit action encoding. Retained one-token fixtures deserialize as V1;
-    /// universal-registry deposits must use V2.
-    #[serde(default = "default_erc20_action_encoding")]
+    /// Explicit action encoding. Native deposits use zero and
+    /// universal-registry deposits use V2.
+    #[serde(default = "default_bridge_action_encoding")]
     pub encoding_version: u32,
     #[serde(default)]
     pub registry_index: u32,
@@ -1072,21 +1065,12 @@ fn default_bridge_timeout() -> u64 {
     u32::MAX as u64
 }
 
-fn default_erc20_action_encoding() -> u32 {
-    ERC20_ACTION_ENCODING_V1
+fn default_bridge_action_encoding() -> u32 {
+    0
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BridgeWithdraw {
-    #[serde(with = "serde_bytes32")]
-    pub token: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub recipient: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub amount: Bytes32,
-    /// Digest of the zkapp call forest attached to this withdrawal action (fields[2]).
-    #[serde(with = "serde_bytes32")]
-    pub children_digest: Bytes32,
+fn default_erc20_withdrawal_encoding() -> u32 {
+    ERC20_ACTION_ENCODING_V2
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1097,8 +1081,6 @@ pub struct EthereumBridgeState {
     pub deposit_nonce: u64,
     #[serde(with = "serde_bytes32")]
     pub deposit_state: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub withdraw_state: Bytes32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -1245,28 +1227,6 @@ impl BridgeTransitionPublicValuesV2 {
     pub fn deposit_count(&self) -> u32 {
         self.actions.len() as u32
     }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct WithdrawTransitionInput {
-    pub ethereum: EthereumBridgeState,
-    pub zeko: ZekoBridgeState,
-    pub withdraws: Vec<BridgeWithdraw>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct WithdrawTransitionPublicValues {
-    #[serde(with = "serde_bytes32")]
-    pub zeko_action_state_before: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub zeko_action_state_after: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub ethereum_withdraw_state_before: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub ethereum_withdraw_state_after: Bytes32,
-    #[serde(with = "serde_bytes32")]
-    pub withdrawal_root: Bytes32,
-    pub withdraw_count: u32,
 }
 
 mod serde_address {
@@ -1793,48 +1753,39 @@ mod tests {
             alloy_primitives::keccak256(expected_native).0
         );
 
-        for encoding_version in [ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2] {
-            let withdrawal = TokenWithdrawalV3 {
-                encoding_version,
-                registry_index: 9,
-                record_commitment: [0x41; 32],
-                token: [0x42; 20],
-                asset_id: [0x43; 32],
-                recipient: [0x44; 20],
-                amount: 11,
-                params_fields: Vec::new(),
-            };
-            let domain = if encoding_version == ERC20_ACTION_ENCODING_V1 {
-                "ZEKO_ERC20_WITHDRAWAL_LEAF_V3"
-            } else {
-                "ZEKO_ERC20_WITHDRAWAL_LEAF_V4"
-            };
-            let mut expected = Vec::new();
-            expected.extend_from_slice(&alloy_primitives::keccak256(domain).0);
-            expected.extend_from_slice(&u64_word(chain_id));
-            expected.extend_from_slice(&address_word(bridge));
-            expected.extend_from_slice(&u32_word(global_index));
-            expected.extend_from_slice(&address_word(withdrawal.token));
-            if encoding_version == ERC20_ACTION_ENCODING_V2 {
-                expected.extend_from_slice(&u32_word(encoding_version));
-                expected.extend_from_slice(&u32_word(withdrawal.registry_index));
-                expected.extend_from_slice(&withdrawal.record_commitment);
-            }
-            expected.extend_from_slice(&withdrawal.asset_id);
-            expected.extend_from_slice(&address_word(withdrawal.recipient));
-            expected.extend_from_slice(&u64_word(withdrawal.amount));
-            expected.extend_from_slice(&action_fields_hash);
-            assert_eq!(
-                inner_action_commitment::erc20_withdrawal_leaf(
-                    chain_id,
-                    bridge,
-                    global_index,
-                    &withdrawal,
-                    action_fields_hash,
-                ),
-                alloy_primitives::keccak256(expected).0
-            );
-        }
+        let withdrawal = TokenWithdrawalV3 {
+            encoding_version: ERC20_ACTION_ENCODING_V2,
+            registry_index: 9,
+            record_commitment: [0x41; 32],
+            token: [0x42; 20],
+            asset_id: [0x43; 32],
+            recipient: [0x44; 20],
+            amount: 11,
+            params_fields: Vec::new(),
+        };
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&alloy_primitives::keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V4").0);
+        expected.extend_from_slice(&u64_word(chain_id));
+        expected.extend_from_slice(&address_word(bridge));
+        expected.extend_from_slice(&u32_word(global_index));
+        expected.extend_from_slice(&address_word(withdrawal.token));
+        expected.extend_from_slice(&u32_word(withdrawal.encoding_version));
+        expected.extend_from_slice(&u32_word(withdrawal.registry_index));
+        expected.extend_from_slice(&withdrawal.record_commitment);
+        expected.extend_from_slice(&withdrawal.asset_id);
+        expected.extend_from_slice(&address_word(withdrawal.recipient));
+        expected.extend_from_slice(&u64_word(withdrawal.amount));
+        expected.extend_from_slice(&action_fields_hash);
+        assert_eq!(
+            inner_action_commitment::erc20_withdrawal_leaf(
+                chain_id,
+                bridge,
+                global_index,
+                &withdrawal,
+                action_fields_hash,
+            ),
+            alloy_primitives::keccak256(expected).0
+        );
 
         let mut expected_raw = Vec::new();
         expected_raw
@@ -1851,6 +1802,28 @@ mod tests {
                 action_fields_hash,
             ),
             alloy_primitives::keccak256(expected_raw).0
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "unsupported ERC20 withdrawal encoding version")]
+    fn legacy_erc20_withdrawal_leaf_is_rejected() {
+        let withdrawal = TokenWithdrawalV3 {
+            encoding_version: 1,
+            registry_index: 0,
+            record_commitment: [0u8; 32],
+            token: [0x42; 20],
+            asset_id: [0x43; 32],
+            recipient: [0x44; 20],
+            amount: 11,
+            params_fields: Vec::new(),
+        };
+        inner_action_commitment::erc20_withdrawal_leaf(
+            31_337,
+            [0x11; 20],
+            5,
+            &withdrawal,
+            [0x21; 32],
         );
     }
 

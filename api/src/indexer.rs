@@ -593,15 +593,14 @@ async fn index_explorer_events(
         sqlx::query(
             "INSERT INTO gateway_explorer_bridge_transitions
                 (old_action_state, new_action_state, new_deposit_state,
-                 new_withdraw_state, new_deposit_nonce,
+                 new_deposit_nonce,
                  ethereum_block_number, ethereum_block_hash,
                  ethereum_tx_hash, ethereum_log_index, removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
              ON CONFLICT (ethereum_tx_hash, ethereum_log_index) DO UPDATE SET
                  old_action_state = EXCLUDED.old_action_state,
                  new_action_state = EXCLUDED.new_action_state,
                  new_deposit_state = EXCLUDED.new_deposit_state,
-                 new_withdraw_state = EXCLUDED.new_withdraw_state,
                  new_deposit_nonce = EXCLUDED.new_deposit_nonce,
                  ethereum_block_number = EXCLUDED.ethereum_block_number,
                  ethereum_block_hash = EXCLUDED.ethereum_block_hash,
@@ -611,7 +610,6 @@ async fn index_explorer_events(
         .bind(transition.old_action_state.to_string())
         .bind(transition.new_action_state.to_string())
         .bind(transition.new_deposit_state.to_string())
-        .bind(transition.new_withdraw_state.to_string())
         .bind(i64::try_from(transition.new_deposit_nonce)?)
         .bind(i64::try_from(transition.block_number)?)
         .bind(transition.block_hash.to_string())
@@ -852,7 +850,6 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                     block_number,
                     &block_hash,
                     &transaction_hash,
-                    config.fee_payer_public_key.as_deref(),
                 )
                 .await?;
             }
@@ -1032,7 +1029,6 @@ async fn reconcile_jobs(
                 receipt.block_number,
                 &receipt.block_hash.to_string(),
                 &transaction_hash,
-                config.fee_payer_public_key.as_deref(),
             )
             .await?;
         }
@@ -1192,7 +1188,6 @@ pub(crate) async fn apply_confirmed_bridge(
     block_number: u64,
     block_hash: &str,
     transaction_hash: &str,
-    fee_payer_public_key: Option<&str>,
 ) -> Result<()> {
     let bytes = hex::decode(
         public_values_hex
@@ -1279,19 +1274,6 @@ pub(crate) async fn apply_confirmed_bridge(
         block_hash,
     )
     .await?;
-    if let Some(fee_payer_public_key) = fee_payer_public_key {
-        advance_fee_payer(
-            &mut tx,
-            job_id,
-            fee_payer_public_key,
-            None,
-            u64::try_from(decoded.actions.len())?,
-            block_number,
-            block_hash,
-        )
-        .await?;
-    }
-
     let mut state_before = decoded.zeko_action_state_before;
     for (offset, action) in decoded.actions.iter().enumerate() {
         let sequence = decoded
@@ -1812,8 +1794,8 @@ mod tests {
     }
 
     #[test]
-    fn bridge_actions_advance_the_virtual_fee_payer_nonce() {
-        assert_eq!(fee_payer_nonce_after(2, 2).unwrap(), 4);
+    fn settlement_advances_the_virtual_fee_payer_nonce() {
+        assert_eq!(fee_payer_nonce_after(2, 1).unwrap(), 3);
         assert!(fee_payer_nonce_after(u64::MAX, 1).is_err());
     }
 }
