@@ -101,7 +101,7 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 
 The generated `build/poc/manifest.json` is the canonical public identity for a
 run: chain ID, deterministic proxy/implementation/registry-module addresses,
-all three SP1 vkeys, the PoC Pickles VK hash, and the exact 160-bit holder value
+both SP1 vkeys, the PoC Pickles VK hash, and the exact 160-bit holder value
 compiled by OCaml. Review it before deployment and retain a copy with the
 testnet run artifacts.
 
@@ -271,8 +271,8 @@ ETH, executes the bridge guest, executes both OCaml-produced settlements,
 checks the synchronized deposit, moves Anvil to each proof's lower slot and
 then through the withdrawal delay, obtains the public depth-16 Merkle path from
 the gateway, and claims the 5 ETH withdrawal. Empty proof bytes are accepted
-only by the marked chain-31337 `LocalSP1Verifier`; all three guests execute and
-validate their public values first.
+only by the marked chain-31337 `LocalSP1Verifier`; both guests execute and
+validate their public values first, with the settlement guest executed twice.
 
 The 2026-07-14 native round-trip checkpoint used the real two-commit OCaml
 export at DA quorum 2 of 3. The bridge guest executed in 3,433,016 cycles and

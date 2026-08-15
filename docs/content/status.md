@@ -168,7 +168,7 @@ distinct two-commit OCaml checkpoint is rerun.
 3. For the proof-verified profile, obtain a network-simulation PGU value for
    each genuine job, review the capped quote, and explicitly approve the three
    paid proofs used by the demo. For the disposable mock profile, verify both
-   unsafe acknowledgements and all three `LocalSP1Verifier` references instead.
+   unsafe acknowledgements and both `LocalSP1Verifier` references instead.
 4. Complete one browser-driven Sepolia round trip and archive transaction,
    confirmation, DA, and balance/liability evidence, plus proof-request and
    cost evidence when using the proof-verified profile.
@@ -188,6 +188,6 @@ approval-gated external operations.
   verifier-index JSON bytes.
 - Production governance, timelocks, and permissionless proof submission.
 
-The old arbitrary-timeout/ERC20 deposit path and separate withdrawal guest are
-retained for compatibility tests but are disabled by default. They are not the
-canonical bridge paths described in these docs.
+The old arbitrary-timeout/ERC20 deposit path and separate withdrawal guest have
+been removed. Registry-bound deposits and settlement-bound Merkle claims are the
+only supported bridge paths.
