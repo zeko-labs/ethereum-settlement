@@ -935,7 +935,7 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .parse::<B256>()
                 .context("indexed ERC20 asset id is invalid")?;
             anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
-            ensure_batchable_erc20_action_encoding(action_encoding_version)?;
+            ensure_registry_erc20_action_encoding(action_encoding_version)?;
             let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
             let record_commitment = row
                 .try_get::<String, _>("record_commitment")?
@@ -998,10 +998,10 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     })
 }
 
-fn ensure_batchable_erc20_action_encoding(version: u32) -> Result<()> {
+fn ensure_registry_erc20_action_encoding(version: u32) -> Result<()> {
     anyhow::ensure!(
         version == ERC20_ACTION_ENCODING_V2,
-        "unsupported indexed ERC20 action encoding version {version}"
+        "unsupported registry ERC20 action encoding version {version}"
     );
     Ok(())
 }
@@ -1490,10 +1490,7 @@ async fn load_token_withdrawal_proof(
         target.registry_index,
         target.record_commitment.clone(),
     )?;
-    anyhow::ensure!(
-        action_identity.encoding_version != 0,
-        "ERC20 withdrawal uses the native action encoding"
-    );
+    ensure_registry_erc20_action_encoding(action_identity.encoding_version)?;
     let recipient: String = target
         .recipient
         .clone()
@@ -2889,12 +2886,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_batches_reject_historical_erc20_encodings() {
-        assert!(ensure_batchable_erc20_action_encoding(ERC20_ACTION_ENCODING_V2).is_ok());
+    fn active_erc20_paths_reject_historical_encodings() {
+        assert!(ensure_registry_erc20_action_encoding(ERC20_ACTION_ENCODING_V2).is_ok());
         assert!(
-            ensure_batchable_erc20_action_encoding(HISTORICAL_ERC20_ACTION_ENCODING_V1).is_err()
+            ensure_registry_erc20_action_encoding(HISTORICAL_ERC20_ACTION_ENCODING_V1).is_err()
         );
-        assert!(ensure_batchable_erc20_action_encoding(0).is_err());
+        assert!(ensure_registry_erc20_action_encoding(0).is_err());
     }
 
     #[test]
