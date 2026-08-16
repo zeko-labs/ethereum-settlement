@@ -297,9 +297,8 @@ Implemented for the current PoC:
   that outer checkpoint before the deposit is final in rollup state.
 - The gateway derives bridge input only from contiguous canonical finalized
   `BridgeDeposit` logs and mirrors the proven actions into the Mina GraphQL view.
-- Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout. The
-  arbitrary-timeout/ERC20 compatibility entry points are disabled by default,
-  while canonical registry assets use `submitDeposit`.
+- Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout;
+  canonical registry assets use `submitDeposit`.
 - Rust and OCaml cross-language vectors assert the same three deposit aux
   values.
 

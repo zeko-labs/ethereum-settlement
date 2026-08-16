@@ -37,7 +37,7 @@ environment file.
 | `BRIDGE_AUTO_PROVE_POLL_SECS` | Automatic batch scan interval; reference value 5. |
 | `API_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins, or `*` for isolated local development. |
 
-`ETHEREUM_PRIVATE_KEY` is a development fallback for the three per-kind keys.
+`ETHEREUM_PRIVATE_KEY` is a development fallback for both per-kind keys.
 Use credential files and the explicit variables in a persistent deployment.
 
 ## Virtual Mina view

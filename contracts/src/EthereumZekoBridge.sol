@@ -183,7 +183,9 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     IZekoSettlementVerifier public settlementVerifier;
     ISP1Verifier public bridgeVerifier;
     bytes32 public bridgeProgramVKey;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     ISP1Verifier private withdrawVerifier;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     bytes32 private withdrawProgramVKey;
 
     /// @dev Deprecated storage retained for UUPS layout compatibility.
@@ -194,7 +196,9 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     mapping(address => uint32) public nextWithdrawalIndex;
     uint32 public withdrawalDelaySlots;
     uint256 public nativeEscrowLiability;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     bool private legacyWithdrawEnabled;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
     bool private legacyDepositEnabled;
 
     // Canonical ERC-20 bridge storage. Appended for UUPS layout compatibility.

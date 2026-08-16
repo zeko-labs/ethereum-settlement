@@ -78,7 +78,8 @@ Deposit and ERC-20 withdrawal responses expose `encodingVersion`,
 `registryIndex`, and `recordCommitment`. Native deposits use version `0`,
 with null registry fields. Universal registry actions use version `2` and carry
 the exact index and canonical Mina Poseidon record commitment persisted from
-their accepted events.
+their accepted events. Historical one-token ERC-20 deposits remain readable as
+version `1` with null registry fields, but cannot enter a new bridge proof batch.
 
 ### Public explorer routes
 
