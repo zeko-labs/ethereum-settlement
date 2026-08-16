@@ -112,10 +112,10 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
 
 The universal registry runtime path is also implemented:
 
-- The sequencer accepts one registry account, schema version, approved MFT
-  standard VK ID, shared vault public key, and universal bridge VK ID. Asset
-  records and depth-8 membership witnesses are dynamic circuit inputs. The
-  current schema supports 256 records with at most nine decimals; adding a
+- The sequencer accepts one universal registry configuration; its complete
+  identity inputs are owned by the [configuration reference](/reference/configuration#sequencer).
+  Asset records and depth-8 membership witnesses are dynamic circuit inputs.
+  The current schema supports 256 records with at most nine decimals; adding a
   token does not compile another circuit or VK.
 - Registration is an append-only Poseidon Merkle-list transition. Its recursive
   scan proves dense ordered traversal of every existing leaf and rejects

@@ -31,7 +31,9 @@ The user calls the canonical `depositETH(zekoRecipient)` overload. The bridge:
 - emits `BridgeDeposit`
 
 The overload with a caller-selected timeout and the old arbitrary-token path
-have been removed. Canonically registered ERC-20 assets use `submitDeposit`.
+have been removed. Native ETH has no per-asset disable switch and remains
+available whenever the bridge is unpaused. Canonically registered ERC-20
+assets use `submitDeposit`.
 
 ## Canonical ERC-20 deposit
 

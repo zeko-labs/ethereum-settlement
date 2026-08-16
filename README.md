@@ -61,8 +61,8 @@ other branches create preview deployments.
 | `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
 | `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
-| `proofs/bridge-input.json` | Example bridge input fixture. |
-| `proofs/bridge-input-200.json` | Bridge input fixture with 200 deposits. |
+| `proofs/bridge-input.json` | Synthetic bridge-guest input fixture. |
+| `proofs/bridge-input-200.json` | Synthetic bridge-guest input fixture with 200 deposits. |
 
 ## Contracts, Proxies And Roles
 

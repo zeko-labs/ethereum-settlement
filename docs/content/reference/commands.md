@@ -52,11 +52,11 @@ tools/run-local-erc20-bridge-roundtrip.sh
 ```
 
 This command creates two deterministic ERC-20 identities under one universal
-registry configuration, settles and activates their ordered record batch,
-deploys two unmodified Mina FungibleToken owner/admin pairs with a shared
-proof-authorized vault, and replays both deposits and withdrawals through Anvil
-custody. It uses the chain-ID-31337 mock verifier and does not request or
-generate an SP1 proof.
+registry configuration, derives the standard and universal VK hashes, settles
+and activates each record in its own registration settlement, deploys two
+unmodified Mina FungibleToken owner/admin pairs with a shared proof-authorized
+vault, and replays both deposits and withdrawals through Anvil custody. It uses
+the chain-ID-31337 mock verifier and does not request or generate an SP1 proof.
 
 Run the standalone browser app:
 
