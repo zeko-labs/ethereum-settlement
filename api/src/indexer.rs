@@ -480,10 +480,22 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
-        let asset_id = deposit.asset_id.map(|value| value.to_string());
-        let action_encoding_version = i32::try_from(deposit.action_encoding_version)?;
-        let registry_index = deposit.registry_index.map(i64::from);
-        let record_commitment = deposit.record_commitment.map(|value| value.to_string());
+        let asset_id = deposit
+            .erc20_identity
+            .map(|identity| identity.asset_id().to_string());
+        let action_encoding_version = i32::try_from(
+            deposit
+                .erc20_identity
+                .map_or(0, |identity| identity.action_encoding_version()),
+        )?;
+        let registry_index = deposit
+            .erc20_identity
+            .and_then(|identity| identity.registry_index())
+            .map(i64::from);
+        let record_commitment = deposit
+            .erc20_identity
+            .and_then(|identity| identity.record_commitment())
+            .map(|value| value.to_string());
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
