@@ -307,7 +307,9 @@ BRIDGE_ASSET="$BRIDGE_ASSET" POC_REUSE_OCAML_EXPORT=true \
 
 jq -n --slurpfile sdk "$LIVE_DIR/operations-complete" \
   --arg fixtures "$OUTPUT_DIR" \
-  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,registrationSettlements:2,
+  --arg bridgeAsset "$BRIDGE_ASSET" \
+  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,
+    registrationSettlements:(if $bridgeAsset == "erc20" then 2 else 0 end),
     bridgeSettlements:2,
     liveSequencerGraphql:true,actionsPreparationApi:true,sp1ProofsGenerated:0}'
 if [[ $BRIDGE_ASSET == erc20 ]]; then

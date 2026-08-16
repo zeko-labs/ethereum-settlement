@@ -949,6 +949,17 @@ contract EthereumZekoBridgeTest is Test {
         assertTrue(bridge.processedActionState(finalActionState));
     }
 
+    function test_DecodeBridgePublicValuesRejectsLegacyV1Receipt() public {
+        bytes memory legacyPublicValues = new bytes(148);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                EthereumZekoBridge.InvalidBridgePublicValuesLength.selector, uint256(164), uint256(148)
+            )
+        );
+        bridge.decodeBridgePublicValues(legacyPublicValues);
+    }
+
     function test_SubmitBridgeTransition_RevertsWhenNotProver() public {
         bytes32 oldActionState = keccak256("old deposit action state");
         bytes32 actionState = keccak256("deposit action state");
