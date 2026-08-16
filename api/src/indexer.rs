@@ -955,7 +955,8 @@ async fn reconcile_jobs(
         "SELECT id, kind::text AS kind, input, public_values, status::text AS status,
                 transaction_hash FROM proof_jobs
          WHERE transaction_hash IS NOT NULL
-           AND status IN ('submitted', 'confirmed')",
+           AND status IN ('submitted', 'confirmed')
+           AND kind::text IN ('settlement', 'bridge')",
     )
     .fetch_all(pool)
     .await?;
@@ -1798,5 +1799,16 @@ mod tests {
     fn settlement_advances_the_virtual_fee_payer_nonce() {
         assert_eq!(fee_payer_nonce_after(2, 1).unwrap(), 3);
         assert!(fee_payer_nonce_after(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn reconciliation_selects_only_supported_proof_kinds() {
+        let source = include_str!("indexer.rs");
+        let start = source.find("async fn reconcile_jobs").unwrap();
+        let end = source[start..]
+            .find("pub(crate) async fn apply_confirmed_settlement")
+            .map(|offset| start + offset)
+            .unwrap();
+        assert!(source[start..end].contains("kind::text IN ('settlement', 'bridge')"));
     }
 }

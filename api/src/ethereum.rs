@@ -18,6 +18,8 @@ use zeko_sp1_lib::ERC20_ACTION_ENCODING_V2;
 
 use crate::proof_kind::ProofKind;
 
+pub const HISTORICAL_ERC20_ACTION_ENCODING_V1: u32 = 1;
+
 sol! {
     #[sol(rpc)]
     interface IZekoSettlement {
@@ -222,6 +224,21 @@ struct ERC20DepositMetadata {
     timeout: u64,
     registry_index: Option<u32>,
     record_commitment: Option<B256>,
+}
+
+fn classify_erc20_deposit_identity(
+    registry_index: Option<u32>,
+    record_commitment: Option<B256>,
+) -> Result<(u32, Option<u32>, Option<B256>)> {
+    match (registry_index, record_commitment) {
+        (None, None) => Ok((HISTORICAL_ERC20_ACTION_ENCODING_V1, None, None)),
+        (Some(registry_index), Some(record_commitment)) => Ok((
+            ERC20_ACTION_ENCODING_V2,
+            Some(registry_index),
+            Some(record_commitment),
+        )),
+        _ => anyhow::bail!("ERC20 deposit has incomplete registry identity"),
+    }
 }
 
 fn bridge_deposit_filter(bridge_address: Address, from_block: u64, to_block: u64) -> Filter {
@@ -627,15 +644,16 @@ impl Ethereum {
                             && identity.timeout == data.timeout,
                         "BridgeDeposit and ERC20 identity events disagree"
                     );
-                    anyhow::ensure!(
-                        identity.registry_index.is_some() && identity.record_commitment.is_some(),
-                        "ERC20 deposit is missing its registry-bound identity event"
-                    );
+                    let (encoding_version, registry_index, record_commitment) =
+                        classify_erc20_deposit_identity(
+                            identity.registry_index,
+                            identity.record_commitment,
+                        )?;
                     (
                         Some(identity.asset_id),
-                        ERC20_ACTION_ENCODING_V2,
-                        identity.registry_index,
-                        identity.record_commitment,
+                        encoding_version,
+                        registry_index,
+                        record_commitment,
                     )
                 };
             deposits.push(BridgeDepositLog {
@@ -1108,6 +1126,21 @@ mod tests {
             .contains(&IEthereumZekoBridge::BridgeTransitionAccepted::SIGNATURE_HASH));
         assert!(filter.topics[0]
             .contains(&legacy_bridge_events::BridgeTransitionAccepted::SIGNATURE_HASH));
+    }
+
+    #[test]
+    fn historical_erc20_deposits_retain_their_action_encoding() {
+        assert_eq!(
+            classify_erc20_deposit_identity(None, None).unwrap(),
+            (HISTORICAL_ERC20_ACTION_ENCODING_V1, None, None)
+        );
+        let commitment = B256::repeat_byte(0x11);
+        assert_eq!(
+            classify_erc20_deposit_identity(Some(7), Some(commitment)).unwrap(),
+            (ERC20_ACTION_ENCODING_V2, Some(7), Some(commitment))
+        );
+        assert!(classify_erc20_deposit_identity(Some(7), None).is_err());
+        assert!(classify_erc20_deposit_identity(None, Some(commitment)).is_err());
     }
 
     #[test]

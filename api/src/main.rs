@@ -22,7 +22,7 @@ use tower_http::{
 use uuid::Uuid;
 use zeko_sp1_lib::{
     inner_action_commitment, BridgeDeposit, BridgeTransitionInput, EthereumBridgeState,
-    SettlementContextV1, SettlementPublicValues, ZekoBridgeState,
+    SettlementContextV1, SettlementPublicValues, ZekoBridgeState, ERC20_ACTION_ENCODING_V2,
 };
 use zkapp_script::SettlementProofBundle;
 
@@ -34,6 +34,7 @@ mod proof_kind;
 mod prover;
 mod withdrawal_activity;
 
+use ethereum::HISTORICAL_ERC20_ACTION_ENCODING_V1;
 use proof_kind::ProofKind;
 
 #[derive(Clone)]
@@ -934,28 +935,22 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .parse::<B256>()
                 .context("indexed ERC20 asset id is invalid")?;
             anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
-            match action_encoding_version {
-                2 => {
-                    let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
-                    let record_commitment = row
-                        .try_get::<String, _>("record_commitment")?
-                        .parse::<B256>()
-                        .context("indexed ERC20 record commitment is invalid")?;
-                    anyhow::ensure!(
-                        !record_commitment.is_zero(),
-                        "indexed ERC20 record commitment is zero"
-                    );
-                    (
-                        asset_id,
-                        registry_index,
-                        record_commitment,
-                        u64::try_from(zeko_amount)?,
-                    )
-                }
-                version => {
-                    anyhow::bail!("unsupported indexed ERC20 action encoding version {version}")
-                }
-            }
+            ensure_batchable_erc20_action_encoding(action_encoding_version)?;
+            let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
+            let record_commitment = row
+                .try_get::<String, _>("record_commitment")?
+                .parse::<B256>()
+                .context("indexed ERC20 record commitment is invalid")?;
+            anyhow::ensure!(
+                !record_commitment.is_zero(),
+                "indexed ERC20 record commitment is zero"
+            );
+            (
+                asset_id,
+                registry_index,
+                record_commitment,
+                u64::try_from(zeko_amount)?,
+            )
         };
         let recipient: alloy::primitives::B256 = row
             .try_get::<String, _>("zeko_recipient")?
@@ -1001,6 +996,14 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
         },
         deposits,
     })
+}
+
+fn ensure_batchable_erc20_action_encoding(version: u32) -> Result<()> {
+    anyhow::ensure!(
+        version == ERC20_ACTION_ENCODING_V2,
+        "unsupported indexed ERC20 action encoding version {version}"
+    );
+    Ok(())
 }
 
 async fn get_native_withdrawal_proof(
@@ -1184,14 +1187,14 @@ fn decode_action_identity(
 ) -> Result<ActionIdentity> {
     let encoding_version = u32::try_from(encoding_version)?;
     let (registry_index, record_commitment) = match encoding_version {
-        0 => {
+        0 | HISTORICAL_ERC20_ACTION_ENCODING_V1 => {
             anyhow::ensure!(
                 registry_index.is_none() && record_commitment.is_none(),
-                "native action has registry identity"
+                "unregistered action has registry identity"
             );
             (None, None)
         }
-        2 => {
+        ERC20_ACTION_ENCODING_V2 => {
             let registry_index =
                 u32::try_from(registry_index.context("registry action is missing its index")?)?;
             let record_commitment = record_commitment
@@ -2838,12 +2841,27 @@ mod tests {
     }
 
     #[test]
-    fn action_identity_serializes_native_and_registry_response_fields() {
+    fn action_identity_serializes_native_historical_and_registry_response_fields() {
         let native = decode_action_identity(0, None, None).unwrap();
         assert_eq!(
             serde_json::to_value(native).unwrap(),
             serde_json::json!({
                 "encodingVersion": 0,
+                "registryIndex": null,
+                "recordCommitment": null
+            })
+        );
+
+        let historical = decode_action_identity(
+            i32::try_from(HISTORICAL_ERC20_ACTION_ENCODING_V1).unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(historical).unwrap(),
+            serde_json::json!({
+                "encodingVersion": HISTORICAL_ERC20_ACTION_ENCODING_V1,
                 "registryIndex": null,
                 "recordCommitment": null
             })
@@ -2860,9 +2878,23 @@ mod tests {
             })
         );
 
-        assert!(decode_action_identity(1, None, None).is_err());
         assert!(decode_action_identity(0, Some(7), None).is_err());
+        assert!(decode_action_identity(
+            i32::try_from(HISTORICAL_ERC20_ACTION_ENCODING_V1).unwrap(),
+            Some(7),
+            None
+        )
+        .is_err());
         assert!(decode_action_identity(2, None, None).is_err());
+    }
+
+    #[test]
+    fn canonical_batches_reject_historical_erc20_encodings() {
+        assert!(ensure_batchable_erc20_action_encoding(ERC20_ACTION_ENCODING_V2).is_ok());
+        assert!(
+            ensure_batchable_erc20_action_encoding(HISTORICAL_ERC20_ACTION_ENCODING_V1).is_err()
+        );
+        assert!(ensure_batchable_erc20_action_encoding(0).is_err());
     }
 
     #[test]
