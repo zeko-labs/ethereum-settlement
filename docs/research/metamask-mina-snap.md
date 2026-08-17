@@ -777,6 +777,11 @@ claims:
   the bridge's real `onlySign` adapter boundary are covered.
 - The Snap bundle builds and evaluates in SES with a generated manifest hash;
   the provider emits publishable ESM and declarations.
+- The Snap declares `endowment:page-home` and renders a wallet home page with
+  the derived address, selected network, native MINA balance breakdown, nonce,
+  custom token accounts, and interactive balance refresh. The page reads only
+  the GraphQL endpoint already approved through the network flow and preserves
+  custom-token quantities as exact base units when decimal metadata is absent.
 
 The compatibility claim remains intentionally narrower than every feature in
 Auro 2.5.2. Private credential presentation is unsupported, and stored

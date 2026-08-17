@@ -6,14 +6,24 @@ import {
   InvalidParamsError,
   MethodNotSupportedError,
   UnauthorizedError,
+  UserInputEventType,
   UserRejectedRequestError,
   type Json,
-  type OnRpcRequestHandler
+  type OnHomePageHandler,
+  type OnRpcRequestHandler,
+  type OnUserInputHandler
 } from "@metamask/snaps-sdk"
 import { Box, Bold, Heading, Text } from "@metamask/snaps-sdk/jsx"
 import { sha256 } from "@noble/hashes/sha256"
 import { base58check } from "@scure/base"
 import Client from "mina-signer"
+import {
+  missingEndpointMessage,
+  parseWalletAccounts,
+  renderWalletHome,
+  renderWalletLoading,
+  type WalletHomeSnapshot
+} from "./home"
 
 const MINA_COIN_TYPE = 12_586
 const MINA_ENTROPY_PATH = ["m", "44'", "12586'"] as const
@@ -24,6 +34,14 @@ const BUILT_IN_NETWORKS = new Set([
   "zeko:testnet",
   "testnet"
 ])
+
+const BUILT_IN_NETWORK_NAMES: Record<string, string> = {
+  "mina:mainnet": "Mina Mainnet",
+  "mina:devnet": "Mina Devnet",
+  "zeko:mainnet": "Zeko Mainnet",
+  "zeko:testnet": "Zeko Testnet",
+  testnet: "Testnet"
+}
 
 type MinaSnapState = {
   version: 1
@@ -405,6 +423,79 @@ const sendDelegationMutation = `
     ) { delegation { hash id } }
   }
 `
+
+const walletAccountsQuery = `
+  query MinaSnapWallet($publicKey: PublicKey!) {
+    accounts(publicKey: $publicKey) {
+      tokenId
+      tokenSymbol
+      balance { total liquid locked }
+      nonce
+    }
+  }
+`
+
+type WalletIdentity = Pick<
+  WalletHomeSnapshot,
+  "publicKey" | "networkId" | "networkName" | "endpoint"
+>
+
+const loadWalletIdentity = async (): Promise<WalletIdentity> => {
+  const [publicKey, state] = await Promise.all([derivePublicKey(), getState()])
+  const endpoint = state.chains[state.selectedNetwork]?.url
+  const networkName = state.chains[state.selectedNetwork]?.name ??
+    BUILT_IN_NETWORK_NAMES[state.selectedNetwork] ?? state.selectedNetwork
+  return {
+    publicKey,
+    networkId: state.selectedNetwork,
+    networkName,
+    ...(endpoint ? { endpoint } : {})
+  }
+}
+
+const loadWalletHome = async (identity?: WalletIdentity): Promise<WalletHomeSnapshot> => {
+  const base = identity ?? await loadWalletIdentity()
+  const endpoint = base.endpoint
+  if (!endpoint) {
+    return {
+      ...base,
+      tokens: [],
+      error: missingEndpointMessage(base.networkId)
+    }
+  }
+  try {
+    const data = await graphql(endpoint, walletAccountsQuery, {
+      publicKey: base.publicKey
+    })
+    const accounts = parseWalletAccounts(data.accounts)
+    return { ...base, ...accounts }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      ...base,
+      tokens: [],
+      error: `Could not load balances: ${message.slice(0, 240)}`
+    }
+  }
+}
+
+export const onHomePage: OnHomePageHandler = async () => ({
+  content: renderWalletHome(await loadWalletHome())
+})
+
+export const onUserInput: OnUserInputHandler = async ({ id, event }) => {
+  if (event.type !== UserInputEventType.ButtonClickEvent ||
+      event.name !== "refresh-balances") return
+  const identity = await loadWalletIdentity()
+  await snap.request({
+    method: "snap_updateInterface",
+    params: { id, ui: renderWalletLoading(identity) }
+  })
+  await snap.request({
+    method: "snap_updateInterface",
+    params: { id, ui: renderWalletHome(await loadWalletHome(identity)) }
+  })
+}
 
 export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => {
   if (request.method === "mina_requestAccounts") {

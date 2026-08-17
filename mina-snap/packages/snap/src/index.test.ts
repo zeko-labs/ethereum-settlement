@@ -4,6 +4,11 @@ import {
   installSnap
 } from "@metamask/snaps-jest"
 import { auroBerkeleyFixture } from "./fixtures/auro-berkeley-zkapp"
+import {
+  missingEndpointMessage,
+  renderWalletHome,
+  renderWalletLoading
+} from "./home"
 
 describe("Auro-compatible Mina Snap RPC", () => {
   const connect = async (
@@ -23,6 +28,28 @@ describe("Auro-compatible Mina Snap RPC", () => {
     await dialog.ok()
     return pending
   }
+
+  it("renders a wallet home page and refreshes it interactively", async () => {
+    const { onHomePage } = await installSnap()
+    const response = await onHomePage()
+    const page = response.getInterface()
+    const expected = renderWalletHome({
+      publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+      networkId: "mina:mainnet",
+      networkName: "Mina Mainnet",
+      tokens: [],
+      error: missingEndpointMessage("mina:mainnet")
+    })
+
+    expect(page).toRender(expected)
+
+    const updated = page.waitForUpdate()
+    await page.clickElement("refresh-balances")
+    expect(await updated).toRender(renderWalletLoading({
+      publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+      networkName: "Mina Mainnet"
+    }))
+  })
 
   it("recovers Auro account zero from MetaMask's recovery phrase", async () => {
     const { request } = await installSnap()

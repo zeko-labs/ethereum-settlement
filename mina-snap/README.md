@@ -12,9 +12,10 @@ record is in [`../docs/research/metamask-mina-snap.md`](../docs/research/metamas
 
 ## Packages
 
-- `packages/snap` derives Mina account 0 from MetaMask, displays confirmations,
-  signs with `mina-signer`, and optionally submits signed operations to a
-  user-approved Mina GraphQL endpoint.
+- `packages/snap` derives Mina account 0 from MetaMask, provides a wallet home
+  page for the address, MINA balance, nonce, and token accounts, displays
+  confirmations, signs with `mina-signer`, and optionally submits signed
+  operations to a user-approved Mina GraphQL endpoint.
 - `packages/provider` discovers MetaMask with EIP-6963, installs or reconnects
   the Snap, translates Auro method calls to `wallet_invokeSnap`, revives
   nullifier bigints, and emits Auro-style account/network events.
@@ -98,6 +99,18 @@ The bridge detects MetaMask through EIP-6963, asks MetaMask to install the local
 Snap, connects Mina account 0, selects `zeko:testnet`, and uses the Snap for the
 same `onlySign` request used with Auro. For a retained local Zeko stack, update
 `bridge-ui/public/runtime-config.json` as described in the bridge UI README.
+
+After connecting once, open MetaMask, select **Snaps**, then select **Zeko Mina
+Wallet** to view its wallet home page. The page reads the selected network's
+approved GraphQL endpoint and shows the copyable Mina address, exact MINA
+balance breakdown, nonce, and custom token accounts. Custom-token amounts are
+shown in exact base units because Mina account responses do not include trusted
+token-decimal metadata. Use **Refresh balances** after a transaction settles.
+
+When updating an existing local installation after the manifest permissions or
+bundle changes, reconnect from the bridge and approve MetaMask's update prompt.
+If MetaMask continues to use the cached build, remove **Zeko Mina Wallet** from
+MetaMask's Snaps settings, reload the bridge, and connect it again.
 
 Set `VITE_MINA_WALLET=auro` to force Auro. With no override, the bridge prefers
 an injected Auro provider and falls back to the MetaMask Snap. These are Vite

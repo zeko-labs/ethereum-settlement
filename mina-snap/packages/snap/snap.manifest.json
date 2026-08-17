@@ -8,7 +8,7 @@
     "directory": "mina-snap/packages/snap"
   },
   "source": {
-    "shasum": "gZ2ouPgMkuGO3hLhfiBC6y3QGcuFR5TSU4qHYsOBt5U=",
+    "shasum": "/TL2XQVAIUvqt6H9qAeCOMvqHPf7VoM8w83qkYxtluA=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
@@ -23,6 +23,7 @@
       "dapps": true,
       "snaps": false
     },
+    "endowment:page-home": {},
     "snap_dialog": {},
     "endowment:network-access": {},
     "snap_getBip32Entropy": [
