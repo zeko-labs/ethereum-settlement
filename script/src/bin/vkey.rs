@@ -1,12 +1,11 @@
 use clap::{Parser, ValueEnum};
 use sp1_sdk::{blocking::MockProver, blocking::Prover, HashableKey, ProvingKey};
-use zkapp_script::{BRIDGE_ELF, SETTLEMENT_ELF, WITHDRAW_ELF};
+use zkapp_script::{BRIDGE_ELF, SETTLEMENT_ELF};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Program {
     Settlement,
     Bridge,
-    Withdraw,
 }
 
 #[derive(Debug, Parser)]
@@ -20,7 +19,6 @@ fn main() {
     let elf = match args.program {
         Program::Settlement => SETTLEMENT_ELF,
         Program::Bridge => BRIDGE_ELF,
-        Program::Withdraw => WITHDRAW_ELF,
     };
     let prover = MockProver::new();
     let pk = prover.setup(elf).expect("failed to setup elf");

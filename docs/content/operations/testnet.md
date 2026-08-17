@@ -22,7 +22,7 @@ The following values must be chosen together and never mixed across builds:
 - sequencer, three DA, and bridge-recipient public identities
 - exact genesis ledger and two-commit bridge scenario
 - OCaml wrap verifier index and its PoC SHA-256 identifier
-- settlement, bridge, and withdrawal SP1 program vkeys
+- settlement and bridge SP1 program vkeys
 - settlement/bridge proxy addresses, registry-module address, and Sepolia
   chain ID
 
@@ -50,7 +50,7 @@ fixture environment is build-time only; do not mount it into the running
 gateway.
 
 Use distinct Mina keys for the sequencer and each DA signer. The current PoC
-uses one Ethereum gateway prover address for all three submitter files because
+uses one Ethereum gateway prover address for both submitter files because
 the preflight enforces that identity. Admin, upgrader, gateway prover, and
 network requester are distinct; only the gateway prover key belongs on the
 runtime host.
@@ -206,7 +206,7 @@ Preflight rejects mutable image tags, non-Sepolia RPC, unacknowledged bypass
 modes, missing price caps in the proof-verified profile, bad secret permissions,
 wrong roles/vkeys/addresses, mismatched identities, non-2-of-3 DA, and invalid
 Compose. In unsafe mode it also calls `isLocalSP1Verifier()` and verifies that
-all three contract verifier references use that exact address.
+both contract verifier references use that exact address.
 
 `bootstrap-da` posts the retained genesis ledger idempotently. `prover-ready`
 waits for a RabbitMQ consumer before the sequencer starts, avoiding

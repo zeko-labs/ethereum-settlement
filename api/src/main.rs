@@ -22,7 +22,7 @@ use tower_http::{
 use uuid::Uuid;
 use zeko_sp1_lib::{
     inner_action_commitment, BridgeDeposit, BridgeTransitionInput, EthereumBridgeState,
-    SettlementContextV1, SettlementPublicValues, WithdrawTransitionInput, ZekoBridgeState,
+    SettlementContextV1, SettlementPublicValues, ZekoBridgeState, ERC20_ACTION_ENCODING_V2,
 };
 use zkapp_script::SettlementProofBundle;
 
@@ -30,8 +30,12 @@ mod ethereum;
 mod explorer;
 mod graphql;
 mod indexer;
+mod proof_kind;
 mod prover;
 mod withdrawal_activity;
+
+use ethereum::HISTORICAL_ERC20_ACTION_ENCODING_V1;
+use proof_kind::ProofKind;
 
 #[derive(Clone)]
 struct AppState {
@@ -286,8 +290,7 @@ async fn main() -> Result<()> {
         required_env("SETTLEMENT_CONTRACT_ADDRESS")?,
         required_env("BRIDGE_CONTRACT_ADDRESS")?,
         nonempty_env("SETTLEMENT_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
-        nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or_else(|| default_key.clone()),
-        nonempty_env("WITHDRAW_PRIVATE_KEY").unwrap_or(default_key),
+        nonempty_env("BRIDGE_PRIVATE_KEY").unwrap_or(default_key),
     )?;
     let ethereum_finality_mode = indexer::FinalityMode::parse(
         &env::var("ETHEREUM_FINALITY_MODE").unwrap_or_else(|_| "finalized".to_owned()),
@@ -440,7 +443,6 @@ async fn main() -> Result<()> {
         .route("/v1/settlements", post(create_settlement))
         .route("/v1/proofs/bridge", post(create_bridge))
         .route("/v1/bridge/deposits/prove", post(create_deposit_batch))
-        .route("/v1/proofs/withdraw", post(create_withdraw))
         .route("/v1/proofs/:id/quote", get(get_proof_quote))
         .route("/v1/proofs/:id/approve", post(approve_proof))
         .route("/v1/proofs/:id/cancel", post(cancel_proof))
@@ -554,7 +556,7 @@ async fn get_bridge_config(State(state): State<AppState>) -> Response {
 
 async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
     let configured = ethereum.configured_program_vkeys().await?;
-    for (index, kind) in ["settlement", "bridge", "withdraw"].iter().enumerate() {
+    for (index, kind) in ProofKind::ALL.into_iter().enumerate() {
         let embedded = prover::program_vkey(kind)
             .await?
             .parse::<B256>()
@@ -606,7 +608,7 @@ async fn create_settlement(
             "settlement proof must include the OCaml account-update binding",
         );
     }
-    match conflicting_outer_writer(&state.pool, "settlement").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Settlement).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -637,7 +639,7 @@ async fn create_settlement(
     create_job(
         &state,
         &headers,
-        "settlement",
+        ProofKind::Settlement,
         serde_json::to_value(request).unwrap(),
     )
     .await
@@ -685,7 +687,7 @@ async fn create_bridge(
     headers: HeaderMap,
     Json(input): Json<BridgeTransitionInput>,
 ) -> Response {
-    match conflicting_outer_writer(&state.pool, "bridge").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -704,7 +706,7 @@ async fn create_bridge(
     create_job(
         &state,
         &headers,
-        "bridge",
+        ProofKind::Bridge,
         serde_json::to_value(input).unwrap(),
     )
     .await
@@ -714,7 +716,7 @@ async fn create_bridge(
 /// This is the PoC production endpoint; `/v1/proofs/bridge` is retained only
 /// for explicit fixture/debug inputs.
 async fn create_deposit_batch(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match conflicting_outer_writer(&state.pool, "bridge").await {
+    match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
         Ok(false) => {}
         Ok(true) => {
             return api_error(
@@ -822,7 +824,7 @@ async fn queue_canonical_deposit_batch(
 
 async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
     loop {
-        match conflicting_outer_writer(&state.pool, "bridge").await {
+        match conflicting_outer_writer(&state.pool, ProofKind::Bridge).await {
             Ok(false) => {
                 match queue_canonical_deposit_batch(&state, &HeaderMap::new(), false).await {
                     Ok(job) => {
@@ -843,7 +845,7 @@ async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
 }
 
 async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInput> {
-    let (bridge, _historical) = state.ethereum.bridge_state("bridge", None, None).await?;
+    let (bridge, _historical) = state.ethereum.bridge_state(None, None).await?;
     anyhow::ensure!(!bridge.paused, "bridge contract is paused");
     anyhow::ensure!(
         bridge.deposit_nonce > bridge.bridged_deposit_nonce,
@@ -851,7 +853,7 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     );
     let (_, historical) = state
         .ethereum
-        .bridge_state("bridge", Some(bridge.bridged_deposit_nonce), None)
+        .bridge_state(Some(bridge.bridged_deposit_nonce), None)
         .await?;
     let historical = historical.context("missing bridged deposit checkpoint")?;
     let settlement = state.ethereum.settlement_state().await?;
@@ -933,29 +935,22 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .parse::<B256>()
                 .context("indexed ERC20 asset id is invalid")?;
             anyhow::ensure!(!asset_id.is_zero(), "indexed ERC20 asset id is zero");
-            match action_encoding_version {
-                1 => (asset_id, 0, B256::ZERO, u64::try_from(zeko_amount)?),
-                2 => {
-                    let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
-                    let record_commitment = row
-                        .try_get::<String, _>("record_commitment")?
-                        .parse::<B256>()
-                        .context("indexed ERC20 record commitment is invalid")?;
-                    anyhow::ensure!(
-                        !record_commitment.is_zero(),
-                        "indexed ERC20 record commitment is zero"
-                    );
-                    (
-                        asset_id,
-                        registry_index,
-                        record_commitment,
-                        u64::try_from(zeko_amount)?,
-                    )
-                }
-                version => {
-                    anyhow::bail!("unsupported indexed ERC20 action encoding version {version}")
-                }
-            }
+            ensure_registry_erc20_action_encoding(action_encoding_version)?;
+            let registry_index = u32::try_from(row.try_get::<i64, _>("registry_index")?)?;
+            let record_commitment = row
+                .try_get::<String, _>("record_commitment")?
+                .parse::<B256>()
+                .context("indexed ERC20 record commitment is invalid")?;
+            anyhow::ensure!(
+                !record_commitment.is_zero(),
+                "indexed ERC20 record commitment is zero"
+            );
+            (
+                asset_id,
+                registry_index,
+                record_commitment,
+                u64::try_from(zeko_amount)?,
+            )
         };
         let recipient: alloy::primitives::B256 = row
             .try_get::<String, _>("zeko_recipient")?
@@ -994,7 +989,6 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
                 .expect("Ethereum address length"),
             deposit_nonce: bridge.bridged_deposit_nonce,
             deposit_state: historical.0,
-            withdraw_state: bridge.current_withdraw_state.0,
         },
         zeko: ZekoBridgeState {
             action_state: settlement.action_state.0,
@@ -1002,6 +996,14 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
         },
         deposits,
     })
+}
+
+fn ensure_registry_erc20_action_encoding(version: u32) -> Result<()> {
+    anyhow::ensure!(
+        version == ERC20_ACTION_ENCODING_V2,
+        "unsupported registry ERC20 action encoding version {version}"
+    );
+    Ok(())
 }
 
 async fn get_native_withdrawal_proof(
@@ -1185,14 +1187,14 @@ fn decode_action_identity(
 ) -> Result<ActionIdentity> {
     let encoding_version = u32::try_from(encoding_version)?;
     let (registry_index, record_commitment) = match encoding_version {
-        0 | 1 => {
+        0 | HISTORICAL_ERC20_ACTION_ENCODING_V1 => {
             anyhow::ensure!(
                 registry_index.is_none() && record_commitment.is_none(),
-                "legacy action has registry identity"
+                "unregistered action has registry identity"
             );
             (None, None)
         }
-        2 => {
+        ERC20_ACTION_ENCODING_V2 => {
             let registry_index =
                 u32::try_from(registry_index.context("registry action is missing its index")?)?;
             let record_commitment = record_commitment
@@ -1488,10 +1490,7 @@ async fn load_token_withdrawal_proof(
         target.registry_index,
         target.record_commitment.clone(),
     )?;
-    anyhow::ensure!(
-        action_identity.encoding_version != 0,
-        "ERC20 withdrawal uses the native action encoding"
-    );
+    ensure_registry_erc20_action_encoding(action_identity.encoding_version)?;
     let recipient: String = target
         .recipient
         .clone()
@@ -1647,21 +1646,12 @@ fn withdrawal_progress(
     }
 }
 
-async fn create_withdraw(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<WithdrawTransitionInput>,
+async fn create_job(
+    state: &AppState,
+    headers: &HeaderMap,
+    kind: ProofKind,
+    input: Value,
 ) -> Response {
-    create_job(
-        &state,
-        &headers,
-        "withdraw",
-        serde_json::to_value(input).unwrap(),
-    )
-    .await
-}
-
-async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Value) -> Response {
     let id = Uuid::new_v4();
     let input_digest = proof_input_digest(&input);
     let idempotency_key = headers
@@ -1676,7 +1666,7 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
          RETURNING id",
     )
     .bind(id)
-    .bind(kind)
+    .bind(kind.as_str())
     .bind(input)
     .bind(idempotency_key)
     .bind(input_digest)
@@ -1727,12 +1717,8 @@ async fn create_job(state: &AppState, headers: &HeaderMap, kind: &str, input: Va
     }
 }
 
-async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result<bool> {
-    let conflicting_kind = match requested_kind {
-        "settlement" => "bridge",
-        "bridge" => "settlement",
-        _ => return Ok(false),
-    };
+async fn conflicting_outer_writer(pool: &PgPool, requested_kind: ProofKind) -> Result<bool> {
+    let conflicting_kind = requested_kind.conflicting();
     Ok(sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
              SELECT 1 FROM proof_jobs
@@ -1743,7 +1729,7 @@ async fn conflicting_outer_writer(pool: &PgPool, requested_kind: &str) -> Result
                )
          )",
     )
-    .bind(conflicting_kind)
+    .bind(conflicting_kind.as_str())
     .fetch_one(pool)
     .await?)
 }
@@ -1775,7 +1761,7 @@ async fn load_proof_quote(
     .fetch_optional(&state.pool)
     .await?
     .context("proof job not found")?;
-    let kind: String = row.try_get("kind")?;
+    let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
     let status: String = row.try_get("status")?;
     anyhow::ensure!(
         !matches!(
@@ -1808,10 +1794,10 @@ async fn load_proof_quote(
     let public_values: String = row
         .try_get::<Option<String>, _>("public_values")?
         .context("proof job has no public values")?;
-    let remaining_slots = proof_remaining_slots(state, &kind, &public_values).await?;
+    let remaining_slots = proof_remaining_slots(state, kind, &public_values).await?;
     Ok(ProofQuoteResponse {
         id,
-        kind,
+        kind: kind.to_string(),
         status,
         input_digest: row.try_get("input_digest")?,
         cycle_count,
@@ -1878,7 +1864,7 @@ async fn approve_proof_inner(
         request.input_digest == input_digest,
         "approval input digest does not match the preflighted job"
     );
-    let kind: String = row.try_get("kind")?;
+    let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
     let public_values_hex: String = row
         .try_get::<Option<String>, _>("public_values")?
         .context("proof job has no public values")?;
@@ -1887,9 +1873,9 @@ async fn approve_proof_inner(
         .try_get::<Option<i64>, _>("cycle_count")?
         .map(u64::try_from)
         .transpose()?;
-    let preflight = prover::Preflight::decode(&kind, public_values, cycles)?;
-    validate_preflight(state, &kind, &row.try_get::<Value, _>("input")?, &preflight).await?;
-    require_proof_lifetime(state, &kind, &public_values_hex).await?;
+    let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
+    validate_preflight(state, &row.try_get::<Value, _>("input")?, &preflight).await?;
+    require_proof_lifetime(state, kind, &public_values_hex).await?;
     let quote =
         prover::auction_quote(&state.proof_system, max_pgu, Some(max_price_per_pgu)).await?;
     let result = sqlx::query(
@@ -1954,10 +1940,10 @@ async fn cancel_proof(State(state): State<AppState>, Path(id): Path<Uuid>) -> Re
 
 async fn proof_remaining_slots(
     state: &AppState,
-    kind: &str,
+    kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<Option<u64>> {
-    if kind != "settlement" {
+    if kind != ProofKind::Settlement {
         return Ok(None);
     }
     let public_values = decode_hex_bytes(public_values_hex, "settlement public values")?;
@@ -1970,7 +1956,7 @@ async fn proof_remaining_slots(
 
 async fn require_proof_lifetime(
     state: &AppState,
-    kind: &str,
+    kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<()> {
     if let Some(remaining) = proof_remaining_slots(state, kind, public_values_hex).await? {
@@ -2165,16 +2151,17 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
 
 async fn process_job(state: &AppState, mut job: ClaimedJob) {
     let result = async {
+        let kind: ProofKind = job.kind.parse()?;
         let (preflight, request_config) = if job.claimed_status == "approved" {
             let public_values_hex = job
                 .public_values
                 .as_deref()
                 .context("approved proof job has no public values")?;
-            require_proof_lifetime(state, &job.kind, public_values_hex).await?;
+            require_proof_lifetime(state, kind, public_values_hex).await?;
             let public_values = decode_hex_bytes(public_values_hex, "public values")?;
             let cycles = job.cycle_count.map(u64::try_from).transpose()?;
-            let preflight = prover::Preflight::decode(&job.kind, public_values, cycles)?;
-            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
+            validate_preflight(state, &job.input, &preflight).await?;
             let mut config = state.prover_config.clone();
             config.gas_limit = Some(u64::try_from(
                 job.approval_max_pgu
@@ -2186,7 +2173,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             )?);
             (preflight, config)
         } else {
-            if job.kind == "settlement" {
+            if kind == ProofKind::Settlement {
                 hydrate_queued_settlement(state, &mut job.input).await?;
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET input = $2, updated_at = NOW()
@@ -2211,8 +2198,8 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 digest_result.rows_affected() == 1,
                 "proof job was cancelled"
             );
-            let preflight = prover::preflight(&job.kind, &job.input, state.execute_only).await?;
-            validate_preflight(state, &job.kind, &job.input, &preflight).await?;
+            let preflight = prover::preflight(kind, &job.input, state.execute_only).await?;
+            validate_preflight(state, &job.input, &preflight).await?;
             let cycle_count = preflight
                 .cycles()
                 .map(i64::try_from)
@@ -2258,7 +2245,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         };
 
         if state.local_mock_submit {
-            submit_local_mock(state, job.id, &job.kind, &preflight).await?;
+            submit_local_mock(state, job.id, kind, &preflight).await?;
             return Result::<()>::Ok(());
         }
 
@@ -2267,13 +2254,9 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         let request_id = match job.proof_request_id {
             Some(request_id) => request_id,
             None => {
-                let request_id = prover::request_proof(
-                    &job.kind,
-                    &job.input,
-                    &state.proof_system,
-                    &request_config,
-                )
-                .await?;
+                let request_id =
+                    prover::request_proof(kind, &job.input, &state.proof_system, &request_config)
+                        .await?;
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET proof_request_id = $2, updated_at = NOW()
                      WHERE id = $1 AND status = 'proving'",
@@ -2287,7 +2270,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 request_id
             }
         };
-        let proof = prover::wait_proof(&job.kind, &request_id).await?;
+        let proof = prover::wait_proof(kind, &request_id).await?;
         anyhow::ensure!(
             proof.public_values == preflight.public_values(),
             "network proof public values differ from local SP1 preflight"
@@ -2315,7 +2298,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         );
         let transaction_hash = state
             .ethereum
-            .submit(&job.kind, proof.public_values.clone(), proof.proof.bytes())
+            .submit(kind, proof.public_values.clone(), proof.proof.bytes())
             .await?;
         let result = sqlx::query(
             "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
@@ -2381,7 +2364,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
 async fn submit_local_mock(
     state: &AppState,
     job_id: Uuid,
-    kind: &str,
+    kind: ProofKind,
     preflight: &prover::Preflight,
 ) -> Result<()> {
     set_status(&state.pool, job_id, "submitting").await?;
@@ -2450,10 +2433,10 @@ async fn hydrate_queued_settlement(state: &AppState, input: &mut Value) -> Resul
 
 async fn validate_preflight(
     state: &AppState,
-    kind: &str,
     input: &Value,
     preflight: &prover::Preflight,
 ) -> Result<()> {
+    let kind = preflight.kind();
     let local_vkey = prover::program_vkey(kind).await?;
     match preflight {
         prover::Preflight::Settlement { values, .. } => {
@@ -2517,7 +2500,6 @@ async fn validate_preflight(
             let (chain, historical) = state
                 .ethereum
                 .bridge_state(
-                    "bridge",
                     Some(values.ethereum_nonce_before),
                     Some(values.zeko_action_state_after.into()),
                 )
@@ -2572,56 +2554,6 @@ async fn validate_preflight(
                 values.actions.last().map(|action| action.state_after)
                     == Some(values.zeko_action_state_after),
                 "bridge final action-state checkpoint mismatch"
-            );
-        }
-        prover::Preflight::Withdraw { values, .. } => {
-            let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
-            let chain_id = state.ethereum.chain_id().await?;
-            anyhow::ensure!(input.ethereum.chain_id == chain_id, "chain id mismatch");
-            anyhow::ensure!(
-                input.ethereum.bridge_address.as_slice()
-                    == state.ethereum.bridge_address().as_slice(),
-                "bridge address mismatch"
-            );
-            let (chain, _) = state
-                .ethereum
-                .bridge_state(
-                    "withdraw",
-                    None,
-                    Some(values.zeko_action_state_after.into()),
-                )
-                .await?;
-            anyhow::ensure!(!chain.paused, "bridge contract is paused");
-            anyhow::ensure!(
-                chain.action_state_processed == Some(false),
-                "withdraw action state already processed"
-            );
-            ensure_hex_eq(
-                &local_vkey,
-                &chain.program_vkey.to_string(),
-                "withdraw program vkey",
-            )?;
-            ensure_bytes_eq(
-                values.ethereum_withdraw_state_before,
-                chain.current_withdraw_state,
-                "current withdraw state",
-            )?;
-            let old_info = state
-                .ethereum
-                .l2_action_state_info(values.zeko_action_state_before.into())
-                .await?;
-            let new_info = state
-                .ethereum
-                .l2_action_state_info(values.zeko_action_state_after.into())
-                .await?;
-            anyhow::ensure!(
-                old_info.1 && new_info.1,
-                "withdraw action state is not settled"
-            );
-            anyhow::ensure!(
-                old_info.0 == chain.current_withdraw_action_state_index
-                    && new_info.0 == old_info.0 + 1,
-                "invalid withdraw action state transition"
             );
         }
     }
@@ -2906,12 +2838,27 @@ mod tests {
     }
 
     #[test]
-    fn action_identity_serializes_legacy_and_registry_response_fields() {
-        let legacy = decode_action_identity(1, None, None).unwrap();
+    fn action_identity_serializes_native_historical_and_registry_response_fields() {
+        let native = decode_action_identity(0, None, None).unwrap();
         assert_eq!(
-            serde_json::to_value(legacy).unwrap(),
+            serde_json::to_value(native).unwrap(),
             serde_json::json!({
-                "encodingVersion": 1,
+                "encodingVersion": 0,
+                "registryIndex": null,
+                "recordCommitment": null
+            })
+        );
+
+        let historical = decode_action_identity(
+            i32::try_from(HISTORICAL_ERC20_ACTION_ENCODING_V1).unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(historical).unwrap(),
+            serde_json::json!({
+                "encodingVersion": HISTORICAL_ERC20_ACTION_ENCODING_V1,
                 "registryIndex": null,
                 "recordCommitment": null
             })
@@ -2928,8 +2875,23 @@ mod tests {
             })
         );
 
-        assert!(decode_action_identity(1, Some(7), None).is_err());
+        assert!(decode_action_identity(0, Some(7), None).is_err());
+        assert!(decode_action_identity(
+            i32::try_from(HISTORICAL_ERC20_ACTION_ENCODING_V1).unwrap(),
+            Some(7),
+            None
+        )
+        .is_err());
         assert!(decode_action_identity(2, None, None).is_err());
+    }
+
+    #[test]
+    fn active_erc20_paths_reject_historical_encodings() {
+        assert!(ensure_registry_erc20_action_encoding(ERC20_ACTION_ENCODING_V2).is_ok());
+        assert!(
+            ensure_registry_erc20_action_encoding(HISTORICAL_ERC20_ACTION_ENCODING_V1).is_err()
+        );
+        assert!(ensure_registry_erc20_action_encoding(0).is_err());
     }
 
     #[test]

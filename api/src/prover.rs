@@ -7,14 +7,13 @@ use sp1_sdk::{
     HashableKey, ProveRequest, Prover, ProverClient, ProvingKey, SP1ProofMode,
     SP1ProofWithPublicValues, SP1Stdin,
 };
-use zeko_sp1_lib::{
-    BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues,
-    WithdrawTransitionInput, WithdrawTransitionPublicValues,
-};
+use zeko_sp1_lib::{BridgeTransitionInput, BridgeTransitionPublicValuesV2, SettlementPublicValues};
 use zkapp_script::{
     execute_minimal, native_settlement_preflight, settlement_stdin_from_bundle,
-    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF, WITHDRAW_ELF,
+    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF,
 };
+
+use crate::proof_kind::ProofKind;
 
 pub struct ProofOutput {
     pub proof: SP1ProofWithPublicValues,
@@ -62,59 +61,55 @@ pub enum Preflight {
         public_values: Vec<u8>,
         cycles: Option<u64>,
     },
-    Withdraw {
-        values: WithdrawTransitionPublicValues,
-        public_values: Vec<u8>,
-        cycles: Option<u64>,
-    },
 }
 
 impl Preflight {
+    pub fn kind(&self) -> ProofKind {
+        match self {
+            Self::Settlement { .. } => ProofKind::Settlement,
+            Self::Bridge { .. } => ProofKind::Bridge,
+        }
+    }
+
     pub fn public_values(&self) -> &[u8] {
         match self {
             Preflight::Settlement { public_values, .. }
-            | Preflight::Bridge { public_values, .. }
-            | Preflight::Withdraw { public_values, .. } => public_values,
+            | Preflight::Bridge { public_values, .. } => public_values,
         }
     }
 
     pub fn cycles(&self) -> Option<u64> {
         match self {
-            Preflight::Settlement { cycles, .. }
-            | Preflight::Bridge { cycles, .. }
-            | Preflight::Withdraw { cycles, .. } => *cycles,
+            Preflight::Settlement { cycles, .. } | Preflight::Bridge { cycles, .. } => *cycles,
         }
     }
 
-    pub fn decode(kind: &str, public_values: Vec<u8>, cycles: Option<u64>) -> Result<Self> {
+    pub fn decode(kind: ProofKind, public_values: Vec<u8>, cycles: Option<u64>) -> Result<Self> {
         match kind {
-            "settlement" => Ok(Self::Settlement {
+            ProofKind::Settlement => Ok(Self::Settlement {
                 values: SettlementPublicValues::decode(&public_values)
                     .map_err(anyhow::Error::msg)?,
                 public_values,
                 cycles,
             }),
-            "bridge" => Ok(Self::Bridge {
+            ProofKind::Bridge => Ok(Self::Bridge {
                 values: BridgeTransitionPublicValuesV2::decode(&public_values)
                     .map_err(anyhow::Error::msg)?,
                 public_values,
                 cycles,
             }),
-            "withdraw" => Ok(Self::Withdraw {
-                values: bincode::deserialize(&public_values)?,
-                public_values,
-                cycles,
-            }),
-            _ => anyhow::bail!("unsupported proof kind: {kind}"),
         }
     }
 }
 
-pub async fn preflight(kind: &str, input: &Value, execute_settlement: bool) -> Result<Preflight> {
-    let kind = kind.to_owned();
+pub async fn preflight(
+    kind: ProofKind,
+    input: &Value,
+    execute_settlement: bool,
+) -> Result<Preflight> {
     let input = input.clone();
     tokio::task::spawn_blocking(move || {
-        if kind == "settlement" && !execute_settlement {
+        if kind == ProofKind::Settlement && !execute_settlement {
             let bundle: SettlementProofBundle = serde_json::from_value(
                 input
                     .get("proof")
@@ -122,12 +117,12 @@ pub async fn preflight(kind: &str, input: &Value, execute_settlement: bool) -> R
                     .context("settlement proof bundle is required")?,
             )?;
             let public_values = native_settlement_preflight(&bundle)?;
-            return Preflight::decode(&kind, public_values, None);
+            return Preflight::decode(kind, public_values, None);
         }
-        let (elf, stdin) = stdin_for(&kind, &input)?;
+        let (elf, stdin) = stdin_for(kind, &input)?;
         let (public_values, cycles) =
             execute_minimal(elf, stdin).context("execute SP1 preflight")?;
-        Preflight::decode(&kind, public_values, Some(cycles))
+        Preflight::decode(kind, public_values, Some(cycles))
     })
     .await?
 }
@@ -179,7 +174,7 @@ pub async fn auction_quote(
 }
 
 pub async fn request_proof(
-    kind: &str,
+    kind: ProofKind,
     input: &Value,
     system: &str,
     config: &NetworkRequestConfig,
@@ -211,8 +206,8 @@ pub async fn request_proof(
     Ok(request_id.to_string())
 }
 
-pub async fn wait_proof(kind: &str, request_id: &str) -> Result<ProofOutput> {
-    let elf = elf_for(kind)?;
+pub async fn wait_proof(kind: ProofKind, request_id: &str) -> Result<ProofOutput> {
+    let elf = elf_for(kind);
     let request_id: B256 = request_id.parse().context("invalid SP1 proof request id")?;
     let client = ProverClient::builder()
         .network_for(NetworkMode::Mainnet)
@@ -295,10 +290,9 @@ fn format_prove(value: U256) -> String {
         .to_owned()
 }
 
-pub async fn program_vkey(kind: &str) -> Result<String> {
-    let kind = kind.to_owned();
+pub async fn program_vkey(kind: ProofKind) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        let elf = elf_for(&kind)?;
+        let elf = elf_for(kind);
         let client = BlockingProverClient::builder().mock().build();
         let pk = client.setup(elf).context("setup SP1 program")?;
         Ok(pk.verifying_key().bytes32().to_string())
@@ -306,18 +300,16 @@ pub async fn program_vkey(kind: &str) -> Result<String> {
     .await?
 }
 
-fn elf_for(kind: &str) -> Result<sp1_sdk::Elf> {
+fn elf_for(kind: ProofKind) -> sp1_sdk::Elf {
     match kind {
-        "settlement" => Ok(SETTLEMENT_ELF),
-        "bridge" => Ok(BRIDGE_ELF),
-        "withdraw" => Ok(WITHDRAW_ELF),
-        _ => anyhow::bail!("unsupported proof kind: {kind}"),
+        ProofKind::Settlement => SETTLEMENT_ELF,
+        ProofKind::Bridge => BRIDGE_ELF,
     }
 }
 
-fn stdin_for(kind: &str, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
+fn stdin_for(kind: ProofKind, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
     match kind {
-        "settlement" => {
+        ProofKind::Settlement => {
             let bundle: SettlementProofBundle = serde_json::from_value(
                 input
                     .get("proof")
@@ -326,19 +318,12 @@ fn stdin_for(kind: &str, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
             )?;
             Ok((SETTLEMENT_ELF, settlement_stdin_from_bundle(&bundle)?))
         }
-        "bridge" => {
+        ProofKind::Bridge => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;
             let mut stdin = SP1Stdin::new();
             stdin.write(&input);
             Ok((BRIDGE_ELF, stdin))
         }
-        "withdraw" => {
-            let input: WithdrawTransitionInput = serde_json::from_value(input.clone())?;
-            let mut stdin = SP1Stdin::new();
-            stdin.write(&input);
-            Ok((WITHDRAW_ELF, stdin))
-        }
-        _ => anyhow::bail!("unsupported proof kind: {kind}"),
     }
 }
 
@@ -373,19 +358,8 @@ mod tests {
         let input: Value =
             serde_json::from_str(include_str!("../../proofs/bridge-input.json")).unwrap();
         assert!(matches!(
-            preflight("bridge", &input, false).await.unwrap(),
+            preflight(ProofKind::Bridge, &input, false).await.unwrap(),
             Preflight::Bridge { .. }
-        ));
-    }
-
-    #[tokio::test]
-    #[ignore = "slow SP1 execution test"]
-    async fn executes_withdraw_preflight_in_process() {
-        let input: Value =
-            serde_json::from_str(include_str!("../../proofs/withdraw-input.json")).unwrap();
-        assert!(matches!(
-            preflight("withdraw", &input, false).await.unwrap(),
-            Preflight::Withdraw { .. }
         ));
     }
 }

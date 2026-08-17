@@ -40,8 +40,8 @@ jobs:
         run: |
           ~/.sp1/bin/cargo-prove prove build --docker --tag v6.1.0 --locked \
             --rustflags=-C,passes=lower-atomic \
-            -p settlement-program -p bridge-program -p withdraw-program
+            -p settlement-program -p bridge-program
 
       - name: Run Rust tests
         run: |
-          cargo test --locked -p bridge-program -p withdraw-program -p zeko_sp1_lib
+          cargo test --locked -p bridge-program -p zeko_sp1_lib

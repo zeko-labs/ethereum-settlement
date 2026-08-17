@@ -266,6 +266,10 @@ SDK_PID=$!
 
 for _ in $(seq 1 1800); do
   [[ -f "$OUTPUT_DIR/bridge-scenario.json" ]] && break
+  kill -0 "$ZEKO_PID" 2>/dev/null || {
+    echo "The live sequencer exited before the scenario was written" >&2
+    exit 1
+  }
   kill -0 "$SDK_PID" 2>/dev/null || {
     echo "The live SDK exited before the scenario was written" >&2
     exit 1
@@ -303,7 +307,9 @@ BRIDGE_ASSET="$BRIDGE_ASSET" POC_REUSE_OCAML_EXPORT=true \
 
 jq -n --slurpfile sdk "$LIVE_DIR/operations-complete" \
   --arg fixtures "$OUTPUT_DIR" \
-  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,registrationSettlements:1,
+  --arg bridgeAsset "$BRIDGE_ASSET" \
+  '{status:"passed",sdk:$sdk[0],fixtures:$fixtures,
+    registrationSettlements:(if $bridgeAsset == "erc20" then 2 else 0 end),
     bridgeSettlements:2,
     liveSequencerGraphql:true,actionsPreparationApi:true,sp1ProofsGenerated:0}'
 if [[ $BRIDGE_ASSET == erc20 ]]; then

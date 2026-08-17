@@ -2,11 +2,13 @@
 
 This repository contains SP1 programs and Ethereum contracts used to settle Zeko state transitions on Ethereum.
 
-The project has three verification paths:
+The project has two SP1 verification paths:
 
 - **Settlement circuit**: verifies a Zeko/o1 proof for a zkApp command and commits the rollup state transition that Ethereum should accept.
 - **Bridge circuit**: verifies the Ethereum-to-Zeko bridge transition by replaying deposits, updating the Ethereum deposit accumulator, and computing the Zeko action state expected by the Zeko bridge account.
-- **Withdraw circuit**: verifies the Zeko-to-Ethereum withdraw transition by computing a fixed-depth withdrawal Merkle root, deriving the Ethereum withdrawal state from that root, and computing the Zeko action state for the withdraw batch.
+
+Withdrawals do not use a separate SP1 program. Settlement receipts bind the
+exact inner-action tree used by permissionless native and ERC-20 claims.
 
 The goal is to let Ethereum verify succinct SP1 proofs instead of directly verifying the full Zeko/o1 proof system or re-executing bridge action-state logic on-chain.
 
@@ -50,20 +52,17 @@ other branches create preview deployments.
 | --- | --- |
 | `program/settlement` | SP1 guest program that verifies a Pickles proof using the o1 `pickles-verifier` path and emits settlement public values. |
 | `program/bridge` | SP1 guest program that verifies bridge deposits and computes Ethereum/Zeko deposit accumulator transitions. |
-| `program/withdraw` | SP1 guest program that verifies bridge withdrawals and computes Ethereum/Zeko withdrawal-state transitions. |
 | `lib` | Shared Rust input/output types used by guests and host scripts. |
 | `script` | Host-side proof generation and execution binaries. |
 | `crates/pickles-verifier` | o1 reference Pickles verifier adapted for this workspace. |
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
-| `contracts/src/EthereumZekoBridge.sol` | Ethereum-side bridge contract that records deposits and accepts withdraw states. |
+| `contracts/src/EthereumZekoBridge.sol` | Ethereum-side custody contract for canonical deposits and settlement-bound withdrawal claims. |
 | `contracts/src/ZekoAssetRegistry.sol` | Immutable registry module delegated through the bridge proxy for proposal and proof-settled activation. |
 | `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
 | `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
-| `proofs/bridge-input.json` | Example bridge input fixture. |
-| `proofs/bridge-input-200.json` | Bridge input fixture with 200 deposits. |
-| `proofs/withdraw-input.json` | Withdraw input fixture with 3 withdrawals. |
-| `proofs/withdraw-input-200.json` | Withdraw input fixture with 200 withdrawals. |
+| `proofs/bridge-input.json` | Synthetic bridge-guest input fixture. |
+| `proofs/bridge-input-200.json` | Synthetic bridge-guest input fixture with 200 deposits. |
 
 ## Contracts, Proxies And Roles
 
@@ -144,8 +143,8 @@ receipt layouts.
 
 The bridge program in `program/bridge` proves that a batch of native or
 registered ERC-20 deposits maps to the expected Zeko action-state transition.
-It is deposit-only; current withdrawals are bound by the settlement guest,
-while `program/withdraw` remains a legacy compatibility path.
+It is deposit-only; withdrawals are bound by the settlement guest and claimed
+directly from the accepted inner-action root.
 
 For each native deposit, the program:
 
@@ -204,11 +203,9 @@ The bridge public output includes:
 
 The native path requires 1 gwei granularity, fixes the timeout to `UInt32.max`,
 and rejects an empty batch. Arbitrary-timeout and arbitrary-token compatibility
-entry points remain disabled by default. The explicit legacy one-token ERC-20
-path retains action encoding V1 behind its compatibility switch. Universal
-registry assets use encoding V2 and bind the stable registry index plus the
-canonical Mina Poseidon record commitment in both deposit and withdrawal
-actions.
+entry points have been removed. Universal registry assets use encoding V2 and
+bind the stable registry index plus the canonical Mina Poseidon record
+commitment in both deposit and withdrawal actions.
 
 The exact versioned wires and settlement receipts are documented in
 [deposits](docs/content/protocol/deposit-bridge.md),
@@ -245,58 +242,6 @@ claim. The test uses a mock SP1 verifier at the contract boundary; Rust guest
 tests and OCaml cross-language vectors cover the two proof-side encodings
 without generating an SP1 proof.
 
-## Withdraw Circuit
-
-The withdraw program in `program/withdraw` proves that a batch of Zeko withdrawals maps to a fixed-depth withdrawal Merkle root, the corresponding Ethereum withdrawal state, and the expected Zeko action-state transition.
-
-For each withdraw, the program:
-
-1. Computes the Ethereum withdraw leaf:
-
-```text
-keccak256(
-  ZEKO_BRIDGE_WITHDRAW_LEAF_V1,
-  chain_id,
-  bridge_address,
-  token,
-  recipient,
-  amount
-)
-```
-
-2. Builds the fixed-depth withdrawal Merkle root, then updates the Ethereum
-   withdrawal state once for the complete batch:
-
-```text
-keccak256(
-  ZEKO_BRIDGE_WITHDRAW_STATE_V1,
-  previous_withdraw_state,
-  withdrawal_root,
-  withdraw_count
-)
-```
-
-3. Computes the Zeko withdraw action:
-
-```text
-Poseidon.hashWithPrefix("Withdrawal_params - qFB3jXP*)", [
-  Field(0),
-  amount,
-  recipient
-])
-```
-
-4. Adds that action to the Zeko action-state sequence.
-
-The withdraw public output includes:
-
-- Zeko action state before/after
-- Ethereum withdraw state before/after
-- withdrawal Merkle root
-- withdraw count
-
-The `tools/zeko-action-state` fixture deploys a local o1js contract and dispatches the same deposit actions, so the SP1 bridge output can be compared against a real action-state update.
-
 ## Testing
 
 Run the native o1 Pickles verifier tests over the copied fixture matrix:
@@ -311,24 +256,17 @@ Run the bridge unit tests (includes real on-chain data replay against testnet st
 cargo test --manifest-path program/bridge/Cargo.toml
 ```
 
-Run the withdraw unit tests (same real L2 inner-action data):
-
-```sh
-cargo test --manifest-path program/withdraw/Cargo.toml
-```
-
 Run the settlement receipt binding tests:
 
 ```sh
 cargo test -p settlement-program
 ```
 
-Run specific bridge/withdraw tests:
+Run specific bridge tests:
 
 ```sh
 cargo test --manifest-path program/bridge/Cargo.toml real_l1_outer_witness
 cargo test --manifest-path program/bridge/Cargo.toml real_l2_inner_actions
-cargo test --manifest-path program/withdraw/Cargo.toml real_l2_inner_actions
 ```
 
 The real-data bridge tests replay on-chain state transitions from:
@@ -361,18 +299,6 @@ Execute the 200-deposit bridge fixture:
 cargo run --release --bin bridge -- --execute --input proofs/bridge-input-200.json
 ```
 
-Execute the withdraw program without proving:
-
-```sh
-cargo run --release --bin withdraw -- --execute
-```
-
-Execute the 200-withdraw fixture:
-
-```sh
-cargo run --release --bin withdraw -- --execute --input proofs/withdraw-input-200.json
-```
-
 Run the o1js action-state fixture:
 
 ```sh
@@ -392,7 +318,7 @@ deposit_count     : 3
 
 ## Proof API
 
-The asynchronous Rust API accepts settlement, bridge, and withdraw proof jobs,
+The asynchronous Rust API accepts settlement and bridge proof jobs,
 checks their Ethereum preconditions, requests EVM-compatible proofs from the SP1
 Network, simulates contract submission, and broadcasts valid transactions. Its
 deposit endpoint derives proof input from canonical finalized Ethereum logs,

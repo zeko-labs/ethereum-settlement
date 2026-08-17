@@ -10,7 +10,7 @@ cargo check --offline \
   -p settlement-program -p zkapp-script -p zeko_sp1_lib -p zeko-proof-api
 cargo test --offline -p pickles-verifier
 cargo test --offline -p settlement-program -p bridge-program \
-  -p withdraw-program -p zeko_sp1_lib -p zeko-proof-api
+  -p zeko_sp1_lib -p zeko-proof-api
 
 (cd contracts && forge build --sizes && forge test -vv)
 (cd docs && pnpm install --frozen-lockfile && pnpm build)
@@ -24,7 +24,6 @@ git diff --check
 ```sh
 cargo run --release --bin zkapp -- --execute
 cargo run --release --bin bridge -- --execute
-cargo run --release --bin withdraw -- --execute
 ```
 
 Use a genuine settlement fixture:
@@ -53,11 +52,11 @@ tools/run-local-erc20-bridge-roundtrip.sh
 ```
 
 This command creates two deterministic ERC-20 identities under one universal
-registry configuration, settles and activates their ordered record batch,
-deploys two unmodified Mina FungibleToken owner/admin pairs with a shared
-proof-authorized vault, and replays both deposits and withdrawals through Anvil
-custody. It uses the chain-ID-31337 mock verifier and does not request or
-generate an SP1 proof.
+registry configuration, derives the standard and universal VK hashes, settles
+and activates each record in its own registration settlement, deploys two
+unmodified Mina FungibleToken owner/admin pairs with a shared proof-authorized
+vault, and replays both deposits and withdrawals through Anvil custody. It uses
+the chain-ID-31337 mock verifier and does not request or generate an SP1 proof.
 
 Run the standalone browser app:
 

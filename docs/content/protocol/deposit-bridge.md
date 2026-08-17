@@ -30,10 +30,10 @@ The user calls the canonical `depositETH(zekoRecipient)` overload. The bridge:
 - increments `depositNonce` and native escrow liability
 - emits `BridgeDeposit`
 
-The overload with a caller-selected timeout and the old arbitrary-token path is
-disabled unless an administrator explicitly enables the legacy compatibility
-switch. Canonically registered ERC-20 assets instead use `submitDeposit` and do
-not depend on that switch.
+The overload with a caller-selected timeout and the old arbitrary-token path
+have been removed. Native ETH has no per-asset disable switch and remains
+available whenever the bridge is unpaused. Canonically registered ERC-20
+assets use `submitDeposit`.
 
 ## Canonical ERC-20 deposit
 
@@ -51,26 +51,8 @@ custody. The OCaml registry transition must then be verified in a V3 settlement
 for one record or a V4 settlement for an ordered batch. Finally,
 `activateAsset` or `activateAssetFromBatch` checks the settlement-bound record
 hash and canonical Mina Poseidon record commitment before making the asset
-active. `registerToken` cannot create a registry-backed asset: it is retained
-only for the explicit one-token V1 fixture path and reverts unless the legacy
-deposit switch is enabled.
-
-The one-token compatibility path is action encoding V1. It keeps the
-`ZEKO_ERC20_DEPOSIT_LEAF_V2` Keccak leaf and this auxiliary value:
-
-```text
-Poseidon("Ethereum ERC20 deposit V1", [
-  asset_id_high,
-  asset_id_low,
-  empty_call_forest,
-  bridge_address_as_field,
-  false,
-  amount,
-  recipient_x,
-  recipient_is_odd,
-  UInt32.max
-])
-```
+active. The former one-token registration and deposit entry points have been
+removed.
 
 The universal registry path is action encoding V2. Its
 `ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak preimage is:
@@ -208,10 +190,9 @@ response also carries the immutable action identity:
 }
 ```
 
-Native deposits use encoding version `0`; legacy ERC-20 V1 deposits use
-encoding version `1`. Both return `null` for `registryIndex` and
-`recordCommitment`. Registry V2 deposits return the values emitted with that
-specific deposit, rather than values inferred from the registry's current
+Native deposits use encoding version `0` and return `null` for `registryIndex`
+and `recordCommitment`. Registry V2 deposits return the values emitted with
+that specific deposit, rather than values inferred from the registry's current
 state.
 
 ```text

@@ -18,9 +18,10 @@ by the SP1 guest, then its receipt is derived by the exact shared guest
 function. This avoids a full zkVM replay on the operational path; the
 [project status](/status#settlement-cycle-optimization-benchmark) owns the
 current source benchmark and distinguishes it from the retained July 15 audit
-checkpoint. Bridge and legacy-withdraw jobs still execute their SP1 guests
-through the low-memory executor. The gateway validates the resulting public
-values against live contract state and hashes the hydrated proof input.
+checkpoint. Bridge jobs still execute their SP1 guest through the low-memory
+executor. There is no separate withdrawal proof job: settlement receipts bind
+the withdrawal tree. The gateway validates public values against live contract
+state and hashes the hydrated proof input.
 
 Native settlement validation deliberately records `cycleCount: null`; native
 runtime is not an SP1 cycle or network-PGU measurement. Set
@@ -121,7 +122,7 @@ The gateway rejects it on other chain IDs, and testnet preflight rejects it.
 | Mode | Behavior | Allowed environment |
 | --- | --- | --- |
 | `API_EXECUTE_ONLY=true` | Forces every guest, including settlement, through the zkVM and stops at `executed`; no proof and no Ethereum write. | Development and pre-deployment audit. |
-| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge/withdraw validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier`; or an explicitly insecure Sepolia PoC with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`. |
+| `API_LOCAL_MOCK_SUBMIT=true` | Uses native settlement verification and zkVM bridge validation, then submits public values with empty proof bytes. | Chain ID 31337 with repository `LocalSP1Verifier`; or an explicitly insecure Sepolia PoC with `API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true`. |
 | Approval mode | Uses the operational preflight, pauses, then obtains a network proof with the approved explicit PGU cap. | Proof-verified persistent testnet. |
 
 Execute-only and local-mock-submit are mutually exclusive. Sepolia mock mode

@@ -62,10 +62,11 @@ The current repository has useful PoC pieces:
   Kimchi proof.
 - `contracts/src/ZekoSettlement.sol` verifies the SP1 proof and checks the
   emitted Zeko verification-key hash.
-- `program/bridge` and `program/withdraw` replay batches into the same
-  Poseidon/Keccak action-state formulas used by the bridge PoC.
+- `program/bridge` replays deposit batches into the same Poseidon/Keccak
+  action-state formulas used by the bridge PoC. Withdrawals are bound by the
+  settlement receipt's exact inner-action tree.
 - `contracts/src/EthereumZekoBridge.sol` has real ETH/ERC20 custody,
-  deposit-state, withdrawal-state, nullifier, and claim accounting.
+  deposit-state, settlement-root claims, and replay-protected accounting.
 
 It should still be treated as a PoC. The settlement contract represents all
 eight fields of Zeko's normal multisig outer state and its action-state length,
@@ -296,9 +297,8 @@ Implemented for the current PoC:
   that outer checkpoint before the deposit is final in rollup state.
 - The gateway derives bridge input only from contiguous canonical finalized
   `BridgeDeposit` logs and mirrors the proven actions into the Mina GraphQL view.
-- Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout. The
-  arbitrary-timeout/ERC20 compatibility entry points are disabled by default,
-  while canonical registry assets use `submitDeposit`.
+- Native deposits use 1 gwei granularity and a fixed `UInt32.max` timeout;
+  canonical registry assets use `submitDeposit`.
 - Rust and OCaml cross-language vectors assert the same three deposit aux
   values.
 
@@ -455,7 +455,6 @@ Minimum local targets before further protocol work:
 
 ```sh
 cargo test -p bridge-program
-cargo test -p withdraw-program
 cargo test -p zeko_sp1_lib
 cd contracts && forge test -vv
 ```
@@ -465,7 +464,7 @@ SP1 guest ELF builds:
 ```sh
 cargo prove build --docker --tag v6.1.0 --locked \
   --rustflags=-C,passes=lower-atomic \
-  -p settlement-program -p bridge-program -p withdraw-program
+  -p settlement-program -p bridge-program
 ```
 
 Settlement execute-only should be rechecked after dependency-level guest

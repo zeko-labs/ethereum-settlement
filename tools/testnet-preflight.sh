@@ -130,7 +130,7 @@ for secret in proof-api-key actions-indexer-token network-private-key \
   admin-private-key upgrader-private-key \
   deployment-roles.env \
   settlement-private-key \
-  bridge-private-key withdraw-private-key postgres-gateway-password \
+  bridge-private-key postgres-gateway-password \
   postgres-sequencer-password postgres-explorer-password rabbitmq-password \
   sequencer-private-key \
   sequencer-signer-token da1-private-key da1-signer-token da2-private-key \
@@ -164,13 +164,8 @@ bridge_sender=$(
   "$CAST" wallet address --private-key \
     "$(tr -d '\r\n' <"$DEPLOY_DIR/secrets/bridge-private-key")"
 )
-withdraw_sender=$(
-  "$CAST" wallet address --private-key \
-    "$(tr -d '\r\n' <"$DEPLOY_DIR/secrets/withdraw-private-key")"
-)
-[[ ${settlement_sender,,} == "${bridge_sender,,}" && \
-   ${settlement_sender,,} == "${withdraw_sender,,}" ]] || {
-  echo "The PoC deployment grants one gateway prover address; all three submitter keys must match" >&2
+[[ ${settlement_sender,,} == "${bridge_sender,,}" ]] || {
+  echo "The PoC deployment grants one gateway prover address; both submitter keys must match" >&2
   exit 1
 }
 [[ ${admin_sender,,} == "${ADMIN_ADDRESS,,}" && \
@@ -193,7 +188,7 @@ chain_id=$("$CAST" chain-id --rpc-url "$RPC_URL")
 }
 manifest="$DEPLOY_DIR/artifacts/manifest.json"
 [[ $(jq -r '.chainId' "$manifest") == 11155111 ]]
-[[ $(jq -r '.schemaVersion' "$manifest") == 3 ]]
+[[ $(jq -r '.schemaVersion' "$manifest") == 4 ]]
 [[ $(jq -r '.dataAvailability' "$manifest") == multisig ]]
 [[ $(jq -r '.minaSigningNetworkId' "$manifest") == testnet ]]
 [[ $(jq -r '.admin | ascii_downcase' "$manifest") == "${ADMIN_ADDRESS,,}" ]]
@@ -253,11 +248,8 @@ settlement_verifier=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'verifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 bridge_verifier=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'bridgeVerifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
-withdraw_verifier=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
-  'withdrawVerifier()(address)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 [[ $settlement_verifier == "$expected_verifier" && \
-   $bridge_verifier == "$expected_verifier" && \
-   $withdraw_verifier == "$expected_verifier" ]] || {
+   $bridge_verifier == "$expected_verifier" ]] || {
   echo "Settlement or bridge is wired to the wrong SP1 verifier" >&2
   exit 1
 }
@@ -322,11 +314,8 @@ settlement_vkey=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'programVKey()(bytes32)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 bridge_vkey=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
   'bridgeProgramVKey()(bytes32)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
-withdraw_vkey=$("$CAST" call "$BRIDGE_CONTRACT_ADDRESS" \
-  'withdrawProgramVKey()(bytes32)' --rpc-url "$RPC_URL" | tr '[:upper:]' '[:lower:]')
 [[ $settlement_vkey == $(jq -r '.settlementProgramVkey | ascii_downcase' "$manifest") ]]
 [[ $bridge_vkey == $(jq -r '.bridgeProgramVkey | ascii_downcase' "$manifest") ]]
-[[ $withdraw_vkey == $(jq -r '.withdrawProgramVkey | ascii_downcase' "$manifest") ]]
 settlement_slot_duration=$("$CAST" call "$SETTLEMENT_CONTRACT_ADDRESS" \
   'slotDuration()(uint32)' --rpc-url "$RPC_URL" | awk '{print $1}')
 [[ $settlement_slot_duration == "$ZEKO_SLOT_DURATION_SECONDS" ]] || {

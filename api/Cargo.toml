@@ -7,7 +7,6 @@ edition = "2021"
 anyhow = { workspace = true }
 alloy = { version = "1.0", features = ["contract", "provider-http", "reqwest-rustls-tls", "signer-local"] }
 axum = "0.7"
-bincode = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
 hex = { workspace = true }

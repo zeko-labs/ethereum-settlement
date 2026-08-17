@@ -92,20 +92,18 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   deposit-capacity ceiling, takes exact ERC-20 custody, emits the canonical
   deposit fields, and protects the locked liability from emergency withdrawal.
 - The gateway indexes finalized `BridgeDeposit` and immutable ERC-20 identity
-  events. Legacy one-token deposits remain encoding V1 with the
-  `ZEKO_ERC20_DEPOSIT_LEAF_V2`/`Ethereum ERC20 deposit V1` wire. Universal
-  registry deposits use encoding V2 and bind the registry index plus canonical
-  Mina record commitment in the `ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak leaf and
-  `Ethereum ERC20 deposit V2` Poseidon preimage.
+  events. Registry deposits use encoding V2 and bind the registry index plus
+  canonical Mina record commitment in the `ZEKO_ERC20_DEPOSIT_LEAF_V3` Keccak
+  leaf and `Ethereum ERC20 deposit V2` Poseidon preimage.
 - Zeko's hybrid Ethereum/custom-token circuit authenticates that record,
   registry index, and both 128-bit asset-ID limbs before an accepted deposit
   can move a bounded, pre-minted Mina Fungible Token inventory from the bridge
   vault to the user.
-- Withdrawal settlement retains the V3 leaf for legacy encoding V1 and uses a
-  V4 leaf for registry encoding V2, binding the registry index and record
-  commitment alongside the exact inner action, asset ID, ERC-20 token,
-  recipient, and UInt64 amount. Solidity releases only the matching token
-  after the settlement delay, with per-token replay cursors and liabilities.
+- Withdrawal settlement uses the V4 leaf for registry encoding V2, binding the
+  registry index and record commitment alongside the exact inner action, asset
+  ID, ERC-20 token, recipient, and UInt64 amount. Solidity releases only the
+  matching token after the settlement delay, with per-token replay cursors and
+  liabilities.
 - The gateway and `@zeko-labs/eth-bridge-sdk` expose ERC-20 deposit status and
   delayed token-withdrawal claims. Solidity/Rust share the exact accumulator
   leaf schema, SP1/OCaml share the exact Poseidon action vector, and the
@@ -114,10 +112,10 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
 
 The universal registry runtime path is also implemented:
 
-- The sequencer accepts one registry account, schema version, approved MFT
-  standard VK ID, shared vault public key, and universal bridge VK ID. Asset
-  records and depth-8 membership witnesses are dynamic circuit inputs. The
-  current schema supports 256 records with at most nine decimals; adding a
+- The sequencer accepts one universal registry configuration; its complete
+  identity inputs are owned by the [configuration reference](/reference/configuration#sequencer).
+  Asset records and depth-8 membership witnesses are dynamic circuit inputs.
+  The current schema supports 256 records with at most nine decimals; adding a
   token does not compile another circuit or VK.
 - Registration is an append-only Poseidon Merkle-list transition. Its recursive
   scan proves dense ordered traversal of every existing leaf and rejects
@@ -132,8 +130,10 @@ The universal registry runtime path is also implemented:
   records without requiring Solidity to evaluate Poseidon.
 - Registry selectors execute in a dedicated immutable module against
   namespaced proxy storage. The bridge retains custody configuration behind
-  self-only callbacks; deterministic deployment records the module address and
-  keeps both implementations below Ethereum's EIP-170 bytecode limit.
+  self-only callbacks. With the production optimizer settings, the bridge
+  implementation is 16,855 bytes and the registry module is 9,053 bytes, both
+  below Ethereum's 24,576-byte EIP-170 runtime limit. A contract test caps the
+  bridge implementation at 22,000 bytes to preserve deployment headroom.
 - The browser SDK validates the returned vault forest and exact full token-owner
   account-update body, then composes and proves the transaction with the
   unmodified `mina-fungible-token` owner's `approveBase` method.
@@ -168,7 +168,7 @@ distinct two-commit OCaml checkpoint is rerun.
 3. For the proof-verified profile, obtain a network-simulation PGU value for
    each genuine job, review the capped quote, and explicitly approve the three
    paid proofs used by the demo. For the disposable mock profile, verify both
-   unsafe acknowledgements and all three `LocalSP1Verifier` references instead.
+   unsafe acknowledgements and both `LocalSP1Verifier` references instead.
 4. Complete one browser-driven Sepolia round trip and archive transaction,
    confirmation, DA, and balance/liability evidence, plus proof-request and
    cost evidence when using the proof-verified profile.
@@ -188,6 +188,6 @@ approval-gated external operations.
   verifier-index JSON bytes.
 - Production governance, timelocks, and permissionless proof submission.
 
-The old arbitrary-timeout/ERC20 deposit path and separate withdrawal guest are
-retained for compatibility tests but are disabled by default. They are not the
-canonical bridge paths described in these docs.
+The old arbitrary-timeout/ERC20 deposit path and separate withdrawal guest have
+been removed. Registry-bound deposits and settlement-bound Merkle claims are the
+only supported bridge paths.

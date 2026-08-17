@@ -16,6 +16,19 @@ const test = base.extend<{ browserErrors: void }>({
 const ETH_ACCOUNT = "0x0000000000000000000000000000000000000001"
 const BRIDGE_ADDRESS = "0x00000000000000000000000000000000000000b0"
 const ZEKO_ACCOUNT = "B62qpuhMDp748xtE77iBXRRaipJYgs6yumAeTzaM7zS9dn8avLPaeFF"
+const CIRCUITS_CONFIG = {
+  zekoL1: ZEKO_ACCOUNT,
+  zekoL2: ZEKO_ACCOUNT,
+  holderAccountsL1: [ZEKO_ACCOUNT],
+  holderAccountL2: ZEKO_ACCOUNT,
+  helperTokenOwnerL1: ZEKO_ACCOUNT,
+  chainL1: "testnet",
+  chainL2: "testnet",
+  withdrawalDelay: 5,
+  bridgeFeeRecipientL1: ZEKO_ACCOUNT,
+  bridgeFeeRecipientL2: ZEKO_ACCOUNT,
+  bridgeProofFee: "0"
+}
 const TX_HASH = `0x${"ab".repeat(32)}`
 const BLOCK_HASH = `0x${"cd".repeat(32)}`
 const DEPOSIT_TOPICS = [
@@ -72,11 +85,33 @@ const installApiMocks = async (page: Page) => {
   }))
   await page.route("**/v1/bridge/deposits/1", (route) => route.fulfill({ json: deposit }))
   await page.route(/.*\/v1\/bridge\/deposits(?:\?.*)?$/, (route) => route.fulfill({ json: [deposit] }))
+  await page.route(/.*\/v1\/bridge\/withdrawal-requests(?:\?.*)?$/, (route) => route.fulfill({ json: [] }))
   await page.route(/.*\/v1\/bridge\/withdrawals(?:\?.*)?$/, (route) => route.fulfill({ json: [] }))
   await page.route("**/graphql", async (route) => {
     const request = route.request()
     if (request.method() !== "POST") return route.continue()
     const body = request.postDataJSON() as { query?: string }
+    if (body.query?.includes("query FetchConfig")) {
+      return route.fulfill({ json: { data: { circuitsConfig: CIRCUITS_CONFIG } } })
+    }
+    if (body.query?.includes("query FetchEthereumTokenConfig")) {
+      return route.fulfill({ json: { data: { circuitsConfig: { ethereumToken: null } } } })
+    }
+    if (body.query?.includes("query FetchEthereumAssetsConfig")) {
+      return route.fulfill({ json: { data: { circuitsConfig: { ethereumAssets: null } } } })
+    }
+    if (body.query?.includes("query GenesisConstants")) {
+      return route.fulfill({ json: { data: { genesisConstants: { accountCreationFee: "1000000000" } } } })
+    }
+    if (body.query?.includes("query SequencerPK")) {
+      return route.fulfill({ json: { data: { sequencerPk: ZEKO_ACCOUNT } } })
+    }
+    if (body.query?.includes("query FetchOuterWitnessesFromAuxes")) {
+      return route.fulfill({ json: { data: { outerWitnessesFromAuxes: [] } } })
+    }
+    if (body.query?.includes("query Account(")) {
+      return route.fulfill({ json: { data: { account: { zkappState: Array(8).fill("0") } } } })
+    }
     if (body.query?.includes("AccountBalance")) {
       return route.fulfill({ json: { data: { account: { balance: { total: "2.5" } } } } })
     }
@@ -204,7 +239,7 @@ test("recovers indexed deposit activity after reload and wallet reconnection", a
   await openConnectedApp(page)
   await page.reload()
   await expect(page.getByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })).toBeVisible()
-  await page.getByRole("button", { name: /Connect Auro/ }).click()
+  await expect(page.getByRole("button", { name: "Auro wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
   await page.getByRole("tab", { name: "Activity" }).click()
   await expect(page.getByText("0.1 ETH · Deposit #1")).toBeVisible({ timeout: 20_000 })
   await page.getByRole("button", { name: "Resume" }).click()

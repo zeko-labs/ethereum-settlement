@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
@@ -34,10 +33,6 @@ interface IZekoSettlementVerifier {
             uint32 commitSlotUpper,
             bool valid
         );
-
-    function isActionStateValid(bytes32 actionState) external view returns (bool);
-
-    function l2ActionStateInfo(bytes32 actionState) external view returns (uint64 index, bool valid);
 }
 
 /// @title EthereumZekoBridge
@@ -57,36 +52,21 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     error FeeOnTransferTokenNotSupported();
     error TokenNotAllowed(address token);
     error InvalidCheckpointNonce(uint64 nonce);
-    error InvalidZekoDecimals(uint8 decimals);
-    error InvalidEthereumDecimals(address token, uint8 expected, uint8 actual);
-    error InvalidNativeEthereumDecimals(uint8 decimals);
     error InvalidAmountPrecision(address token, uint256 amount, uint8 ethereumDecimals, uint8 zekoDecimals);
     error NativeTransferFailed();
     error TokenAlreadyAdded(address token);
     error TokenNotAdded(address token);
-    error CanonicalRegistrationRequiresRegistry();
     error CanonicalRecordNotBound(address token);
-    error CanonicalTokenStatusRequiresRegistry(address token);
-    error InvalidZekoTokenId(bytes32 tokenId);
-    error TokenDecimalsMustMatch(uint8 zekoDecimals, uint8 ethereumDecimals);
     error AmountExceedsZekoUInt64(uint256 amount);
     error TokenDepositCapExceeded(address token, uint256 cap, uint256 requestedLiability);
-    error CanonicalTokenRequiresSubmitDeposit(address token);
     error InvalidSettlementActionState(bytes32 actionState);
-    error InvalidL2ActionStateTransition(bytes32 oldActionState, bytes32 newActionState);
     error ActionStateAlreadyProcessed(bytes32 actionState);
     error InvalidBridgePublicValuesLength(uint256 expected, uint256 actual);
     error InvalidBridgePublicValuesMagic(bytes4 actual);
     error InvalidBridgePublicValuesVersion(uint16 actual);
     error InvalidDepositState(bytes32 expected, bytes32 actual);
     error InvalidDepositNonce(uint64 expected, uint64 actual);
-    error InvalidWithdrawState(bytes32 withdrawState);
     error InvalidWithdrawProof();
-    error InvalidWithdrawToken(bytes32 token);
-    error InvalidWithdrawRecipient(bytes32 recipient);
-    error WithdrawAlreadyClaimed(bytes32 nullifier);
-    error LegacyDepositPathDisabled();
-    error LegacyWithdrawPathDisabled();
     error WithdrawalNotYetClaimable(uint64 currentSlot, uint64 claimableSlot);
     error WithdrawalIndexAlreadyProcessed(address recipient, uint32 currentIndex, uint32 suppliedIndex);
     error InsufficientNativeEscrow(uint256 available, uint256 requested);
@@ -109,33 +89,19 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
 
     bytes32 public constant ERC20_ASSET_V1_DOMAIN = keccak256("ZEKO_ERC20_ASSET_V1");
 
-    bytes32 public constant ERC20_DEPOSIT_LEAF_V2_DOMAIN = keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V2");
     bytes32 public constant ERC20_DEPOSIT_LEAF_V3_DOMAIN = keccak256("ZEKO_ERC20_DEPOSIT_LEAF_V3");
-
-    bytes32 public constant WITHDRAW_LEAF_DOMAIN = keccak256("ZEKO_BRIDGE_WITHDRAW_LEAF_V1");
-
-    bytes32 public constant WITHDRAW_STATE_DOMAIN = keccak256("ZEKO_BRIDGE_WITHDRAW_STATE_V1");
-
-    bytes32 public constant WITHDRAW_NULLIFIER_DOMAIN = keccak256("ZEKO_BRIDGE_WITHDRAW_NULLIFIER_V1");
-
-    bytes32 public constant WITHDRAW_MERKLE_NODE_DOMAIN = keccak256("ZEKO_BRIDGE_WITHDRAW_MERKLE_NODE_V1");
 
     bytes32 public constant NATIVE_WITHDRAWAL_LEAF_V2_DOMAIN = keccak256("ZEKO_NATIVE_WITHDRAWAL_LEAF_V2");
 
-    bytes32 public constant ERC20_WITHDRAWAL_LEAF_V3_DOMAIN = keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V3");
     bytes32 public constant ERC20_WITHDRAWAL_LEAF_V4_DOMAIN = keccak256("ZEKO_ERC20_WITHDRAWAL_LEAF_V4");
 
     bytes32 public constant INNER_ACTION_NODE_V2_DOMAIN = keccak256("ZEKO_INNER_ACTION_NODE_V2");
 
     uint256 public constant WITHDRAW_MERKLE_TREE_DEPTH = 16;
-    uint256 public constant MAX_WITHDRAW_COUNT = 2 ** WITHDRAW_MERKLE_TREE_DEPTH;
-
-    uint256 private constant BRIDGE_PUBLIC_VALUES_LENGTH = 148;
     bytes4 private constant BRIDGE_PUBLIC_VALUES_V2_MAGIC = 0x5a4b4252; // ZKBR
     uint16 private constant BRIDGE_PUBLIC_VALUES_V2_VERSION = 2;
     uint256 private constant BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH = 164;
     uint256 private constant BRIDGE_ACTION_BYTES = 192;
-    uint256 private constant WITHDRAW_PUBLIC_VALUES_LENGTH = 164;
 
     uint8 public constant MAX_ZEKO_DECIMALS = 9;
     uint8 public constant NATIVE_ETHEREUM_DECIMALS = 18;
@@ -151,17 +117,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         bool allowed;
     }
 
-    struct WithdrawClaim {
-        /// @notice Token as a Zeko field. It must encode an Ethereum address in the low 160 bits.
-        bytes32 token;
-        /// @notice Recipient as a Zeko field. It must encode an Ethereum address in the low 160 bits.
-        bytes32 recipient;
-        /// @notice Amount as a Zeko field. Converted back to Ethereum decimals before transfer.
-        bytes32 amount;
-    }
-
     struct DecodedBridgePublicValues {
-        uint16 schemaVersion;
         bytes32 ethereumStateBefore;
         bytes32 ethereumStateAfter;
         uint64 ethereumNonceBefore;
@@ -173,15 +129,8 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         uint32 depositCount;
     }
 
-    struct DecodedWithdrawPublicValues {
-        bytes32 zekoActionStateBefore;
-        bytes32 zekoActionStateAfter;
-        bytes32 ethereumWithdrawStateBefore;
-        bytes32 ethereumWithdrawStateAfter;
-        bytes32 withdrawalRoot;
-        uint32 withdrawCount;
-    }
-
+    /// @dev Deprecated separate-withdrawal storage shape retained only so an
+    /// upgrade does not reinterpret any existing proxy slots.
     struct WithdrawalRootInfo {
         bytes32 withdrawalRoot;
         bytes32 withdrawStateBefore;
@@ -201,11 +150,11 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     /// @notice Current Ethereum deposit accumulator state.
     bytes32 public currentDepositState;
 
-    /// @notice Current Ethereum withdrawal state.
-    bytes32 public currentWithdrawState;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    bytes32 private currentWithdrawState;
 
-    /// @notice L2 action-state index matched by the current withdrawal state.
-    uint64 public currentWithdrawActionStateIndex;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    uint64 private currentWithdrawActionStateIndex;
 
     /// @notice Historical deposit state by nonce.
     /// @dev depositStateByNonce[0] is INITIAL_DEPOSIT_STATE.
@@ -215,15 +164,15 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     mapping(bytes32 => bool) public processedActionState;
 
     /// @dev Deprecated storage retained for UUPS layout compatibility.
-    mapping(bytes32 => bool) public validWithdrawState;
+    mapping(bytes32 => bool) private validWithdrawState;
 
     /// @dev Deprecated storage retained for UUPS layout compatibility.
-    mapping(bytes32 => bytes32) public withdrawStateOldActionState;
+    mapping(bytes32 => bytes32) private withdrawStateOldActionState;
     /// @dev Deprecated storage retained for UUPS layout compatibility.
-    mapping(bytes32 => uint64) public withdrawStateOldActionStateIndex;
+    mapping(bytes32 => uint64) private withdrawStateOldActionStateIndex;
 
-    /// @notice Claimed withdraw nullifiers.
-    mapping(bytes32 => bool) public spentWithdraw;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    mapping(bytes32 => bool) private spentWithdraw;
 
     /// @notice Token configuration by L1 token address. `address(0)` is native ETH.
     mapping(address => TokenConfig) public allowedToken;
@@ -234,19 +183,23 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     IZekoSettlementVerifier public settlementVerifier;
     ISP1Verifier public bridgeVerifier;
     bytes32 public bridgeProgramVKey;
-    ISP1Verifier public withdrawVerifier;
-    bytes32 public withdrawProgramVKey;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    ISP1Verifier private withdrawVerifier;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    bytes32 private withdrawProgramVKey;
 
-    /// @notice Accepted withdrawal batch information by old action state.
-    mapping(bytes32 => WithdrawalRootInfo) public withdrawalRootInfo;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    mapping(bytes32 => WithdrawalRootInfo) private withdrawalRootInfo;
 
     // V2 native bridge storage. Appended for UUPS layout compatibility.
     uint64 public bridgedDepositNonce;
     mapping(address => uint32) public nextWithdrawalIndex;
     uint32 public withdrawalDelaySlots;
     uint256 public nativeEscrowLiability;
-    bool public legacyWithdrawEnabled;
-    bool public legacyDepositEnabled;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    bool private legacyWithdrawEnabled;
+    /// @dev Deprecated storage retained for UUPS layout compatibility.
+    bool private legacyDepositEnabled;
 
     // Canonical ERC-20 bridge storage. Appended for UUPS layout compatibility.
     mapping(address => bytes32) public zekoTokenIdByToken;
@@ -320,38 +273,11 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
 
     event EmergencyTokenWithdraw(address indexed token, address indexed to, uint256 amount);
 
-    event WithdrawStateAccepted(
-        bytes32 indexed oldActionState,
-        bytes32 indexed actionState,
-        bytes32 indexed oldWithdrawState,
-        bytes32 newWithdrawState
-    );
-
-    event WithdrawalRootAccepted(
-        bytes32 indexed oldActionState,
-        bytes32 indexed newActionState,
-        bytes32 indexed withdrawalRoot,
-        bytes32 oldWithdrawState,
-        bytes32 newWithdrawState,
-        uint32 withdrawCount
-    );
-
     event BridgeTransitionAccepted(
         bytes32 indexed oldActionState,
         bytes32 indexed newActionState,
         bytes32 indexed newDepositState,
-        bytes32 newWithdrawState,
         uint64 newDepositNonce
-    );
-
-    event BridgeWithdrawClaimed(
-        bytes32 indexed nullifier,
-        bytes32 indexed withdrawLeaf,
-        bytes32 indexed withdrawState,
-        address token,
-        address recipient,
-        bytes32 zekoAmount,
-        uint256 ethereumAmount
     );
     event NativeWithdrawalClaimed(
         uint64 indexed settlementSequence,
@@ -359,15 +285,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         address indexed recipient,
         uint64 zekoAmount,
         uint256 ethereumAmount,
-        bytes32 actionFieldsHash
-    );
-    event ERC20WithdrawalClaimed(
-        uint64 indexed settlementSequence,
-        uint32 indexed globalActionIndex,
-        address indexed token,
-        bytes32 assetId,
-        address recipient,
-        uint64 amount,
         bytes32 actionFieldsHash
     );
     event ERC20WithdrawalClaimedV2(
@@ -382,8 +299,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         bytes32 actionFieldsHash
     );
     event WithdrawalDelayUpdated(uint32 oldDelay, uint32 newDelay);
-    event LegacyDepositPathUpdated(bool enabled);
-    event LegacyWithdrawPathUpdated(bool enabled);
 
     // -------------------------------------------------------------------------
     // Initialization
@@ -400,24 +315,18 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         address initialAdmin,
         address settlementVerifier_,
         address bridgeVerifier_,
-        bytes32 bridgeProgramVKey_,
-        address withdrawVerifier_,
-        bytes32 withdrawProgramVKey_
+        bytes32 bridgeProgramVKey_
     ) external initializer {
         if (initialAdmin == address(0)) {
             revert ZeroAddress();
         }
         if (settlementVerifier_ == address(0)) revert ZeroAddress();
         if (bridgeVerifier_ == address(0)) revert ZeroAddress();
-        if (withdrawVerifier_ == address(0)) revert ZeroAddress();
 
         settlementVerifier = IZekoSettlementVerifier(settlementVerifier_);
         bridgeVerifier = ISP1Verifier(bridgeVerifier_);
         bridgeProgramVKey = bridgeProgramVKey_;
-        withdrawVerifier = ISP1Verifier(withdrawVerifier_);
-        withdrawProgramVKey = withdrawProgramVKey_;
         currentDepositState = INITIAL_DEPOSIT_STATE;
-        currentWithdrawState = bytes32(0);
         withdrawalDelaySlots = 20;
         depositStateByNonce[0] = INITIAL_DEPOSIT_STATE;
 
@@ -435,92 +344,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     // -------------------------------------------------------------------------
     // Admin
     // -------------------------------------------------------------------------
-
-    function addToken(address token, bool allowed, uint8 zekoDecimals, uint8 ethereumDecimals)
-        external
-        onlyRole(ADMIN_ROLE)
-    {
-        TokenConfig memory existingConfig = allowedToken[token];
-        if (existingConfig.allowed) {
-            revert TokenAlreadyAdded(token);
-        }
-
-        if (zekoDecimals > MAX_ZEKO_DECIMALS) {
-            revert InvalidZekoDecimals(zekoDecimals);
-        }
-
-        if (token == address(0)) {
-            if (ethereumDecimals != NATIVE_ETHEREUM_DECIMALS) {
-                revert InvalidNativeEthereumDecimals(ethereumDecimals);
-            }
-        } else {
-            uint8 actualEthereumDecimals = IERC20Metadata(token).decimals();
-            if (actualEthereumDecimals != ethereumDecimals) {
-                revert InvalidEthereumDecimals(token, ethereumDecimals, actualEthereumDecimals);
-            }
-        }
-
-        allowedToken[token] =
-            TokenConfig({zekoDecimals: zekoDecimals, ethereumDecimals: ethereumDecimals, allowed: allowed});
-
-        emit TokenAllowed(token, allowed, zekoDecimals, ethereumDecimals);
-    }
-
-    function setTokenAllowed(address token, bool allowed) external onlyRole(ADMIN_ROLE) {
-        if (canonicalTokenRegistered[token] && recordCommitmentByToken[token] != bytes32(0)) {
-            revert CanonicalTokenStatusRequiresRegistry(token);
-        }
-        TokenConfig memory existingConfig = allowedToken[token];
-        if (existingConfig.ethereumDecimals == 0) revert TokenNotAdded(token);
-
-        allowedToken[token].allowed = allowed;
-        emit TokenAllowed(token, allowed, existingConfig.zekoDecimals, existingConfig.ethereumDecimals);
-    }
-
-    /// @notice Retained pre-registry one-token registration for fixtures only.
-    /// @dev It is available only while legacy deposits are explicitly enabled
-    /// and never writes universal registry index/commitment state.
-    function registerToken(
-        address token,
-        bytes32 zekoTokenOwner,
-        bytes32 zekoTokenId,
-        uint8 zekoDecimals,
-        uint8 ethereumDecimals,
-        uint64 depositCap
-    ) external onlyRole(ADMIN_ROLE) {
-        if (!legacyDepositEnabled) {
-            revert CanonicalRegistrationRequiresRegistry();
-        }
-        if (token == address(0)) revert ZeroAddress();
-        if (zekoTokenId == bytes32(0)) {
-            revert InvalidZekoTokenId(zekoTokenId);
-        }
-        if (zekoTokenOwner == bytes32(0)) revert ZeroAddress();
-        if (depositCap == 0) revert ZeroAmount();
-        if (canonicalTokenRegistered[token] || allowedToken[token].allowed) {
-            revert TokenAlreadyAdded(token);
-        }
-        if (zekoDecimals != ethereumDecimals) {
-            revert TokenDecimalsMustMatch(zekoDecimals, ethereumDecimals);
-        }
-
-        uint8 actualEthereumDecimals = IERC20Metadata(token).decimals();
-        if (actualEthereumDecimals != ethereumDecimals) {
-            revert InvalidEthereumDecimals(token, ethereumDecimals, actualEthereumDecimals);
-        }
-
-        canonicalTokenRegistered[token] = true;
-        zekoTokenOwnerByToken[token] = zekoTokenOwner;
-        zekoTokenIdByToken[token] = zekoTokenId;
-        depositCapByToken[token] = depositCap;
-        bytes32 assetId = computeERC20AssetId(token, zekoTokenOwner, zekoTokenId, ethereumDecimals);
-        assetIdByToken[token] = assetId;
-        allowedToken[token] =
-            TokenConfig({zekoDecimals: zekoDecimals, ethereumDecimals: ethereumDecimals, allowed: true});
-
-        emit TokenAllowed(token, true, zekoDecimals, ethereumDecimals);
-        emit TokenRegistered(token, assetId, zekoTokenOwner, zekoTokenId, zekoDecimals, depositCap);
-    }
 
     /// @notice Applies a proof-checked registry record to bridge custody state.
     /// @dev Called only by the registry facet through the proxy itself.
@@ -575,21 +398,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         emit WithdrawalDelayUpdated(oldDelay, newDelay);
     }
 
-    /// @notice Compatibility switch for pre-V2 fixtures only. New deployments
-    /// leave this disabled and use settlement-bound inner-action roots.
-    function setLegacyWithdrawEnabled(bool enabled) external onlyRole(ADMIN_ROLE) {
-        legacyWithdrawEnabled = enabled;
-        emit LegacyWithdrawPathUpdated(enabled);
-    }
-
-    /// @notice Compatibility switch for arbitrary-timeout/ERC20 deposit
-    /// fixtures. Native PoC deployments leave this disabled so an unsupported
-    /// deposit cannot block the canonical nonce stream.
-    function setLegacyDepositEnabled(bool enabled) external onlyRole(ADMIN_ROLE) {
-        legacyDepositEnabled = enabled;
-        emit LegacyDepositPathUpdated(enabled);
-    }
-
     /// @notice Emergency withdrawal for stuck funds.
     /// @dev Use carefully. For a production bridge, prefer a timelock or governance flow.
     function emergencyWithdrawToken(address token, address to, uint256 amount)
@@ -620,38 +428,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
     // Deposit
     // -------------------------------------------------------------------------
 
-    /// @notice Deposits ERC20 tokens and appends a deposit leaf to the bridge accumulator.
-    /// @param token ERC20 token address.
-    /// @param amount Token amount to lock on Ethereum.
-    /// @param zekoRecipient Packed Zeko recipient address.
-    function deposit(address token, uint256 amount, ZekoAddress zekoRecipient, uint64 timeout)
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
-    {
-        if (!legacyDepositEnabled) revert LegacyDepositPathDisabled();
-        if (token == address(0)) revert ZeroAddress();
-        if (canonicalTokenRegistered[token]) {
-            revert CanonicalTokenRequiresSubmitDeposit(token);
-        }
-
-        TokenConfig memory config = allowedToken[token];
-        if (!config.allowed) revert TokenNotAllowed(token);
-        if (amount == 0) revert ZeroAmount();
-
-        // Transfer first so fee-on-transfer tokens can be rejected by balance delta.
-        // For a strict bridge, the received amount must equal the requested amount.
-        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
-
-        uint256 receivedAmount = balanceAfter - balanceBefore;
-        if (receivedAmount != amount) revert FeeOnTransferTokenNotSupported();
-
-        return _recordDeposit(token, amount, zekoRecipient, timeout, config);
-    }
-
     /// @notice Canonical ERC-20 deposit consumed by the bridge SP1 guest and
     /// converted into a Zeko outer witness action.
     function submitDeposit(address token, uint256 amount, ZekoAddress zekoRecipient)
@@ -664,10 +440,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
             revert TokenNotAdded(token);
         }
         bytes32 recordCommitment = recordCommitmentByToken[token];
-        bool legacyEncoding = recordCommitment == bytes32(0);
-        if (legacyEncoding && !legacyDepositEnabled) {
-            revert LegacyDepositPathDisabled();
-        }
+        if (recordCommitment == bytes32(0)) revert CanonicalRecordNotBound(token);
         TokenConfig memory config = allowedToken[token];
         if (!config.allowed) revert TokenNotAllowed(token);
         if (amount == 0) revert ZeroAmount();
@@ -688,27 +461,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
             revert FeeOnTransferTokenNotSupported();
         }
 
-        return legacyEncoding
-            ? _recordLegacyERC20Deposit(token, zekoAmount, zekoRecipient)
-            : _recordERC20Deposit(token, zekoAmount, zekoRecipient);
-    }
-
-    /// @notice Deposits native ETH and appends a deposit leaf to the bridge accumulator.
-    /// @param zekoRecipient Packed Zeko recipient address.
-    /// @param timeout Deadline for the sequencer to relay the deposit to the other side.
-    function depositETH(ZekoAddress zekoRecipient, uint64 timeout)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
-    {
-        if (!legacyDepositEnabled) revert LegacyDepositPathDisabled();
-        TokenConfig memory config = allowedToken[address(0)];
-        if (!config.allowed) revert TokenNotAllowed(address(0));
-        if (msg.value == 0) revert ZeroAmount();
-
-        return _recordDeposit(address(0), msg.value, zekoRecipient, timeout, config);
+        return _recordERC20Deposit(token, zekoAmount, zekoRecipient);
     }
 
     /// @notice Canonical native bridge deposit. The PoC deliberately has no
@@ -723,7 +476,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         TokenConfig memory config = allowedToken[address(0)];
         if (!config.allowed) revert TokenNotAllowed(address(0));
         if (msg.value == 0) revert ZeroAmount();
-        return _recordDeposit(address(0), msg.value, zekoRecipient, type(uint32).max, config);
+        return _recordNativeDeposit(msg.value, zekoRecipient);
     }
 
     // -------------------------------------------------------------------------
@@ -773,31 +526,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         );
     }
 
-    /// @notice Retained V1 one-token leaf for historical fixtures only.
-    function computeLegacyERC20DepositLeaf(
-        address token,
-        bytes32 assetId,
-        ZekoAddress zekoRecipient,
-        uint64 amount,
-        uint64 timeout,
-        uint64 nonce
-    ) public view returns (bytes32) {
-        zekoRecipient.unpack();
-        return keccak256(
-            abi.encode(
-                ERC20_DEPOSIT_LEAF_V2_DOMAIN,
-                block.chainid,
-                address(this),
-                token,
-                assetId,
-                zekoRecipient,
-                amount,
-                timeout,
-                nonce
-            )
-        );
-    }
-
     function computeERC20DepositLeaf(
         address token,
         uint32 registryIndex,
@@ -832,38 +560,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         return keccak256(abi.encode(DEPOSIT_STATE_DOMAIN, oldDepositState, depositLeaf));
     }
 
-    /// @notice Computes the canonical withdraw leaf used by the withdrawal tree.
-    function computeWithdrawLeaf(bytes32 token, bytes32 recipient, bytes32 amount) public view returns (bytes32) {
-        return keccak256(abi.encode(WITHDRAW_LEAF_DOMAIN, block.chainid, address(this), token, recipient, amount));
-    }
-
-    /// @notice Computes the next withdraw state from an old state and a withdrawal batch commitment.
-    function computeNextWithdrawState(bytes32 oldWithdrawState, bytes32 withdrawalRoot, uint32 withdrawCount)
-        public
-        pure
-        returns (bytes32)
-    {
-        return keccak256(abi.encode(WITHDRAW_STATE_DOMAIN, oldWithdrawState, withdrawalRoot, withdrawCount));
-    }
-
-    /// @notice Computes the nullifier consumed when a withdraw is claimed.
-    function computeWithdrawNullifier(uint64 oldActionStateIndex, uint256 withdrawIndex, bytes32 withdrawLeaf)
-        public
-        view
-        returns (bytes32)
-    {
-        return keccak256(
-            abi.encode(
-                WITHDRAW_NULLIFIER_DOMAIN,
-                block.chainid,
-                address(this),
-                oldActionStateIndex,
-                withdrawIndex,
-                withdrawLeaf
-            )
-        );
-    }
-
     function submitBridgeTransition(bytes calldata publicValues, bytes calldata proofBytes)
         external
         onlyRole(PROVER_ROLE)
@@ -881,16 +577,14 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         if (decoded.zekoActionStateBefore != settlementActionState) {
             revert InvalidSettlementActionState(decoded.zekoActionStateBefore);
         }
-        if (decoded.schemaVersion == BRIDGE_PUBLIC_VALUES_V2_VERSION) {
-            uint32 settlementActionStateLength = settlementVerifier.outerActionStateLength();
-            if (
-                decoded.zekoActionStateLengthBefore != settlementActionStateLength
-                    || decoded.zekoActionStateLengthAfter != decoded.zekoActionStateLengthBefore + decoded.depositCount
-            ) {
-                revert InvalidBridgePublicValuesLength(
-                    settlementActionStateLength + decoded.depositCount, decoded.zekoActionStateLengthAfter
-                );
-            }
+        uint32 settlementActionStateLength = settlementVerifier.outerActionStateLength();
+        if (
+            decoded.zekoActionStateLengthBefore != settlementActionStateLength
+                || decoded.zekoActionStateLengthAfter != decoded.zekoActionStateLengthBefore + decoded.depositCount
+        ) {
+            revert InvalidBridgePublicValuesLength(
+                settlementActionStateLength + decoded.depositCount, decoded.zekoActionStateLengthAfter
+            );
         }
 
         if (depositStateByNonce[decoded.ethereumNonceBefore] != decoded.ethereumStateBefore) {
@@ -913,106 +607,24 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
 
         processedActionState[decoded.zekoActionStateAfter] = true;
         bridgedDepositNonce = decoded.ethereumNonceAfter;
-        if (decoded.schemaVersion == BRIDGE_PUBLIC_VALUES_V2_VERSION) {
-            bytes32 stateBefore = decoded.zekoActionStateBefore;
-            uint256 actionCursor = BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH;
-            for (uint32 i = 0; i < decoded.depositCount; i++) {
-                bytes32 stateAfter = _readBytes32(publicValues, actionCursor + 160);
-                settlementVerifier.appendOuterWitnessBatch(stateBefore, stateAfter, 1);
-                stateBefore = stateAfter;
-                actionCursor += BRIDGE_ACTION_BYTES;
-            }
-            if (stateBefore != decoded.zekoActionStateAfter) {
-                revert InvalidSettlementActionState(stateBefore);
-            }
-        } else {
-            settlementVerifier.appendOuterWitnessBatch(
-                decoded.zekoActionStateBefore, decoded.zekoActionStateAfter, decoded.depositCount
-            );
+        bytes32 stateBefore = decoded.zekoActionStateBefore;
+        uint256 actionCursor = BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH;
+        for (uint32 i = 0; i < decoded.depositCount; i++) {
+            bytes32 stateAfter = _readBytes32(publicValues, actionCursor + 160);
+            settlementVerifier.appendOuterWitnessBatch(stateBefore, stateAfter, 1);
+            stateBefore = stateAfter;
+            actionCursor += BRIDGE_ACTION_BYTES;
+        }
+        if (stateBefore != decoded.zekoActionStateAfter) {
+            revert InvalidSettlementActionState(stateBefore);
         }
 
         emit BridgeTransitionAccepted(
             decoded.zekoActionStateBefore,
             decoded.zekoActionStateAfter,
             decoded.ethereumStateAfter,
-            currentWithdrawState,
             decoded.ethereumNonceAfter
         );
-    }
-
-    function submitWithdrawTransition(bytes calldata publicValues, bytes calldata proofBytes)
-        external
-        onlyRole(PROVER_ROLE)
-        whenNotPaused
-    {
-        if (!legacyWithdrawEnabled) revert LegacyWithdrawPathDisabled();
-        withdrawVerifier.verifyProof(withdrawProgramVKey, publicValues, proofBytes);
-
-        DecodedWithdrawPublicValues memory decoded = decodeWithdrawPublicValues(publicValues);
-
-        if (decoded.ethereumWithdrawStateBefore != currentWithdrawState) {
-            revert InvalidWithdrawState(decoded.ethereumWithdrawStateBefore);
-        }
-        if (processedActionState[decoded.zekoActionStateAfter]) {
-            revert ActionStateAlreadyProcessed(decoded.zekoActionStateAfter);
-        }
-
-        (uint64 oldL2ActionStateIndex, bool oldL2ActionStateValid) =
-            settlementVerifier.l2ActionStateInfo(decoded.zekoActionStateBefore);
-        (uint64 newL2ActionStateIndex, bool newL2ActionStateValid) =
-            settlementVerifier.l2ActionStateInfo(decoded.zekoActionStateAfter);
-        if (!oldL2ActionStateValid) {
-            revert InvalidSettlementActionState(decoded.zekoActionStateBefore);
-        }
-        if (!newL2ActionStateValid) {
-            revert InvalidSettlementActionState(decoded.zekoActionStateAfter);
-        }
-        if (
-            oldL2ActionStateIndex != currentWithdrawActionStateIndex
-                || newL2ActionStateIndex != oldL2ActionStateIndex + 1
-        ) {
-            revert InvalidL2ActionStateTransition(decoded.zekoActionStateBefore, decoded.zekoActionStateAfter);
-        }
-        if (decoded.withdrawCount > MAX_WITHDRAW_COUNT) {
-            revert InvalidWithdrawProof();
-        }
-        if (
-            decoded.ethereumWithdrawStateAfter
-                != computeNextWithdrawState(
-                    decoded.ethereumWithdrawStateBefore, decoded.withdrawalRoot, decoded.withdrawCount
-                )
-        ) {
-            revert InvalidWithdrawProof();
-        }
-
-        processedActionState[decoded.zekoActionStateAfter] = true;
-
-        if (decoded.withdrawCount > 0) {
-            if (decoded.withdrawalRoot == bytes32(0) || withdrawalRootInfo[decoded.zekoActionStateBefore].valid) {
-                revert InvalidWithdrawProof();
-            }
-
-            withdrawalRootInfo[decoded.zekoActionStateBefore] = WithdrawalRootInfo({
-                withdrawalRoot: decoded.withdrawalRoot,
-                withdrawStateBefore: decoded.ethereumWithdrawStateBefore,
-                withdrawStateAfter: decoded.ethereumWithdrawStateAfter,
-                oldActionStateIndex: oldL2ActionStateIndex,
-                withdrawCount: decoded.withdrawCount,
-                valid: true
-            });
-
-            emit WithdrawalRootAccepted(
-                decoded.zekoActionStateBefore,
-                decoded.zekoActionStateAfter,
-                decoded.withdrawalRoot,
-                decoded.ethereumWithdrawStateBefore,
-                decoded.ethereumWithdrawStateAfter,
-                decoded.withdrawCount
-            );
-        }
-
-        currentWithdrawState = decoded.ethereumWithdrawStateAfter;
-        currentWithdrawActionStateIndex = newL2ActionStateIndex;
     }
 
     function decodeBridgePublicValues(bytes calldata publicValues)
@@ -1020,24 +632,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         pure
         returns (DecodedBridgePublicValues memory decoded)
     {
-        if (publicValues.length == BRIDGE_PUBLIC_VALUES_LENGTH) {
-            decoded.schemaVersion = 1;
-            uint256 legacyCursor = 0;
-            decoded.ethereumStateBefore = _readBytes32(publicValues, legacyCursor);
-            legacyCursor += 32;
-            decoded.ethereumStateAfter = _readBytes32(publicValues, legacyCursor);
-            legacyCursor += 32;
-            decoded.ethereumNonceBefore = _readUint64LE(publicValues, legacyCursor);
-            legacyCursor += 8;
-            decoded.ethereumNonceAfter = _readUint64LE(publicValues, legacyCursor);
-            legacyCursor += 8;
-            decoded.zekoActionStateBefore = _readBytes32(publicValues, legacyCursor);
-            legacyCursor += 32;
-            decoded.zekoActionStateAfter = _readBytes32(publicValues, legacyCursor);
-            legacyCursor += 32;
-            decoded.depositCount = _readUint32LE(publicValues, legacyCursor);
-            return decoded;
-        }
         if (publicValues.length < BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH) {
             revert InvalidBridgePublicValuesLength(BRIDGE_PUBLIC_VALUES_V2_HEADER_LENGTH, publicValues.length);
         }
@@ -1052,7 +646,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         if (publicValues[6] != 0 || publicValues[7] != 0) {
             revert InvalidWithdrawProof();
         }
-        decoded.schemaVersion = version;
         uint256 cursor = 8;
         decoded.ethereumStateBefore = _readBytes32(publicValues, cursor);
         cursor += 32;
@@ -1077,88 +670,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         if (publicValues.length != expectedLength) {
             revert InvalidBridgePublicValuesLength(expectedLength, publicValues.length);
         }
-    }
-
-    function decodeWithdrawPublicValues(bytes calldata publicValues)
-        public
-        pure
-        returns (DecodedWithdrawPublicValues memory decoded)
-    {
-        if (publicValues.length != WITHDRAW_PUBLIC_VALUES_LENGTH) {
-            revert InvalidBridgePublicValuesLength(WITHDRAW_PUBLIC_VALUES_LENGTH, publicValues.length);
-        }
-
-        uint256 cursor = 0;
-
-        decoded.zekoActionStateBefore = _readBytes32(publicValues, cursor);
-        cursor += 32;
-        decoded.zekoActionStateAfter = _readBytes32(publicValues, cursor);
-        cursor += 32;
-        decoded.ethereumWithdrawStateBefore = _readBytes32(publicValues, cursor);
-        cursor += 32;
-        decoded.ethereumWithdrawStateAfter = _readBytes32(publicValues, cursor);
-        cursor += 32;
-        decoded.withdrawalRoot = _readBytes32(publicValues, cursor);
-        cursor += 32;
-        decoded.withdrawCount = _readUint32LE(publicValues, cursor);
-        cursor += 4;
-
-        assert(cursor == WITHDRAW_PUBLIC_VALUES_LENGTH);
-    }
-
-    /// @notice Claims a withdraw included in an accepted withdrawal Merkle root.
-    /// @param oldActionState Old action state bound to the withdrawal batch.
-    /// @param withdraw Clear withdraw being claimed.
-    /// @param withdrawIndex Position of `withdraw` inside the withdrawal batch.
-    /// @param merkleProof Fixed-depth Merkle proof containing exactly 16 siblings.
-    function claimWithdraw(
-        bytes32 oldActionState,
-        WithdrawClaim calldata withdraw,
-        uint256 withdrawIndex,
-        bytes32[16] calldata merkleProof
-    ) external nonReentrant whenNotPaused {
-        if (!legacyWithdrawEnabled) {
-            revert LegacyWithdrawPathDisabled();
-        }
-        WithdrawalRootInfo memory info = withdrawalRootInfo[oldActionState];
-        if (!info.valid) revert InvalidWithdrawProof();
-        if (withdraw.amount == bytes32(0)) revert ZeroAmount();
-        if (withdrawIndex >= info.withdrawCount) revert InvalidWithdrawProof();
-
-        bytes32 withdrawLeaf =
-            computeWithdrawLeaf({token: withdraw.token, recipient: withdraw.recipient, amount: withdraw.amount});
-
-        if (!_verifyMerkleProof(withdrawLeaf, withdrawIndex, merkleProof, info.withdrawalRoot)) {
-            revert InvalidWithdrawProof();
-        }
-
-        bytes32 nullifier = computeWithdrawNullifier(info.oldActionStateIndex, withdrawIndex, withdrawLeaf);
-        if (spentWithdraw[nullifier]) revert WithdrawAlreadyClaimed(nullifier);
-        spentWithdraw[nullifier] = true;
-
-        address token = _fieldAddress(withdraw.token, true);
-        TokenConfig memory config = allowedToken[token];
-        if (config.ethereumDecimals == 0) revert TokenNotAdded(token);
-
-        address recipient = _recipientAddress(withdraw.recipient);
-        uint256 ethereumAmount = _denormalizeAmount(uint256(withdraw.amount), config, token);
-
-        if (token == address(0)) {
-            (bool success,) = payable(recipient).call{value: ethereumAmount}("");
-            if (!success) revert NativeTransferFailed();
-        } else {
-            IERC20(token).safeTransfer(recipient, ethereumAmount);
-        }
-
-        emit BridgeWithdrawClaimed({
-            nullifier: nullifier,
-            withdrawLeaf: withdrawLeaf,
-            withdrawState: info.withdrawStateAfter,
-            token: token,
-            recipient: recipient,
-            zekoAmount: withdraw.amount,
-            ethereumAmount: ethereumAmount
-        });
     }
 
     /// @notice Claims a native withdrawal directly from the Keccak tree bound
@@ -1228,10 +739,7 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
             revert TokenNotAdded(token);
         }
         bytes32 recordCommitment = recordCommitmentByToken[token];
-        bool legacyEncoding = recordCommitment == bytes32(0);
-        if (legacyEncoding && !legacyWithdrawEnabled) {
-            revert LegacyWithdrawPathDisabled();
-        }
+        if (recordCommitment == bytes32(0)) revert CanonicalRecordNotBound(token);
         if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
@@ -1253,11 +761,9 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
 
         bytes32 assetId = assetIdByToken[token];
         uint32 registryIndex = registryIndexByToken[token];
-        bytes32 leaf = legacyEncoding
-            ? computeLegacyERC20WithdrawalLeaf(globalActionIndex, token, assetId, recipient, amount, actionFieldsHash)
-            : computeERC20WithdrawalLeaf(
-                globalActionIndex, token, registryIndex, recordCommitment, assetId, recipient, amount, actionFieldsHash
-            );
+        bytes32 leaf = computeERC20WithdrawalLeaf(
+            globalActionIndex, token, registryIndex, recordCommitment, assetId, recipient, amount, actionFieldsHash
+        );
         if (!_verifyInnerActionMerkleProof(leaf, offset, merkleProof, root)) {
             revert InvalidWithdrawProof();
         }
@@ -1281,22 +787,17 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
                 || recipientBalanceAfter - recipientBalanceBefore != amount
         ) revert FeeOnTransferTokenNotSupported();
 
-        emit ERC20WithdrawalClaimed(
-            settlementSequence, globalActionIndex, token, assetId, recipient, amount, actionFieldsHash
+        emit ERC20WithdrawalClaimedV2(
+            settlementSequence,
+            globalActionIndex,
+            token,
+            assetId,
+            registryIndex,
+            recordCommitment,
+            recipient,
+            amount,
+            actionFieldsHash
         );
-        if (!legacyEncoding) {
-            emit ERC20WithdrawalClaimedV2(
-                settlementSequence,
-                globalActionIndex,
-                token,
-                assetId,
-                registryIndex,
-                recordCommitment,
-                recipient,
-                amount,
-                actionFieldsHash
-            );
-        }
     }
 
     function computeNativeWithdrawalLeaf(
@@ -1311,30 +812,6 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
                 block.chainid,
                 address(this),
                 globalActionIndex,
-                recipient,
-                amount,
-                actionFieldsHash
-            )
-        );
-    }
-
-    /// @notice Retained V1 one-token leaf for historical fixtures only.
-    function computeLegacyERC20WithdrawalLeaf(
-        uint32 globalActionIndex,
-        address token,
-        bytes32 assetId,
-        address recipient,
-        uint64 amount,
-        bytes32 actionFieldsHash
-    ) public view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                ERC20_WITHDRAWAL_LEAF_V3_DOMAIN,
-                block.chainid,
-                address(this),
-                globalActionIndex,
-                token,
-                assetId,
                 recipient,
                 amount,
                 actionFieldsHash
@@ -1386,46 +863,20 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         return computed == root;
     }
 
-    function _hashMerkleNode(bytes32 left, bytes32 right) internal pure returns (bytes32) {
-        return keccak256(abi.encode(WITHDRAW_MERKLE_NODE_DOMAIN, left, right));
-    }
-
-    function _verifyMerkleProof(bytes32 leaf, uint256 index, bytes32[16] calldata proof, bytes32 root)
+    function _recordNativeDeposit(uint256 amount, ZekoAddress zekoRecipient)
         internal
-        pure
-        returns (bool)
+        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
     {
-        bytes32 computed = leaf;
-
-        for (uint256 i = 0; i < WITHDRAW_MERKLE_TREE_DEPTH; i++) {
-            bytes32 sibling = proof[i];
-
-            if ((index & 1) == 0) {
-                computed = _hashMerkleNode(computed, sibling);
-            } else {
-                computed = _hashMerkleNode(sibling, computed);
-            }
-
-            index >>= 1;
-        }
-
-        return computed == root;
-    }
-
-    function _recordDeposit(
-        address token,
-        uint256 amount,
-        ZekoAddress zekoRecipient,
-        uint64 timeout,
-        TokenConfig memory config
-    ) internal returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState) {
         nonce = depositNonce + 1;
-
+        uint64 timeout = type(uint32).max;
         bytes32 oldDepositState = currentDepositState;
-        uint256 zekoAmount = _normalizeAmount(amount, config, token);
+        if (amount % 1 gwei != 0) {
+            revert InvalidAmountPrecision(address(0), amount, NATIVE_ETHEREUM_DECIMALS, MAX_ZEKO_DECIMALS);
+        }
+        uint256 zekoAmount = amount / 1 gwei;
 
         depositLeaf = computeDepositLeaf({
-            token: token, zekoRecipient: zekoRecipient, zekoAmount: zekoAmount, timeout: timeout, nonce: nonce
+            token: address(0), zekoRecipient: zekoRecipient, zekoAmount: zekoAmount, timeout: timeout, nonce: nonce
         });
 
         newDepositState = computeNextDepositState(oldDepositState, depositLeaf);
@@ -1433,19 +884,15 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         depositNonce = nonce;
         currentDepositState = newDepositState;
         depositStateByNonce[nonce] = newDepositState;
-        totalDepositedByToken[token] += amount;
-        if (token == address(0)) {
-            nativeEscrowLiability += amount;
-        } else if (canonicalTokenRegistered[token]) {
-            escrowLiabilityByToken[token] += amount;
-        }
+        totalDepositedByToken[address(0)] += amount;
+        nativeEscrowLiability += amount;
 
         emit BridgeDeposit({
             nonce: nonce,
             depositLeaf: depositLeaf,
             newDepositState: newDepositState,
             oldDepositState: oldDepositState,
-            token: token,
+            token: address(0),
             sender: msg.sender,
             zekoRecipient: zekoRecipient,
             amount: amount,
@@ -1517,123 +964,9 @@ contract EthereumZekoBridge is Initializable, AccessControl, UUPSUpgradeable, Pa
         });
     }
 
-    function _recordLegacyERC20Deposit(address token, uint64 amount, ZekoAddress zekoRecipient)
-        internal
-        returns (uint64 nonce, bytes32 depositLeaf, bytes32 newDepositState)
-    {
-        nonce = depositNonce + 1;
-        uint64 timeout = type(uint32).max;
-        bytes32 assetId = assetIdByToken[token];
-        bytes32 oldDepositState = currentDepositState;
-        depositLeaf = computeLegacyERC20DepositLeaf(token, assetId, zekoRecipient, amount, timeout, nonce);
-        newDepositState = computeNextDepositState(oldDepositState, depositLeaf);
-
-        depositNonce = nonce;
-        currentDepositState = newDepositState;
-        depositStateByNonce[nonce] = newDepositState;
-        totalDepositedByToken[token] += amount;
-        escrowLiabilityByToken[token] += amount;
-
-        emit BridgeDeposit({
-            nonce: nonce,
-            depositLeaf: depositLeaf,
-            newDepositState: newDepositState,
-            oldDepositState: oldDepositState,
-            token: token,
-            sender: msg.sender,
-            zekoRecipient: zekoRecipient,
-            amount: amount,
-            zekoAmount: amount,
-            timeout: timeout
-        });
-        emit ERC20DepositSubmitted({
-            nonce: nonce,
-            assetId: assetId,
-            depositLeaf: depositLeaf,
-            newDepositState: newDepositState,
-            token: token,
-            sender: msg.sender,
-            zekoRecipient: zekoRecipient,
-            amount: amount,
-            timeout: timeout
-        });
-    }
-
-    function _normalizeAmount(uint256 amount, TokenConfig memory config, address token)
-        internal
-        pure
-        returns (uint256 zekoAmount)
-    {
-        if (config.ethereumDecimals == config.zekoDecimals) {
-            return amount;
-        }
-
-        if (config.ethereumDecimals > config.zekoDecimals) {
-            uint8 downscaleDecimals = config.ethereumDecimals - config.zekoDecimals;
-            uint256 scale = 10 ** downscaleDecimals;
-            if (amount % scale != 0) {
-                revert InvalidAmountPrecision(token, amount, config.ethereumDecimals, config.zekoDecimals);
-            }
-            return amount / scale;
-        }
-
-        uint8 upscaleDecimals = config.zekoDecimals - config.ethereumDecimals;
-        return amount * (10 ** upscaleDecimals);
-    }
-
-    function _denormalizeAmount(uint256 zekoAmount, TokenConfig memory config, address token)
-        internal
-        pure
-        returns (uint256 ethereumAmount)
-    {
-        if (config.ethereumDecimals == config.zekoDecimals) {
-            return zekoAmount;
-        }
-
-        if (config.ethereumDecimals > config.zekoDecimals) {
-            uint8 upscaleDecimals = config.ethereumDecimals - config.zekoDecimals;
-            return zekoAmount * (10 ** upscaleDecimals);
-        }
-
-        uint8 downscaleDecimals = config.zekoDecimals - config.ethereumDecimals;
-        uint256 scale = 10 ** downscaleDecimals;
-        if (zekoAmount % scale != 0) {
-            revert InvalidAmountPrecision(token, zekoAmount, config.ethereumDecimals, config.zekoDecimals);
-        }
-        return zekoAmount / scale;
-    }
-
-    function _recipientAddress(bytes32 recipient) internal pure returns (address) {
-        address recipientAddress = _fieldAddress(recipient, false);
-        if (recipientAddress == address(0)) revert ZeroAddress();
-
-        return recipientAddress;
-    }
-
-    function _fieldAddress(bytes32 value, bool isToken) internal pure returns (address) {
-        if (uint256(value) >> 160 != 0) {
-            if (isToken) revert InvalidWithdrawToken(value);
-            revert InvalidWithdrawRecipient(value);
-        }
-
-        return address(uint160(uint256(value)));
-    }
-
     function _readBytes32(bytes calldata data, uint256 offset) private pure returns (bytes32 value) {
         assembly {
             value := calldataload(add(data.offset, offset))
-        }
-    }
-
-    function _readUint64LE(bytes calldata data, uint256 offset) private pure returns (uint64 value) {
-        for (uint8 i = 0; i < 8; i++) {
-            value |= uint64(uint8(data[offset + i])) << (8 * i);
-        }
-    }
-
-    function _readUint32LE(bytes calldata data, uint256 offset) private pure returns (uint32 value) {
-        for (uint8 i = 0; i < 4; i++) {
-            value |= uint32(uint8(data[offset + i])) << (8 * i);
         }
     }
 

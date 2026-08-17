@@ -34,7 +34,7 @@ machines flake a baseline, not an Ethereum-PoC deployment.
 | Ethereum RPC | Reliable Sepolia JSON-RPC with archive/log access from the deployment block. Use a redundant provider pair or operate synchronized execution and consensus clients. |
 | Ethereum contracts | The proof-verified profile uses the official SP1 verifier; the disposable unsafe profile uses the explicitly gated `LocalSP1Verifier`. Both use deterministic asset-registry module and settlement/bridge implementation/proxy deployments. Contract deployment is a release step, not a long-running Nix service. |
 | Succinct requester | The proof-verified profile needs a network private key, funded PROVE balance, Groth16 configuration, hard PGU/price caps, and six-hour worker timeout. The unsafe profile leaves this identity unused and unfunded. |
-| Ethereum transaction signer | Funded Sepolia EOA holding only `PROVER_ROLE`. Current preflight expects the settlement, bridge, and legacy-withdraw submitter files to resolve to this same address. |
+| Ethereum transaction signer | Funded Sepolia EOA holding only `PROVER_ROLE`. Current preflight expects the settlement and bridge submitter files to resolve to this same address. |
 | Retained PoC identity | Final bridge and registry-module addresses, circuit config, genesis ledger, three DA keys, sequencer/recipient keys, verifier index, SP1 vkeys, and manifest stored as one release unit. |
 | Three managed DA nodes | For this PoC, deploy exactly three retained DA identities and configure quorum two. Existing external/quorum-one testnet settings are not the target identity. |
 | Reverse proxy policy | Private/authenticated access for `/graphql` and proof operator routes; optionally public, rate-limited bridge discovery routes. |

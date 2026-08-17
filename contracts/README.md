@@ -23,8 +23,8 @@ forge test -vv
 
 - `src/ZekoSettlement.sol` verifies SP1 settlement proofs and tracks the current
   PoC settlement root/action-state checkpoint.
-- `src/EthereumZekoBridge.sol` handles Ethereum asset custody, deposit
-  accumulation, withdrawal-state acceptance, and withdrawal claims.
+- `src/EthereumZekoBridge.sol` handles Ethereum asset custody, canonical
+  deposits, and settlement-bound withdrawal claims.
 - `src/ZekoAssetRegistry.sol` is the immutable registry module delegated
   through the bridge proxy; it owns proposal and proof-settled activation logic
   while its state remains in namespaced proxy storage.
@@ -53,7 +53,7 @@ FORGE=$HOME/.foundry/bin/forge tools/prepare-poc.sh \
 ```
 
 This builds the gateway and settlement ELF against the selected fixture VK,
-computes the settlement, bridge, and withdrawal SP1 program vkeys without
+computes the settlement and bridge SP1 program vkeys without
 proving, predicts all CREATE2 addresses, writes `build/poc/manifest.json` and
 `build/poc/deployment.env`, and sets `ZEKO_ETHEREUM_BRIDGE_ADDRESS` to the
 predicted bridge proxy for the OCaml circuit config. It also derives `FORK_SLOT`

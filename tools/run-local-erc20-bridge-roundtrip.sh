@@ -12,6 +12,7 @@ CAST=${CAST:-$HOME/.foundry/bin/cast}
 ADMIN_ADDRESS=${ADMIN_ADDRESS:-0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266}
 FIXTURE_ROOT=${BRIDGE_FIXTURE_ROOT:-$ROOT/build/poc/bridge-erc20-fixtures}
 LIVE_DIR=${BRIDGE_LIVE_STATE_DIR:-$ROOT/build/poc/bridge-erc20-live}
+CONFIG_DIR=${BRIDGE_CONFIG_DIR:-$ROOT/build/poc/bridge-erc20-config}
 ERC20_TOKEN_0_DEPOSIT_CAP=${ERC20_TOKEN_0_DEPOSIT_CAP:-100000000000}
 ERC20_TOKEN_1_DEPOSIT_CAP=${ERC20_TOKEN_1_DEPOSIT_CAP:-200000000000}
 ERC20_TOKEN_0_DEPOSIT_AMOUNT=${ERC20_TOKEN_0_DEPOSIT_AMOUNT:-10000000000}
@@ -65,6 +66,7 @@ recipient_key=$(generate_even_key)
 ERC20_REGISTRY_L2=$(key_field 'Public key' <<<"$registry_key")
 ERC20_SHARED_VAULT_L2=$(key_field 'Public key' <<<"$vault_key")
 ERC20_SHARED_VAULT_PRIVATE_KEY=$(key_field 'Private key' <<<"$vault_key")
+ERC20_REGISTRATION_AUTHORITY_L2=$(key_field 'Public key' <<<"$recipient_key")
 ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY=$(key_field 'Private key' <<<"$recipient_key")
 
 for index in 0 1; do
@@ -116,6 +118,15 @@ for index in 0 1; do
 done
 ERC20_SHARED_VAULT_PACKED=$(jq -er '.tokenVaultPacked' "$TEMP_DIR/erc20-identity-0.json")
 
+standard_vk_file=$TEMP_DIR/erc20-standard-vks.json
+(
+  cd "$ZEKO_UI_ROOT"
+  ERC20_STANDARD_VK_OUTPUT="$standard_vk_file" MINA_SIGNING_NETWORK_ID=testnet \
+    "$NIX" develop -c pnpm exec moon run eth-bridge-sdk:erc20-standard-vks
+) >/dev/null
+ERC20_MFT_TOKEN_VK_HASH=$(jq -er '.mftTokenVkHash' "$standard_vk_file")
+ERC20_MFT_ADMIN_VK_HASH=$(jq -er '.mftAdminVkHash' "$standard_vk_file")
+
 asset_domain=$("$CAST" keccak 'ZEKO_ERC20_ASSET_V1')
 for index in 0 1; do
   address_var=ERC20_TOKEN_${index}_ADDRESS
@@ -134,6 +145,7 @@ done
 printf -v ERC20_MFT_STANDARD_VK_ID '0x%064x' "$ERC20_MFT_STANDARD_VK_ID_DECIMAL"
 printf -v ERC20_UNIVERSAL_BRIDGE_VK_ID '0x%064x' "$ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL"
 
+provisional_circuits_config=$TEMP_DIR/circuits-config.provisional.json
 ZEKO_CIRCUITS_CONFIG=$TEMP_DIR/circuits-config.json
 ZEKO_DEPLOY_CONFIG=$TEMP_DIR/deploy-config.json
 (
@@ -141,14 +153,29 @@ ZEKO_DEPLOY_CONFIG=$TEMP_DIR/deploy-config.json
   ZEKO_CIRCUITS_CONFIG=test \
     "$NIX" develop "git+file://$ZEKO_ROOT?submodules=1" \
       --accept-flake-config -c "$KEYGEN" generate-circuits-config \
-      --circuits-config-output "$ZEKO_CIRCUITS_CONFIG" \
+      --circuits-config-output "$provisional_circuits_config" \
       --deploy-config-output "$ZEKO_DEPLOY_CONFIG" \
       --ethereum-bridge-address "$BRIDGE_CONTRACT_ADDRESS" \
       --ethereum-asset-registry-l2 "$ERC20_REGISTRY_L2" \
+      --ethereum-registration-authority-l2 "$ERC20_REGISTRATION_AUTHORITY_L2" \
       --ethereum-shared-vault-l2 "$ERC20_SHARED_VAULT_L2" \
       --ethereum-mft-standard-vk-id "$ERC20_MFT_STANDARD_VK_ID_DECIMAL" \
-      --ethereum-universal-bridge-vk-id "$ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL"
+      --ethereum-mft-token-vk-hash "$ERC20_MFT_TOKEN_VK_HASH" \
+      --ethereum-mft-admin-vk-hash "$ERC20_MFT_ADMIN_VK_HASH" \
+      --ethereum-universal-bridge-vk-id "$ERC20_UNIVERSAL_BRIDGE_VK_ID_DECIMAL" \
+      --ethereum-universal-bridge-vk-hash 0
 )
+asset_vk_file=$TEMP_DIR/ethereum-asset-vks.json
+ZEKO_CIRCUITS_CONFIG="$provisional_circuits_config" \
+  "$KEYGEN" ethereum-asset-vk-hashes --output "$asset_vk_file"
+ERC20_UNIVERSAL_BRIDGE_VK_HASH=$(jq -er '.universalBridgeVkHash' "$asset_vk_file")
+jq --arg hash "$ERC20_UNIVERSAL_BRIDGE_VK_HASH" \
+  '.ethereum_assets.universal_bridge_vk_hash = $hash' \
+  "$provisional_circuits_config" >"$ZEKO_CIRCUITS_CONFIG"
+mkdir -p "$CONFIG_DIR"
+install -m 600 "$ZEKO_CIRCUITS_CONFIG" "$CONFIG_DIR/circuits-config.json"
+install -m 600 "$standard_vk_file" "$CONFIG_DIR/erc20-standard-vks.json"
+install -m 600 "$asset_vk_file" "$CONFIG_DIR/ethereum-asset-vks.json"
 
 export BRIDGE_CONTRACT_ADDRESS ZEKO_CIRCUITS_CONFIG ZEKO_DEPLOY_CONFIG
 export ERC20_REGISTRY_L2 ERC20_SHARED_VAULT_L2 ERC20_SHARED_VAULT_PACKED
@@ -212,5 +239,5 @@ jq -n --arg fixtures "$FIXTURE_ROOT" \
     bridge:$bridge,tokens:[$token0,$token1],assetIds:[$assetId0,$assetId1],
     sharedVault:true,universalBridgeVerificationKey:true,
     liveStandardTokenRoundtrip:true,anvilCustodyRoundtrip:true,
-    registrationSettlements:1,bridgeSettlements:2,sp1ProofsGenerated:0}'
+    registrationSettlements:2,bridgeSettlements:2,sp1ProofsGenerated:0}'
 echo "Full local two-token ERC20 bridge roundtrip passed without generating an SP1 proof."

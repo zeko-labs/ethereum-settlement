@@ -7,7 +7,7 @@ use std::{collections::HashSet, time::Duration};
 use tokio::time::sleep;
 use zeko_sp1_lib::{
     inner_action_commitment, Address, Bytes32, NativeWithdrawalV2, TokenWithdrawalV3,
-    ERC20_ACTION_ENCODING_V1, ERC20_ACTION_ENCODING_V2,
+    ERC20_ACTION_ENCODING_V2,
 };
 
 use crate::{ethereum::TokenWithdrawalIdentity, AppState};
@@ -479,10 +479,8 @@ async fn recover_batch(
                 Some(EthereumAddress::from(token).to_string()),
                 Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
                 Some(i32::try_from(withdrawal.encoding_version)?),
-                (withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2)
-                    .then_some(i64::from(withdrawal.registry_index)),
-                (withdrawal.encoding_version == ERC20_ACTION_ENCODING_V2)
-                    .then(|| format!("0x{}", hex::encode(withdrawal.record_commitment))),
+                Some(i64::from(withdrawal.registry_index)),
+                Some(format!("0x{}", hex::encode(withdrawal.record_commitment))),
                 Some(EthereumAddress::from(withdrawal.recipient).to_string()),
                 Some(withdrawal.amount.to_string()),
             ),
@@ -672,35 +670,26 @@ fn parse_native_withdrawal(fields: Vec<String>) -> Result<ArchiveNativeWithdrawa
 
 fn parse_token_withdrawal(fields: Vec<String>) -> Result<ArchiveTokenWithdrawal> {
     anyhow::ensure!(
-        matches!(fields.len(), 11 | 14),
+        fields.len() == 14,
         "invalid ERC20 withdrawal parameter width"
     );
     let fields = fields
         .into_iter()
         .map(|field| U256::from_str_radix(&field, 10))
         .collect::<Result<Vec<_>, _>>()?;
-    let (encoding_version, registry_index, record_commitment, asset_offset) = if fields.len() == 14
-    {
-        anyhow::ensure!(
-            fields[0] == U256::from(ERC20_ACTION_ENCODING_V2),
-            "unsupported ERC20 withdrawal encoding version"
-        );
-        let registry_index =
-            u32::try_from(fields[1]).context("ERC20 registry index is outside UInt32")?;
-        let record_commitment = fields[2].to_be_bytes();
-        anyhow::ensure!(
-            record_commitment != [0u8; 32],
-            "ERC20 record commitment is zero"
-        );
-        (
-            ERC20_ACTION_ENCODING_V2,
-            registry_index,
-            record_commitment,
-            3,
-        )
-    } else {
-        (ERC20_ACTION_ENCODING_V1, 0, [0u8; 32], 0)
-    };
+    anyhow::ensure!(
+        fields[0] == U256::from(ERC20_ACTION_ENCODING_V2),
+        "unsupported ERC20 withdrawal encoding version"
+    );
+    let registry_index =
+        u32::try_from(fields[1]).context("ERC20 registry index is outside UInt32")?;
+    let record_commitment = fields[2].to_be_bytes();
+    anyhow::ensure!(
+        record_commitment != [0u8; 32],
+        "ERC20 record commitment is zero"
+    );
+    let encoding_version = ERC20_ACTION_ENCODING_V2;
+    let asset_offset = 3;
     let asset_high: Bytes32 = fields[asset_offset].to_be_bytes();
     let asset_low: Bytes32 = fields[asset_offset + 1].to_be_bytes();
     anyhow::ensure!(
@@ -835,31 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_legacy_erc20_withdrawal_parameters() {
-        let fields = [
-            "2", "3", "0", "1", "1", "123", "0", "0", "2000000", "16909060", "0",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-        let ArchiveWithdrawal::Token(withdrawal) = parse_withdrawal(fields).unwrap() else {
-            panic!("expected token withdrawal");
-        };
-        assert_eq!(withdrawal.encoding_version, ERC20_ACTION_ENCODING_V1);
-        assert_eq!(withdrawal.registry_index, 0);
-        assert_eq!(withdrawal.record_commitment, [0u8; 32]);
-    }
-
-    #[test]
     fn recovery_deduplicates_complete_token_identities() {
-        let legacy = ArchiveTokenWithdrawal {
-            encoding_version: ERC20_ACTION_ENCODING_V1,
-            registry_index: 0,
-            record_commitment: [0u8; 32],
-            asset_id: [0x11; 32],
-            recipient: [0x22; 20],
-            amount: 5,
-        };
         let registry = ArchiveTokenWithdrawal {
             encoding_version: ERC20_ACTION_ENCODING_V2,
             registry_index: 7,
@@ -868,16 +833,14 @@ mod tests {
             recipient: [0x55; 20],
             amount: 9,
         };
-        let actions = [legacy.clone(), legacy, registry.clone(), registry];
+        let actions = [registry.clone(), registry];
 
         let identities = unique_token_withdrawal_identities(actions.iter());
 
-        assert_eq!(identities.len(), 2);
-        assert_eq!(identities[0].encoding_version, ERC20_ACTION_ENCODING_V1);
-        assert_eq!(identities[0].asset_id, [0x11u8; 32]);
-        assert_eq!(identities[1].encoding_version, ERC20_ACTION_ENCODING_V2);
-        assert_eq!(identities[1].registry_index, 7);
-        assert_eq!(identities[1].record_commitment, [0x33u8; 32]);
-        assert_eq!(identities[1].asset_id, [0x44u8; 32]);
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].encoding_version, ERC20_ACTION_ENCODING_V2);
+        assert_eq!(identities[0].registry_index, 7);
+        assert_eq!(identities[0].record_commitment, [0x33u8; 32]);
+        assert_eq!(identities[0].asset_id, [0x44u8; 32]);
     }
 }

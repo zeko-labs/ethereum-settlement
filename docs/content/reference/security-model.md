@@ -47,7 +47,7 @@ contract to append bridge-proven outer Witness checkpoints.
 | 2-of-3 DA signers | Keep batch/checkpoint data available for the current milestone. This is not the production Ethereum DA design. |
 | Gateway operator | Selects when to request proofs and submits transactions. Contract continuity limits forged state, but liveness and censorship remain permissioned. |
 | `PROVER_ROLE` EOA | Can submit valid proofs, not alter admin configuration. |
-| `ADMIN_ROLE` | Can change the PoC VK identifier, configure/enable legacy paths, pause, set bridge/delay, and emergency-withdraw custody. This is a strong trust assumption. |
+| `ADMIN_ROLE` | Can change the PoC VK identifier, pause, set bridge/delay, manage registry proposals, emergency-withdraw any native custody, and emergency-withdraw unencumbered ERC-20 custody. This is a strong trust assumption. |
 | `UPGRADER_ROLE` | Can replace implementation logic and therefore has full protocol power. |
 | `DEFAULT_ADMIN_ROLE` | Can grant/revoke roles. |
 
@@ -95,8 +95,8 @@ investigate the RPC or chain before recovery.
   approved MFT standard VK and one universal bridge VK are supported per
   registry version; production mint-admin governance and registry-version
   migration are not provided.
-- Legacy deposit/withdraw paths remain in storage-compatible code and should
-  stay disabled except when deliberately exercising V1 compatibility.
+- Deprecated withdrawal storage slots remain only to preserve the UUPS layout;
+  the legacy runtime entry points have been removed.
 - Public bridge discovery endpoints need rate limiting and abuse monitoring.
 - The gateway GraphQL compatibility handler is not intended as a general
   Internet-facing Mina node.

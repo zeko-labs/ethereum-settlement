@@ -22,7 +22,6 @@ environment file.
 | `BRIDGE_CONTRACT_ADDRESS` | Bridge proxy address. |
 | `SETTLEMENT_PRIVATE_KEY` | Settlement submitter key. |
 | `BRIDGE_PRIVATE_KEY` | Bridge submitter key. |
-| `WITHDRAW_PRIVATE_KEY` | Legacy withdraw submitter key; current preflight expects the same EOA as the other two. |
 | `NETWORK_PRIVATE_KEY` | Succinct requester key. |
 | `PROOF_SYSTEM` | `groth16` for EVM testnet submission. |
 | `PROVER_TIMEOUT_SECS` | Maximum network proof wait; reference value 21600. |
@@ -38,7 +37,7 @@ environment file.
 | `BRIDGE_AUTO_PROVE_POLL_SECS` | Automatic batch scan interval; reference value 5. |
 | `API_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins, or `*` for isolated local development. |
 
-`ETHEREUM_PRIVATE_KEY` is a development fallback for the three per-kind keys.
+`ETHEREUM_PRIVATE_KEY` is a development fallback for both per-kind keys.
 Use credential files and the explicit variables in a persistent deployment.
 
 ## Virtual Mina view
@@ -90,18 +89,24 @@ An ERC-20-enabled sequencer supplies one universal registry configuration:
 ```text
 --ethereum-bridge-address 0x...
 --ethereum-asset-registry-l2 B62...
+--ethereum-registration-authority-l2 B62...
 --ethereum-shared-vault-l2 B62...
 --ethereum-mft-standard-vk-id 9001
+--ethereum-mft-token-vk-hash 0x...
+--ethereum-mft-admin-vk-hash 0x...
 --ethereum-universal-bridge-vk-id 9002
+--ethereum-universal-bridge-vk-hash 0x...
 ```
 
-The registry schema and depth are circuit constants. Schema V1 uses a depth-8
-tree with a 256-record capacity. Individual asset records supply the Ethereum
-token, asset ID, dynamic MFT owner, circuit-derived token ID, at most nine
-decimals, and inventory cap through authenticated registry membership. Startup
-rejects a partial universal configuration. Registration rejects an owner equal
-to the shared vault and any record whose MFT or universal VK identifier differs
-from this configuration.
+The two MFT hashes identify the exact standard token and admin verification
+keys. The universal bridge hash is derived from the provisional circuit
+configuration before that configuration is finalized. The registry schema and
+depth are circuit constants. Schema V1 uses a depth-8 tree with a 256-record
+capacity. Individual asset records supply the Ethereum token, asset ID, dynamic
+MFT owner, circuit-derived token ID, at most nine decimals, and inventory cap
+through authenticated registry membership. Startup rejects a partial universal
+configuration. Registration rejects an owner equal to the shared vault and any
+record whose MFT or universal VK identifier differs from this configuration.
 
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
 materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing

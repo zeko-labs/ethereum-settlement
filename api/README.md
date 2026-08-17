@@ -17,7 +17,6 @@ Network, submits it to Ethereum, and waits for configurable finality.
 - `POST /v1/bridge/deposits/prove` — builds a deposit proof job from the next
   contiguous finalized `BridgeDeposit` logs; callers cannot supply deposit
   contents
-- `POST /v1/proofs/withdraw`
 - `GET /v1/bridge/deposits/:nonce` — reports immutable action encoding and
   registry identity, Ethereum finality, the exact bridge-proved outer action,
   synchronization, and the next user action
@@ -137,7 +136,7 @@ set -a; source .env.api; set +a
 cargo run --release -p zeko-proof-api
 ```
 
-At startup the gateway derives all three vkeys from its embedded ELFs and
+At startup the gateway derives both vkeys from its embedded ELFs and
 compares them with the settlement and bridge contracts. A binary built against
 the wrong OCaml settlement VK therefore exits before accepting jobs. Use
 `tools/prepare-poc.sh` to build the gateway and deployment manifest from one
@@ -174,7 +173,7 @@ until the network reports metrics.
 Persistent testnet deployments should set `API_REQUIRE_PROOF_APPROVAL=true`.
 Every job then completes its local preflight and pauses in
 `awaiting_approval`; settlement uses pinned native Pickles verification while
-bridge/withdraw use the zkVM executor. The worker cannot call the Succinct
+bridge uses the zkVM executor. The worker cannot call the Succinct
 network from that state. Inspect the job and read a quote:
 
 ```sh

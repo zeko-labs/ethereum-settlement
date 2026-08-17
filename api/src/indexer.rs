@@ -4,6 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::ethereum::{BlockRef, Ethereum};
+use crate::proof_kind::ProofKind;
 use serde_json::{json, Value};
 use zeko_sp1_lib::inner_action_commitment::{
     action_fields_hash as hash_action_fields, erc20_withdrawal_leaf as hash_erc20_withdrawal_leaf,
@@ -479,10 +480,22 @@ async fn index_bridge_deposits(
         .bridge_deposit_logs(block_number, block_number)
         .await?
     {
-        let asset_id = deposit.asset_id.map(|value| value.to_string());
-        let action_encoding_version = i32::try_from(deposit.action_encoding_version)?;
-        let registry_index = deposit.registry_index.map(i64::from);
-        let record_commitment = deposit.record_commitment.map(|value| value.to_string());
+        let asset_id = deposit
+            .erc20_identity
+            .map(|identity| identity.asset_id().to_string());
+        let action_encoding_version = i32::try_from(
+            deposit
+                .erc20_identity
+                .map_or(0, |identity| identity.action_encoding_version()),
+        )?;
+        let registry_index = deposit
+            .erc20_identity
+            .and_then(|identity| identity.registry_index())
+            .map(i64::from);
+        let record_commitment = deposit
+            .erc20_identity
+            .and_then(|identity| identity.record_commitment())
+            .map(|value| value.to_string());
         sqlx::query(
             "INSERT INTO gateway_bridge_deposits
                 (nonce, deposit_leaf, old_deposit_state, new_deposit_state,
@@ -593,15 +606,14 @@ async fn index_explorer_events(
         sqlx::query(
             "INSERT INTO gateway_explorer_bridge_transitions
                 (old_action_state, new_action_state, new_deposit_state,
-                 new_withdraw_state, new_deposit_nonce,
+                 new_deposit_nonce,
                  ethereum_block_number, ethereum_block_hash,
                  ethereum_tx_hash, ethereum_log_index, removed)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
              ON CONFLICT (ethereum_tx_hash, ethereum_log_index) DO UPDATE SET
                  old_action_state = EXCLUDED.old_action_state,
                  new_action_state = EXCLUDED.new_action_state,
                  new_deposit_state = EXCLUDED.new_deposit_state,
-                 new_withdraw_state = EXCLUDED.new_withdraw_state,
                  new_deposit_nonce = EXCLUDED.new_deposit_nonce,
                  ethereum_block_number = EXCLUDED.ethereum_block_number,
                  ethereum_block_hash = EXCLUDED.ethereum_block_hash,
@@ -611,7 +623,6 @@ async fn index_explorer_events(
         .bind(transition.old_action_state.to_string())
         .bind(transition.new_action_state.to_string())
         .bind(transition.new_deposit_state.to_string())
-        .bind(transition.new_withdraw_state.to_string())
         .bind(i64::try_from(transition.new_deposit_nonce)?)
         .bind(i64::try_from(transition.block_number)?)
         .bind(transition.block_hash.to_string())
@@ -770,7 +781,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
     .await?;
 
     for event in events {
-        let kind: String = event.try_get("kind")?;
+        let kind: ProofKind = event.try_get::<String, _>("kind")?.parse()?;
         let block_number = u64::try_from(event.try_get::<i64, _>("ethereum_block_number")?)?;
         let block_hash: String = event.try_get("ethereum_block_hash")?;
         let transaction_hash: String = event.try_get("ethereum_tx_hash")?;
@@ -789,7 +800,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         }
 
         let public_values = ethereum
-            .accepted_public_values(&kind, &transaction_hash)
+            .accepted_public_values(kind, &transaction_hash)
             .await?;
         let public_values_hex = format!("0x{}", hex::encode(&public_values));
         let existing = sqlx::query(
@@ -803,7 +814,8 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let (job_id, input) = match existing {
             Some(row) => {
                 let original: Value = row.try_get("input")?;
-                let input = if kind == "settlement" && original.get("submission").is_none() {
+                let input = if kind == ProofKind::Settlement && original.get("submission").is_none()
+                {
                     recovered_settlement_input(pool, config, &public_values).await?
                 } else {
                     original
@@ -811,7 +823,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                 (row.try_get("id")?, input)
             }
             None => {
-                let input = if kind == "settlement" {
+                let input = if kind == ProofKind::Settlement {
                     recovered_settlement_input(pool, config, &public_values).await?
                 } else {
                     json!({ "recoveredFromEthereum": true })
@@ -827,7 +839,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                              $7, $8, 1, NOW())",
                 )
                 .bind(id)
-                .bind(&kind)
+                .bind(kind.as_str())
                 .bind(format!(
                     "recovered:{kind}:{}",
                     transaction_hash.to_lowercase()
@@ -843,8 +855,8 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
             }
         };
 
-        match kind.as_str() {
-            "bridge" => {
+        match kind {
+            ProofKind::Bridge => {
                 apply_confirmed_bridge(
                     pool,
                     job_id,
@@ -852,11 +864,10 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                     block_number,
                     &block_hash,
                     &transaction_hash,
-                    config.fee_payer_public_key.as_deref(),
                 )
                 .await?;
             }
-            "settlement" => {
+            ProofKind::Settlement => {
                 apply_confirmed_settlement(
                     pool,
                     job_id,
@@ -868,7 +879,6 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
                 )
                 .await?;
             }
-            _ => unreachable!(),
         }
         sqlx::query(
             "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
@@ -957,13 +967,14 @@ async fn reconcile_jobs(
         "SELECT id, kind::text AS kind, input, public_values, status::text AS status,
                 transaction_hash FROM proof_jobs
          WHERE transaction_hash IS NOT NULL
-           AND status IN ('submitted', 'confirmed')",
+           AND status IN ('submitted', 'confirmed')
+           AND kind::text IN ('settlement', 'bridge')",
     )
     .fetch_all(pool)
     .await?;
     for row in rows {
         let id: uuid::Uuid = row.try_get("id")?;
-        let kind: String = row.try_get("kind")?;
+        let kind: ProofKind = row.try_get::<String, _>("kind")?.parse()?;
         let input: Value = row.try_get("input")?;
         let public_values: Option<String> = row.try_get("public_values")?;
         let previous_status: String = row.try_get("status")?;
@@ -1008,7 +1019,7 @@ async fn reconcile_jobs(
             config.confirmations,
             finalized_block.map(|block| block.number),
         );
-        if confirmed && previous_status != "confirmed" && kind == "settlement" {
+        if confirmed && previous_status != "confirmed" && kind == ProofKind::Settlement {
             apply_confirmed_settlement(
                 pool,
                 id,
@@ -1022,7 +1033,7 @@ async fn reconcile_jobs(
             )
             .await?;
         }
-        if confirmed && previous_status != "confirmed" && kind == "bridge" {
+        if confirmed && previous_status != "confirmed" && kind == ProofKind::Bridge {
             apply_confirmed_bridge(
                 pool,
                 id,
@@ -1032,7 +1043,6 @@ async fn reconcile_jobs(
                 receipt.block_number,
                 &receipt.block_hash.to_string(),
                 &transaction_hash,
-                config.fee_payer_public_key.as_deref(),
             )
             .await?;
         }
@@ -1192,7 +1202,6 @@ pub(crate) async fn apply_confirmed_bridge(
     block_number: u64,
     block_hash: &str,
     transaction_hash: &str,
-    fee_payer_public_key: Option<&str>,
 ) -> Result<()> {
     let bytes = hex::decode(
         public_values_hex
@@ -1279,19 +1288,6 @@ pub(crate) async fn apply_confirmed_bridge(
         block_hash,
     )
     .await?;
-    if let Some(fee_payer_public_key) = fee_payer_public_key {
-        advance_fee_payer(
-            &mut tx,
-            job_id,
-            fee_payer_public_key,
-            None,
-            u64::try_from(decoded.actions.len())?,
-            block_number,
-            block_hash,
-        )
-        .await?;
-    }
-
     let mut state_before = decoded.zeko_action_state_before;
     for (offset, action) in decoded.actions.iter().enumerate() {
         let sequence = decoded
@@ -1812,8 +1808,19 @@ mod tests {
     }
 
     #[test]
-    fn bridge_actions_advance_the_virtual_fee_payer_nonce() {
-        assert_eq!(fee_payer_nonce_after(2, 2).unwrap(), 4);
+    fn settlement_advances_the_virtual_fee_payer_nonce() {
+        assert_eq!(fee_payer_nonce_after(2, 1).unwrap(), 3);
         assert!(fee_payer_nonce_after(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn reconciliation_selects_only_supported_proof_kinds() {
+        let source = include_str!("indexer.rs");
+        let start = source.find("async fn reconcile_jobs").unwrap();
+        let end = source[start..]
+            .find("pub(crate) async fn apply_confirmed_settlement")
+            .map(|offset| start + offset)
+            .unwrap();
+        assert!(source[start..end].contains("kind::text IN ('settlement', 'bridge')"));
     }
 }

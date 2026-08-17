@@ -15,9 +15,6 @@ RUN cargo build --release --target riscv64im-succinct-zkvm-elf \
     --manifest-path program/settlement/Cargo.toml
 RUN cargo build --release --target riscv64im-succinct-zkvm-elf \
     --manifest-path program/bridge/Cargo.toml
-RUN cargo build --release --target riscv64im-succinct-zkvm-elf \
-    --manifest-path program/withdraw/Cargo.toml
-
 FROM golang:1.24-bookworm AS go-toolchain
 
 FROM rust:bookworm AS api-builder

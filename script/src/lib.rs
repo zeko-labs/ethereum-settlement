@@ -18,7 +18,6 @@ use zeko_sp1_lib::{
 
 pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
 pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
-pub const WITHDRAW_ELF: Elf = include_elf!("withdraw-program");
 
 #[repr(C, align(8))]
 struct Aligned<T: ?Sized>(T);
