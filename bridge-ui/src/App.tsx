@@ -49,7 +49,7 @@ type Completion = { direction: Direction; amount: string; hash: string; url: str
 const missingWalletMessage = (wallet: "ethereum" | "auro", ethereum = "Sepolia") =>
   wallet === "ethereum"
     ? `Connect an Ethereum wallet on ${ethereum} before continuing.`
-    : "Connect Auro to Zeko Testnet before continuing."
+    : "Connect a Mina wallet to Zeko Testnet before continuing."
 
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig>()
@@ -157,7 +157,7 @@ export default function App() {
       setZekoClient(undefined)
       setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
       setRecipient((current) => direction === "deposit" && !current ? account : current)
-      setToast("Auro connected to Zeko Testnet with the temporary testnet signing domain.")
+      setToast("Mina wallet connected to Zeko Testnet with the temporary testnet signing domain.")
     } catch (error) {
       setActionError(formatWalletError(error))
     } finally {
@@ -166,7 +166,7 @@ export default function App() {
   }, [config, direction])
 
   useEffect(() => {
-    if (!config || !window.mina || !wasAuroConnected()) return
+    if (!config || !wasAuroConnected()) return
     let active = true
     void connectAuro(config)
       .then(async (account) => {
@@ -207,7 +207,12 @@ export default function App() {
   useEffect(() => {
     if (!config) return
     const ethereum = window.ethereum
-    const auro = window.mina
+    let auro
+    try {
+      auro = getAuroProvider()
+    } catch {
+      auro = undefined
+    }
     const onEthereumAccounts = (value: unknown) => {
       const account = Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined
       activityRequest.current += 1
@@ -250,7 +255,7 @@ export default function App() {
     const onAuroChain = (network: { networkID: string }) => {
       setZekoClient(undefined)
       if (!isAuroPoCNetwork(network.networkID)) {
-        setActionError("Auro must use Zeko Testnet for this PoC's temporary testnet signing domain.")
+        setActionError("The Mina wallet must use Zeko Testnet for this PoC's temporary testnet signing domain.")
       }
     }
     ethereum?.on?.("accountsChanged", onEthereumAccounts)

@@ -90,7 +90,7 @@ export const createEthereumBridgeClient = async ({
 const parseAuroSignedCommand = (signedData: string): unknown => {
   const parsed: unknown = JSON.parse(signedData)
   if (typeof parsed !== "object" || parsed === null || !("zkappCommand" in parsed)) {
-    throw new Error("Auro returned no signed zkApp command")
+    throw new Error("The Mina wallet returned no signed zkApp command")
   }
   return (parsed as { zkappCommand: unknown }).zkappCommand
 }
@@ -104,15 +104,15 @@ export const createAuroSigner = (
   ): Promise<Awaited<ReturnType<SignTransaction>>> => {
     await ensureAuroPoCNetwork(provider, config)
     if (config.minaSigningNetworkId !== "testnet") {
-      throw new Error("Auro PoC transactions must use the testnet signing domain")
+      throw new Error("Mina wallet PoC transactions must use the testnet signing domain")
     }
     const result = await provider.sendTransaction({
       onlySign: true,
       transaction: transaction.toJSON()
     })
     if (result instanceof Error) throw result
-    if (isProviderError(result)) throw new Error(result.message ?? `Auro error ${result.code}`)
-    if (!("signedData" in result)) throw new Error("Auro returned no signed transaction")
+    if (isProviderError(result)) throw new Error(result.message ?? `Mina wallet error ${result.code}`)
+    if (!("signedData" in result)) throw new Error("The Mina wallet returned no signed transaction")
     const { o1 } = await loadBridgeModules()
     return o1.Transaction.fromJSON(
       parseAuroSignedCommand(result.signedData) as Parameters<typeof o1.Transaction.fromJSON>[0]

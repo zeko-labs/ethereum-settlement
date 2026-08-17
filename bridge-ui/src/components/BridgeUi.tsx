@@ -70,12 +70,12 @@ export const WalletChip = ({
     type="button"
     className="wallet-chip"
     onClick={onClick}
-    aria-label={account ? `${network === "ethereum" ? "Ethereum" : "Auro"} wallet ${shortAddress(account)}` : `Connect ${network === "ethereum" ? "wallet" : "Auro"}`}
+    aria-label={account ? `${network === "ethereum" ? "Ethereum" : "Mina"} wallet ${shortAddress(account)}` : `Connect ${network === "ethereum" ? "wallet" : "Mina wallet"}`}
   >
     <NetworkIcon network={network} compact />
     <span className="wallet-copy">
       <span className="wallet-network">{network === "ethereum" ? ethereumNetworkName : "Zeko Testnet"}</span>
-      <span className="wallet-address">{account ? shortAddress(account) : `Connect ${network === "ethereum" ? "wallet" : "Auro"}`}</span>
+      <span className="wallet-address">{account ? shortAddress(account) : `Connect ${network === "ethereum" ? "wallet" : "Mina wallet"}`}</span>
       {balance !== undefined && <span className="wallet-balance">{balance} ETH</span>}
     </span>
   </button>
@@ -129,7 +129,7 @@ export const DepositProgress = ({
         <div className="summary-row"><span>Settlement sequence</span><strong>{deposit.synchronizedSettlementSequence ?? "Pending"}</strong></div>
       </div>
       <button className="primary-button" type="button" disabled={busy || deposit.status !== "synchronized"} onClick={onFinalize}>
-        {busy ? "Opening Auro…" : deposit.status === "synchronized" ? "Finalize on Zeko" : deposit.status === "finalized" ? "Finalized on Zeko" : "Waiting for settlement"}
+        {busy ? "Opening Mina wallet…" : deposit.status === "synchronized" ? "Finalize on Zeko" : deposit.status === "finalized" ? "Finalized on Zeko" : "Waiting for settlement"}
       </button>
     </section>
   )

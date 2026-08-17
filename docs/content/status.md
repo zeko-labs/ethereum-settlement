@@ -36,8 +36,15 @@ promoted to a persistent live Sepolia deployment.
   requests. The Actions services consume the gateway's Mina archive shape.
 - `bridge-ui/` is a standalone React application for the four browser-owned
   operations: ETH deposit, Zeko deposit finalization, Zeko withdrawal request,
-  and Ethereum claim. It uses injected Ethereum wallets and Auro, with the PoC
-  signing domain fixed to Mina `testnet`.
+  and Ethereum claim. It uses injected Ethereum wallets plus either Auro or the
+  Auro-compatible MetaMask Mina Snap, with the PoC signing domain fixed to Mina
+  `testnet`.
+- `mina-snap/` contains the `mina-signer` Snap and Mina Provider adapter. Its
+  tests lock account derivation and message/field/nullifier/zkApp signatures to
+  Auro 2.5.2 reference results, including a bridge-shaped Berkeley transaction;
+  the bridge integration test exercises the same `onlySign` boundary through
+  the Snap adapter. Publishing, MetaMask allowlisting, and a funded browser
+  deployment remain external release steps.
 - `explorer-ui/` is a standalone React explorer for L2 blocks, transactions,
   accounts, SP1/Ethereum settlements, deposits, withdrawals, and canonical
   claims. The gateway joins a read-only OCaml archive view with its existing

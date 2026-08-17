@@ -1,8 +1,14 @@
+import {
+  discoverMetaMaskProvider,
+  MinaSnapProvider,
+  type MetaMaskProvider
+} from "@zeko-labs/mina-snap-provider"
 import type { Address, EIP1193Provider, Hex } from "viem"
 import { getAddress } from "viem"
 import type { RuntimeConfig } from "./config"
 
 export type EthereumProvider = EIP1193Provider & {
+  readonly isMetaMask?: boolean
   on?: (event: "accountsChanged" | "chainChanged", listener: (value: unknown) => void) => void
   removeListener?: (event: "accountsChanged" | "chainChanged", listener: (value: unknown) => void) => void
 }
@@ -16,6 +22,8 @@ export type AuroSignedResult =
   | Error
 
 export type AuroProvider = {
+  readonly isAuro?: boolean
+  readonly isMinaSnap?: boolean
   requestAccounts: () => Promise<string[] | ProviderError>
   requestNetwork: () => Promise<{ networkID: string } | ProviderError>
   addChain: (input: { url: string; name: string }) => Promise<{ networkID: string } | ProviderError>
@@ -43,9 +51,29 @@ export const getEthereumProvider = (): EthereumProvider => {
   return window.ethereum
 }
 
+let cachedSnapProvider: { ethereum: EthereumProvider; provider: AuroProvider } | undefined
+
+export const getSnapProvider = (): AuroProvider => {
+  const ethereum = discoverMetaMaskProvider(window)
+  if (!ethereum) throw new Error("MetaMask is not installed")
+  if (cachedSnapProvider?.ethereum === ethereum) return cachedSnapProvider.provider
+  const snapId = import.meta.env.VITE_MINA_SNAP_ID as string | undefined
+  const provider = new MinaSnapProvider(
+    ethereum,
+    snapId ? { snapId } : undefined
+  ) as unknown as AuroProvider
+  cachedSnapProvider = { ethereum: ethereum as unknown as EthereumProvider, provider }
+  return provider
+}
+
 export const getAuroProvider = (): AuroProvider => {
-  if (!window.mina) throw new Error("Auro Wallet is not installed")
-  return window.mina
+  const preference = import.meta.env.VITE_MINA_WALLET as string | undefined
+  if (preference === "auro") {
+    if (!window.mina) throw new Error("Auro Wallet is not installed")
+    return window.mina
+  }
+  if (preference !== "metamask-snap" && window.mina) return window.mina
+  return getSnapProvider()
 }
 
 // Auro exposes the selected chain using its wallet-facing identifier. The
@@ -99,7 +127,7 @@ export const ensureAuroPoCNetwork = async (
   config: RuntimeConfig
 ): Promise<void> => {
   const current = await provider.requestNetwork()
-  if (isProviderError(current)) throw new Error(current.message ?? `Auro error ${current.code}`)
+  if (isProviderError(current)) throw new Error(current.message ?? `Mina wallet error ${current.code}`)
   if (isAuroPoCNetwork(current.networkID)) return
 
   // Zeko testnet is built into current Auro releases. Selecting it is enough
@@ -124,22 +152,22 @@ export const ensureAuroPoCNetwork = async (
           `Auro blocks dapps from adding local HTTP nodes. Add ${config.sequencerGraphqlUrl} manually in Auro Settings > Networks, select it, then reconnect.`
         )
       }
-      throw new Error(added.message ?? `Auro error ${added.code}`)
+      throw new Error(added.message ?? `Mina wallet error ${added.code}`)
     }
   }
 
   const network = await provider.requestNetwork()
-  if (isProviderError(network)) throw new Error(network.message ?? `Auro error ${network.code}`)
+  if (isProviderError(network)) throw new Error(network.message ?? `Mina wallet error ${network.code}`)
   if (!isAuroPoCNetwork(network.networkID)) {
-    throw new Error("Auro did not select Zeko Testnet")
+    throw new Error("The Mina wallet did not select Zeko Testnet")
   }
 }
 
 export const connectAuro = async (config: RuntimeConfig): Promise<string> => {
   const provider = getAuroProvider()
   const accounts = await provider.requestAccounts()
-  if (isProviderError(accounts)) throw new Error(accounts.message ?? `Auro error ${accounts.code}`)
-  if (!accounts[0]) throw new Error("No Auro account selected")
+  if (isProviderError(accounts)) throw new Error(accounts.message ?? `Mina wallet error ${accounts.code}`)
+  if (!accounts[0]) throw new Error("No Mina account selected")
   await ensureAuroPoCNetwork(provider, config)
   return accounts[0]
 }

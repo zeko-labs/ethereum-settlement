@@ -44,7 +44,7 @@ export const BridgeForm = (props: Props) => {
           </div>
           <div className="network-side">
             <div className="network-pill"><NetworkIcon network={source} /><span className="network-pill-copy"><span className="network-name">{deposit ? ethereum : "Zeko Testnet"}</span><span className="network-type">{deposit ? "Settlement & custody" : "Execution network"}</span></span><span className="token-label">ETH</span></div>
-            <div className="recipient-row"><span>{sourceAccount ? "Connected" : "Required"}</span><strong>{sourceAccount ? shortAddress(sourceAccount) : `Connect ${deposit ? "Ethereum wallet" : "Auro"}`}</strong></div>
+            <div className="recipient-row"><span>{sourceAccount ? "Connected" : "Required"}</span><strong>{sourceAccount ? shortAddress(sourceAccount) : `Connect ${deposit ? "Ethereum wallet" : "Mina wallet"}`}</strong></div>
           </div>
         </div>
         <button type="button" className="swap-button" onClick={props.onSwap} aria-label="Reverse bridge direction"><span>↕</span></button>
@@ -62,9 +62,9 @@ export const BridgeForm = (props: Props) => {
       </div>
       {props.validation && <div className="validation-message" role="alert"><span>!</span><span>{props.validation}</span></div>}
       <div className="route-summary"><div className="route-line"><span className="route-label">Route</span><span className="route-value"><span className="route-node">{deposit ? "Ethereum" : "Zeko"}</span><span className="route-arrow">→</span><span className="route-node"><NetworkIcon network="proof" compact /> SP1</span><span className="route-arrow">→</span><span className="route-node">{deposit ? "Zeko" : "Ethereum"}</span></span></div><button className="details-button" type="button" onClick={props.onToggleDetails} aria-expanded={props.showDetails}>{props.showDetails ? "Hide details" : "Route details"}</button></div>
-      {props.showDetails && <div className="route-details"><div className="detail-cell"><span className="detail-label">Custody</span><strong className="detail-value">Ethereum bridge escrow</strong></div><div className="detail-cell"><span className="detail-label">Deposit policy</span><strong className="detail-value">No cancellation/refund</strong></div><div className="detail-cell"><span className="detail-label">Signing domain</span><strong className="detail-value">Auro · testnet placeholder</strong></div></div>}
-      <Notice kind="warning"><strong>No cancellation/refund.</strong> {deposit ? "First sign the ETH lock in your Ethereum wallet." : "First sign the withdrawal request with Auro. Ethereum claim becomes available after settlement and the safety delay."}</Notice>
-      <Notice kind="warning">Zeko Testnet currently uses Mina’s <code>testnet</code> signing-domain placeholder in Auro.</Notice>
+      {props.showDetails && <div className="route-details"><div className="detail-cell"><span className="detail-label">Custody</span><strong className="detail-value">Ethereum bridge escrow</strong></div><div className="detail-cell"><span className="detail-label">Deposit policy</span><strong className="detail-value">No cancellation/refund</strong></div><div className="detail-cell"><span className="detail-label">Signing domain</span><strong className="detail-value">Mina wallet · testnet placeholder</strong></div></div>}
+      <Notice kind="warning"><strong>No cancellation/refund.</strong> {deposit ? "First sign the ETH lock in your Ethereum wallet." : "First sign the withdrawal request with your Mina wallet. Ethereum claim becomes available after settlement and the safety delay."}</Notice>
+      <Notice kind="warning">Zeko Testnet currently uses Mina’s <code>testnet</code> signing-domain placeholder in Auro and the MetaMask Snap.</Notice>
       <button type="button" className="primary-button" disabled={!props.canReview} onClick={props.onReview}>Review {props.direction}<span>→</span></button>
     </section>
   )

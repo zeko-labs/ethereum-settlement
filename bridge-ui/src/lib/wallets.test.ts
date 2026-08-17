@@ -4,6 +4,7 @@ import {
   ensureAuroPoCNetwork,
   ensureEthereumNetwork,
   formatWalletError,
+  getAuroProvider,
   listenAuroChanges,
   listenEthereumChanges,
   type AuroProvider,
@@ -17,6 +18,23 @@ const config = {
 } as RuntimeConfig
 
 describe("wallet adapters", () => {
+  it("uses the Auro-compatible Mina Snap provider when Auro is absent", () => {
+    delete window.mina
+    window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
+
+    expect(getAuroProvider()).toMatchObject({
+      isAuro: false,
+      isMinaSnap: true
+    })
+  })
+
+  it("does not send Snap methods to a non-MetaMask Ethereum wallet", () => {
+    delete window.mina
+    window.ethereum = { request: vi.fn() } as unknown as EthereumProvider
+
+    expect(() => getAuroProvider()).toThrow(/MetaMask is not installed/)
+  })
+
   it("accepts an already selected Auro Zeko testnet network", async () => {
     const provider = {
       addChain: vi.fn(),

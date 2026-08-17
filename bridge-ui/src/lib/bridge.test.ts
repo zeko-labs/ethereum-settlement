@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { MinaSnapProvider } from "@zeko-labs/mina-snap-provider"
 import type { RuntimeConfig } from "./config"
 import type { AuroProvider, EthereumProvider } from "./wallets"
 
@@ -87,6 +88,46 @@ describe("SDK integration", () => {
     })
     expect(mocks.fromJSON).toHaveBeenCalledWith({ feePayer: { body: { fee: "1" } } })
     expect(signed).toEqual({ signed: { feePayer: { body: { fee: "1" } } } })
+  })
+
+  it("uses the MetaMask Snap through the same Auro onlySign bridge boundary", async () => {
+    const request = vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
+      if (method === "wallet_getSnaps") {
+        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+      }
+      const minaRequest = (params as {
+        request: { method: string }
+      }).request
+      if (minaRequest.method === "mina_requestNetwork") {
+        return { networkID: "zeko:testnet" }
+      }
+      if (minaRequest.method === "mina_sendTransaction") {
+        return {
+          signedData: JSON.stringify({
+            zkappCommand: { feePayer: { body: { fee: "1" } } }
+          })
+        }
+      }
+      throw new Error(`Unexpected Mina method ${minaRequest.method}`)
+    })
+    const provider = new MinaSnapProvider({ request }) as unknown as AuroProvider
+    const signer = createAuroSigner(provider, config)
+
+    await expect(signer({
+      toJSON: () => "{\"unsigned\":true}"
+    } as Parameters<typeof signer>[0])).resolves.toEqual({
+      signed: { feePayer: { body: { fee: "1" } } }
+    })
+    expect(request).toHaveBeenLastCalledWith({
+      method: "wallet_invokeSnap",
+      params: {
+        snapId: "npm:@zeko-labs/mina-snap",
+        request: {
+          method: "mina_sendTransaction",
+          params: { onlySign: true, transaction: "{\"unsigned\":true}" }
+        }
+      }
+    })
   })
 
   it("propagates a rejected Auro signature without parsing a transaction", async () => {

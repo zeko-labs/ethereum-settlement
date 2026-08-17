@@ -2,7 +2,8 @@
 
 Standalone React application for the native ETH bridge PoC. It talks directly
 to the public gateway bridge API, gateway/sequencer GraphQL endpoints, injected
-Ethereum wallets, and Auro. It never calls proof-operator routes.
+Ethereum wallets, and either Auro or the Auro-compatible MetaMask Mina Snap. It
+never calls proof-operator routes.
 
 ## Run locally
 
@@ -14,6 +15,35 @@ pnpm dev
 The default URL is `http://127.0.0.1:5174`. Edit
 `public/runtime-config.json` before deployment; it contains public endpoints and
 limits only.
+
+The Mina wallet selection is a Vite build-time setting:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_MINA_WALLET` | auto | `auro`, `metamask-snap`, or auto-prefer Auro and fall back to the Snap |
+| `VITE_MINA_SNAP_ID` | `npm:@zeko-labs/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
+
+To test the local Snap, first build and serve it from `../mina-snap`, then start
+this UI with the explicit provider selection:
+
+```bash
+cd ../mina-snap
+pnpm build
+pnpm --filter @zeko-labs/mina-snap start
+```
+
+In another terminal:
+
+```bash
+cd ../bridge-ui
+VITE_MINA_WALLET=metamask-snap \
+VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
+pnpm dev
+```
+
+The npm package is not usable in ordinary MetaMask until it has been published,
+security-reviewed, and allowlisted. See the [Snap workspace
+README](../mina-snap/README.md) for the compatibility matrix and release gate.
 
 The checked-in file is ready for the local PoC. Operators can materialize the
 same schema from environment variables before building:
@@ -59,18 +89,23 @@ Both Zeko bridge SDK packages are vendored from the same pinned source commit.
 Do not replace only one with the same-numbered registry package: the published
 bridge SDK artifact lacks runtime exports required by the Ethereum wrapper.
 
-## Auro signing domain
+## Mina wallet signing domain
 
-Auro currently uses the Mina signing salt `testnet` for Zeko testnet and custom
-testnet networks. The PoC therefore constructs the bridge SDK runtime with both
-circuit networks set to `testnet`. This is separate from Auro's wallet-facing
-chain identifier and is not the intended production network ID.
+Auro and the MetaMask Snap use the Mina signing salt `testnet` for Zeko testnet
+and custom testnet networks. The PoC therefore constructs the bridge SDK runtime
+with both circuit networks set to `testnet`. This is separate from the
+wallet-facing chain identifier and is not the intended production network ID.
 
 Auro 2.5.x only permits public HTTPS URLs through its dapp-facing `addChain`
 method. For a local node, add `http://127.0.0.1:1923/graphql` through Auro's
 Settings > Networks screen and select it manually. Auro reports the selected
 wallet chain as `zeko:testnet`; that identifier is separate from the `testnet`
 transaction-signing salt used by this PoC.
+
+The Snap can add a local HTTP GraphQL endpoint after an explicit MetaMask
+confirmation. It contacts the endpoint only after approval, reads `networkID`,
+shows that reported ID in a second confirmation, stores the URL in Snap state,
+and then applies the same signing-domain mapping.
 
 ## Validation
 

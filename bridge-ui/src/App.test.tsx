@@ -96,7 +96,7 @@ describe("bridge application", () => {
     vi.clearAllMocks()
   })
 
-  it("runs the deposit review, gateway progress, and Auro finalization states", async () => {
+  it("runs the deposit review, gateway progress, and Mina-wallet finalization states", async () => {
     const user = userEvent.setup()
     render(<App />)
 
@@ -104,7 +104,7 @@ describe("bridge application", () => {
     expect(screen.getAllByText(/No cancellation\/refund/i).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
-    await user.click(screen.getByRole("button", { name: /Connect Auro/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.1")
     expect(screen.getByLabelText("Zeko recipient")).toHaveValue(zekoAccount)
 
@@ -142,13 +142,13 @@ describe("bridge application", () => {
     expect(screen.queryByText("Deposit finalized")).not.toBeInTheDocument()
   })
 
-  it("submits a native withdrawal with Auro's testnet signing domain", async () => {
+  it("submits a native withdrawal with the Mina wallet testnet signing domain", async () => {
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
-    await user.click(screen.getByRole("button", { name: /Connect Auro/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
     await user.click(screen.getByRole("button", { name: "Reverse bridge direction" }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.05")
 
@@ -156,8 +156,8 @@ describe("bridge application", () => {
     const review = screen.getByRole("button", { name: /Review withdrawal/i })
     await waitFor(() => expect(review).toBeEnabled())
     await user.click(review)
-    expect(screen.getByText("Auro · testnet salt")).toBeVisible()
-    await user.click(screen.getByRole("button", { name: "Confirm in Auro" }))
+    expect(screen.getByText("Mina wallet · testnet salt")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Confirm in Mina wallet" }))
 
     expect(await screen.findByRole("heading", { name: "Withdrawal in progress" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Waiting for settlement" })).toBeDisabled()
@@ -180,7 +180,7 @@ describe("bridge application", () => {
     window.mina = {} as typeof window.mina
     render(<App />)
 
-    expect(await screen.findByRole("button", { name: /Auro wallet B62qke…ABn2/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
     expect(mocks.connectAuro).toHaveBeenCalledTimes(1)
   })
 

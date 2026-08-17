@@ -24,4 +24,5 @@ logs/
 # Node examples
 **/node_modules
 tools/zeko-action-state/dist
+mina-snap/packages/*/dist
 .pnpm-store

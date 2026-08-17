@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "provider:build": "tsc -p ../mina-snap/packages/provider/tsconfig.build.json",
+    "predev": "pnpm provider:build",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "pnpm provider:build",
     "build": "tsc -b && vite build",
     "config:write": "node scripts/write-runtime-config.mjs",
     "preview": "vite preview --host 127.0.0.1",
+    "pretypecheck": "pnpm provider:build",
     "typecheck": "tsc -b --pretty false",
+    "pretest": "pnpm provider:build",
     "test": "vitest run && pnpm test:vendor",
     "test:vendor": "node scripts/check-vendored-sdk.mjs",
     "test:watch": "vitest",
@@ -16,6 +21,7 @@
     "test:e2e:live": "playwright test --config playwright.live.config.ts"
   },
   "dependencies": {
+    "@zeko-labs/mina-snap-provider": "link:../mina-snap/packages/provider",
     "@zeko-labs/bridge-sdk": "file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz",
     "@zeko-labs/eth-bridge-sdk": "file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz",
     "o1js": "2.8.0",
