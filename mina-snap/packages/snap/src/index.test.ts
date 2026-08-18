@@ -246,6 +246,95 @@ describe("Auro-compatible Mina Snap RPC", () => {
     )
   })
 
+  it("partially signs a bridge zkApp whose fee payer is the sequencer", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "zeko:testnet" }
+    }))
+    const transaction = JSON.parse(JSON.stringify(
+      auroBerkeleyFixture.transaction
+    )) as {
+      feePayer: { body: { publicKey: string }; authorization: string }
+      accountUpdates: Array<{ authorization: { signature: string | null } }>
+    }
+    transaction.feePayer.body.publicKey =
+      "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+    transaction.feePayer.authorization = ""
+
+    const pending = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: {
+        onlySign: true,
+        transaction: JSON.stringify(transaction)
+      }
+    })
+    await approve(pending)
+    const result = await pending
+    if (!("result" in result.response)) {
+      throw new Error(`Snap returned ${JSON.stringify(result.response.error)}`)
+    }
+    const signed = JSON.parse(
+      (result.response.result as { signedData: string }).signedData
+    ) as {
+      zkappCommand: {
+        feePayer: { body: { publicKey: string }; authorization: string }
+        accountUpdates: Array<{ authorization: { signature?: string } }>
+      }
+    }
+
+    expect(signed.zkappCommand.feePayer).toEqual({
+      body: expect.objectContaining({
+        publicKey: transaction.feePayer.body.publicKey
+      }),
+      authorization: ""
+    })
+    expect(signed.zkappCommand.accountUpdates[0]?.authorization.signature)
+      .toEqual(expect.stringMatching(/^7m/u))
+  })
+
+  it("rejects partial signing when the connected account is not a signer", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "zeko:testnet" }
+    }))
+    const transaction = JSON.parse(JSON.stringify(
+      auroBerkeleyFixture.transaction
+    )) as {
+      feePayer: { body: { publicKey: string }; authorization: string }
+      accountUpdates: Array<{ body: { publicKey: string } }>
+    }
+    transaction.feePayer.body.publicKey =
+      "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+    transaction.feePayer.authorization = ""
+    if (transaction.accountUpdates[0]) {
+      transaction.accountUpdates[0].body.publicKey =
+        "B62qo2SrsRijjVchPKVccPHVzi56u6Uu9zJYTzuVuNqhb27cMvCBaxe"
+    }
+
+    const response = await request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: {
+        onlySign: true,
+        transaction: JSON.stringify(transaction)
+      }
+    })
+
+    expect(response.response).toMatchObject({
+      error: {
+        code: -32602,
+        message: "The zkApp transaction does not request a signature from the connected account"
+      }
+    })
+  })
+
   it("signs and verifies Auro JSON messages", async () => {
     const { request } = await installSnap()
     await connect(request)

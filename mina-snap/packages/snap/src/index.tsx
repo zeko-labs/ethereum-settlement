@@ -244,6 +244,30 @@ const getZkappEra = (command: Record<string, unknown>): "berkeley" | undefined =
   return lengths.includes(8) ? "berkeley" : undefined
 }
 
+const signedAccountUpdateIndexes = (
+  command: Record<string, unknown>,
+  publicKey: string
+): number[] => {
+  if (!Array.isArray(command.accountUpdates)) return []
+  const indexes: number[] = []
+  command.accountUpdates.forEach((update, index) => {
+    if (typeof update !== "object" || update === null) return
+    const body = (update as { body?: unknown }).body
+    if (typeof body !== "object" || body === null) return
+    const bodyRecord = body as Record<string, unknown>
+    const authorizationKind = bodyRecord.authorizationKind
+    if (
+      bodyRecord.publicKey === publicKey &&
+      typeof authorizationKind === "object" &&
+      authorizationKind !== null &&
+      (authorizationKind as { isSigned?: unknown }).isSigned === true
+    ) {
+      indexes.push(index)
+    }
+  })
+  return indexes
+}
+
 const readZkappCommand = (params: unknown): {
   command: Record<string, unknown>
   onlySign: boolean
@@ -779,8 +803,17 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       nonce = nonceOverride.toString()
     }
     const connectedPublicKey = await derivePublicKey()
-    if (publicKey !== connectedPublicKey) {
-      throw new InvalidParamsError("The zkApp fee payer does not match the connected account")
+    const signsFeePayer = publicKey === connectedPublicKey
+    const signedUpdateIndexes = signedAccountUpdateIndexes(command, connectedPublicKey)
+    if (!signsFeePayer && signedUpdateIndexes.length === 0) {
+      throw new InvalidParamsError(
+        "The zkApp transaction does not request a signature from the connected account"
+      )
+    }
+    if (!signsFeePayer && !onlySign) {
+      throw new InvalidParamsError(
+        "A zkApp with a different fee payer can only be partially signed"
+      )
     }
     const accountUpdates = Array.isArray(command.accountUpdates)
       ? command.accountUpdates.length
@@ -788,7 +821,9 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     await approveSigning(
       origin,
       "Sign Mina zkApp transaction",
-      `${state.selectedNetwork}; fee ${fee} nanomina; nonce ${nonce}; ${accountUpdates} account update(s)`
+      `${state.selectedNetwork}; fee payer ${publicKey}; fee ${fee} nanomina; nonce ${nonce}; ` +
+      `${accountUpdates} account update(s); signing ${signsFeePayer ? "fee payer and " : ""}` +
+      `${signedUpdateIndexes.length} account update(s)`
     )
     const account = await deriveAccount()
     if (account.publicKey !== connectedPublicKey) {
@@ -803,9 +838,31 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         nonce,
         memo: feePayerMemo
       }
-    } as never, account.privateKey) as unknown as { data: unknown }
-    if (!client.verifyTransaction(signed as never)) {
+    } as never, account.privateKey) as unknown as {
+      data: { zkappCommand?: unknown }
+    }
+    if (signsFeePayer && !client.verifyTransaction(signed as never)) {
       throw new Error("Mina signer failed to verify its zkApp signature")
+    }
+    if (!signsFeePayer) {
+      const signedCommand = signed.data.zkappCommand
+      const signedUpdates = typeof signedCommand === "object" && signedCommand !== null &&
+        Array.isArray((signedCommand as { accountUpdates?: unknown }).accountUpdates)
+        ? (signedCommand as { accountUpdates: unknown[] }).accountUpdates
+        : []
+      const missingSignature = signedUpdateIndexes.some((index) => {
+        const update = signedUpdates[index]
+        const authorization = typeof update === "object" && update !== null
+          ? (update as { authorization?: unknown }).authorization
+          : undefined
+        const signature = typeof authorization === "object" && authorization !== null
+          ? (authorization as { signature?: unknown }).signature
+          : undefined
+        return typeof signature !== "string" || signature.length === 0
+      })
+      if (missingSignature) {
+        throw new Error("Mina signer did not sign every matching zkApp account update")
+      }
     }
     if (onlySign) return { signedData: JSON.stringify(signed.data) }
     const signedData = signed.data as { zkappCommand?: unknown }
