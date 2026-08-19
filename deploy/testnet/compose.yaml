@@ -167,7 +167,7 @@ services:
         export MINA_PRIVATE_KEY="$$(cat /run/zeko-secrets/sequencer-private-key)"
         export ZEKO_SIGNER_AUTH_TOKEN="$$(cat /run/zeko-secrets/sequencer-signer-token)"
         exec zeko-signer run --host 0.0.0.0 --port 9000 \
-          --allow-zkapp-signing --max-fee 10 --max-balance-change 1000000 \
+          --allow-zkapp-signing --max-fee 0.00025 --max-balance-change 1000000 \
           --tls-cert-file /run/zeko-secrets/signer-tls.crt \
           --tls-key-file /run/zeko-secrets/signer-tls.key
     healthcheck:
@@ -364,7 +364,7 @@ services:
           --pause-key "$$SEQUENCER_PUBLIC_KEY" \
           --sequencer-key "$$SEQUENCER_PUBLIC_KEY" \
           --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
-          --account-creation-fee 1 \
+          --account-creation-fee 0.000025 \
           --command-output /artifacts/deploy-command.json
     volumes:
       - ./config:/config:ro
@@ -401,11 +401,11 @@ services:
           --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
           --mq-host rabbitmq:5672 --db-dir /data/db \
           --checkpoints-dir /data/checkpoints --postgres-uri "$$POSTGRES_URI" \
-          --deposit-delay-blocks 0 --fee-modifier 1.0 --minimum-fee 0.01 \
+          --deposit-delay-blocks 0 --fee-modifier 1.0 --minimum-fee 0.00000025 \
           --slot-acceptance 60 \
           --slot-duration ${ZEKO_SLOT_DURATION_SECONDS:-12} \
           --commit-validity-period 2400 \
-          --commit-fee 1 --bridge-txn-fee 0.1
+          --commit-fee 0.000025 --bridge-txn-fee 0.0000025
     volumes:
       - sequencer:/data
       - ./config:/config:ro

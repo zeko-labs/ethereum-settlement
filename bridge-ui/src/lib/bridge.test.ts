@@ -34,7 +34,7 @@ const config = {
   expectedEthereumChainId: 11155111,
   minaSigningNetworkId: "testnet",
   auroNetworkName: "Zeko Ethereum PoC",
-  zekoTransactionFeeNanomina: "100000000",
+  zekoTransactionFeeNanomina: "2500",
   ethereumExplorerUrl: "https://sepolia.etherscan.io",
   zekoExplorerUrl: "https://zekoscan.io/testnet",
   pollIntervalMs: 5000
