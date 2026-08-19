@@ -101,7 +101,7 @@ const installApiMocks = async (page: Page) => {
       return route.fulfill({ json: { data: { circuitsConfig: { ethereumAssets: null } } } })
     }
     if (body.query?.includes("query GenesisConstants")) {
-      return route.fulfill({ json: { data: { genesisConstants: { accountCreationFee: "1000000000" } } } })
+      return route.fulfill({ json: { data: { genesisConstants: { accountCreationFee: "25000" } } } })
     }
     if (body.query?.includes("query SequencerPK")) {
       return route.fulfill({ json: { data: { sequencerPk: ZEKO_ACCOUNT } } })

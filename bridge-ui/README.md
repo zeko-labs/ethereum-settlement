@@ -46,7 +46,7 @@ Supported public variables:
 | `BRIDGE_UI_ACTIONS_API_URL` | `http://127.0.0.1:9101/graphql` | Public actions preparation/index API |
 | `BRIDGE_UI_ETHEREUM_CHAIN_ID` | `11155111` | Sepolia, or 31337 for the local manual stack |
 | `BRIDGE_UI_AURO_NETWORK_NAME` | `Zeko Ethereum PoC` | Auro custom-network display name |
-| `BRIDGE_UI_ZEKO_FEE_NANOMINA` | `100000000` | Sequencer operation fee passed to the SDK |
+| `BRIDGE_UI_ZEKO_FEE_NANOMINA` | `2500` | Sequencer operation fee passed to the SDK |
 | `BRIDGE_UI_ETHEREUM_EXPLORER_URL` | Sepolia Etherscan | Ethereum transaction links |
 | `BRIDGE_UI_ZEKO_EXPLORER_URL` | Zeko testnet explorer | Zeko transaction links |
 | `BRIDGE_UI_POLL_INTERVAL_MS` | `5000` | Visible-page gateway polling interval |

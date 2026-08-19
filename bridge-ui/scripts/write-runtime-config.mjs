@@ -43,7 +43,7 @@ const config = {
   expectedEthereumChainId: chainId,
   minaSigningNetworkId: "testnet",
   auroNetworkName: env.BRIDGE_UI_AURO_NETWORK_NAME ?? "Zeko Ethereum PoC",
-  zekoTransactionFeeNanomina: uintString("BRIDGE_UI_ZEKO_FEE_NANOMINA", "100000000"),
+  zekoTransactionFeeNanomina: uintString("BRIDGE_UI_ZEKO_FEE_NANOMINA", "2500"),
   ethereumExplorerUrl: url("BRIDGE_UI_ETHEREUM_EXPLORER_URL", "https://sepolia.etherscan.io"),
   zekoExplorerUrl: url("BRIDGE_UI_ZEKO_EXPLORER_URL", "https://zekoscan.io/testnet"),
   pollIntervalMs: integer("BRIDGE_UI_POLL_INTERVAL_MS", "5000", { min: 1000, max: 60000 })

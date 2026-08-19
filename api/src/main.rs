@@ -2699,7 +2699,7 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
         .parse::<i32>()
         .context("VIRTUAL_MINA_FORK_SLOT must fit int32")?;
     let account_creation_fee =
-        env::var("VIRTUAL_MINA_ACCOUNT_CREATION_FEE").unwrap_or_else(|_| "1000000000".to_owned());
+        env::var("VIRTUAL_MINA_ACCOUNT_CREATION_FEE").unwrap_or_else(|_| "25000".to_owned());
     let state_hash = env::var("VIRTUAL_MINA_INITIAL_STATE_HASH").unwrap_or_else(|_| {
         "0x0000000000000000000000000000000000000000000000000000000000000000".to_owned()
     });
@@ -2710,6 +2710,7 @@ async fn initialize_gateway_config(pool: &PgPool) -> Result<()> {
              outer_public_key)
          VALUES (TRUE, $1, $2, $3, $4, $5)
          ON CONFLICT (id) DO UPDATE SET
+            account_creation_fee = EXCLUDED.account_creation_fee,
             outer_public_key = COALESCE(
                 gateway_config.outer_public_key,
                 EXCLUDED.outer_public_key

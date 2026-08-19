@@ -54,9 +54,17 @@ Use credential files and the explicit variables in a persistent deployment.
 | `VIRTUAL_MINA_FEE_PAYER_PUBLIC_KEY` | Settlement fee payer used when rebuilding the virtual Mina view from accepted Ethereum calldata. |
 | `WITHDRAWAL_RECOVERY_POLL_SECS` | Archive/root reconstruction interval; reference value 5. |
 
+The Ethereum-backed Sepolia fee schedule preserves the relative values of the
+former Mina fees. It was calibrated on 2026-08-19 from approximately
+$0.0407/MINA and $1,625/ETH, then normalized to 25,000 native nanounits per
+former MINA. Consequently, `VIRTUAL_MINA_ACCOUNT_CREATION_FEE` is `25000`, the
+L2 account-creation and ordinary operation fees are `2500`, the minimum
+transaction fee is `250`, and the circuit-derived bridge-proof fee is `5000`.
+Every value is a multiple of 10 native nanounits.
+
 The accounts file must contain the outer account and settlement fee payer with
-state and nonce matching the deployed genesis. Existing database rows are not
-overwritten at startup.
+state and nonce matching the deployed genesis. The configured account-creation
+fee is synchronized at startup; existing account rows are not overwritten.
 
 ## Sequencer
 

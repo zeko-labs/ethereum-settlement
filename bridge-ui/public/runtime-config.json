@@ -7,7 +7,7 @@
   "expectedEthereumChainId": 31337,
   "minaSigningNetworkId": "testnet",
   "auroNetworkName": "Zeko Local Ethereum PoC",
-  "zekoTransactionFeeNanomina": "100000000",
+  "zekoTransactionFeeNanomina": "2500",
   "ethereumExplorerUrl": "https://sepolia.etherscan.io",
   "zekoExplorerUrl": "http://127.0.0.1:4175",
   "pollIntervalMs": 5000
