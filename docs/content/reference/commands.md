@@ -83,6 +83,14 @@ Create the retained identities once:
 tools/init-machine-testnet-identity.sh deploy/testnet
 ```
 
+Generate one proof-bound deployment fixture without running the sequencer test
+suite:
+
+```sh
+POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
+  tools/export-deployment-artifacts.sh build/poc/deployment-fixture
+```
+
 ```sh
 FORGE=$HOME/.foundry/bin/forge \
   tools/prepare-poc.sh \
