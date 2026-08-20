@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tools/lib/workspace.sh"
+source "$ROOT/tools/lib/da-topology.sh"
 DEPLOY_DIR=${1:-$ROOT/deploy/testnet}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
 
@@ -98,16 +99,29 @@ if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == false ]]; then
   }
 fi
 
-IFS=',' read -r -a da_keys <<<"${DA_PUBLIC_KEYS:-}"
-[[ ${#da_keys[@]} -eq 3 ]] || {
-  echo "DA_PUBLIC_KEYS must contain exactly three keys" >&2
+zeko_validate_da_topology "${DA_NODE_COUNT:-}" "${DA_QUORUM:-}" \
+  "${DA_PUBLIC_KEYS:-}"
+zeko_validate_da_scenario "$DEPLOY_DIR/config/bridge-scenario.json"
+scenario_da_node_count=$(jq -er '.daNodeCount' \
+  "$DEPLOY_DIR/config/bridge-scenario.json")
+scenario_da_quorum=$(jq -er '.daQuorum' \
+  "$DEPLOY_DIR/config/bridge-scenario.json")
+[[ $scenario_da_node_count == "$DA_NODE_COUNT" && \
+   $scenario_da_quorum == "$DA_QUORUM" ]] || {
+  echo "Runtime DA topology differs from the OCaml bridge scenario" >&2
   exit 1
 }
-[[ ${da_keys[0]} != "${da_keys[1]}" && ${da_keys[0]} != "${da_keys[2]}" && \
-   ${da_keys[1]} != "${da_keys[2]}" ]] || {
-  echo "DA public keys must be distinct" >&2
-  exit 1
-}
+identity_da_node_count=$(jq -r '.daNodeCount // empty' \
+  "$DEPLOY_DIR/config/identity.json")
+identity_da_quorum=$(jq -r '.daQuorum // empty' \
+  "$DEPLOY_DIR/config/identity.json")
+if [[ -n $identity_da_node_count || -n $identity_da_quorum ]]; then
+  [[ $identity_da_node_count == "$DA_NODE_COUNT" && \
+     $identity_da_quorum == "$DA_QUORUM" ]] || {
+    echo "Retained identity DA topology differs from the runtime profile" >&2
+    exit 1
+  }
+fi
 [[ $(jq -r '.commitValidityPeriod' \
   "$DEPLOY_DIR/config/bridge-scenario.json") == 2400 ]] || {
   echo "Bridge scenario must bind the 2400-slot testnet commit validity period" >&2
@@ -332,6 +346,14 @@ if [[ -n $manifest_da && $manifest_da != "$DA_PUBLIC_KEYS" ]]; then
   echo "DA_PUBLIC_KEYS differ from the OCaml bridge scenario" >&2
   exit 1
 fi
+scenario_da_commitment=$(jq -er '.daCommitment | ascii_downcase' \
+  "$DEPLOY_DIR/config/bridge-scenario.json")
+live_da_commitment=$(zeko_read_settlement_da_commitment "$CAST" \
+  "$SETTLEMENT_CONTRACT_ADDRESS" "$RPC_URL")
+[[ $live_da_commitment == "$scenario_da_commitment" ]] || {
+  echo "Settlement DA commitment differs from the OCaml bridge scenario" >&2
+  exit 1
+}
 
 compose_files=(-f compose.yaml)
 if [[ $ZEKO_UNSAFE_SEPOLIA_MOCK == true ]]; then
@@ -342,9 +364,13 @@ fi
 
 jq -n --arg rpc "$RPC_URL" --arg settlement "$SETTLEMENT_CONTRACT_ADDRESS" \
   --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
+  --argjson daNodeCount "$DA_NODE_COUNT" \
+  --arg daQuorum "$DA_QUORUM-of-$DA_NODE_COUNT" \
+  --argjson daQuorumSize "$DA_QUORUM" \
   --argjson unsafeSepoliaMock "$ZEKO_UNSAFE_SEPOLIA_MOCK" \
   '{status:"ready",chainId:11155111,rpc:$rpc,settlement:$settlement,
-    bridge:$bridge,daQuorum:"2-of-3",
+    bridge:$bridge,daNodeCount:$daNodeCount,daQuorum:$daQuorum,
+    daQuorumSize:$daQuorumSize,
     securityMode:(if $unsafeSepoliaMock then "unsafe-sepolia-mock" else "sp1-groth16" end),
     proofApprovalRequired:($unsafeSepoliaMock | not),
     confirmations:12}'

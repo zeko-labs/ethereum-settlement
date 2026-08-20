@@ -1,6 +1,6 @@
 # Persistent Sepolia PoC profile
 
-This profile runs one gateway, one real OCaml sequencer/prover, and three
+This profile defaults to one gateway, one real OCaml sequencer/prover, and three
 independent persistent DA nodes at quorum two. Only the gateway and sequencer
 GraphQL ports may be published; PostgreSQL, RabbitMQ, DA RPC, and all signer
 RPCs stay on Docker's internal network. Multisig DA is a PoC milestone, not the
@@ -23,6 +23,20 @@ The Ethereum profile defaults `ZEKO_COMMITMENT_PERIOD_SECONDS` to 900. Keep it
 explicit in the deployment environment so the explorer and operator runbook
 match the running sequencer; changing it does not alter Mina deployment
 defaults.
+
+`DA_NODE_COUNT` and `DA_QUORUM` define the active fixture and runtime topology;
+the supported node count is one through three. Set them before initializing an
+identity when reproducing a smaller deployment, for example:
+
+```sh
+DA_NODE_COUNT=1 DA_QUORUM=1 \
+  tools/init-machine-testnet-identity.sh deploy/testnet
+```
+
+Never change them on an existing identity: regenerate the OCaml scenario and
+redeploy because outer-state field 6 commits to the exact DA keys and quorum.
+The tooling records this topology in `bridge-scenario.json` and checks it
+against the fixture, runtime environment, and live settlement.
 
 Generate the final bridge proxy address before building OCaml circuits. The
 machine initializer creates a new admin first, predicts that admin's
@@ -176,8 +190,9 @@ docker compose --env-file deploy/testnet/.env \
 ```
 
 `bootstrap-da` is a bounded, idempotent one-shot. It reconstructs the deploy
-command from the exported genesis ledger and posts that ledger to all three DA
-nodes. The sequencer starts only after bootstrap succeeds. On later restarts,
+command from the exported genesis ledger and posts that ledger to every active
+DA node (all three in the default profile). The sequencer starts only after
+bootstrap succeeds. On later restarts,
 the Zeko deploy helper checks that the same ledger already exists and exits
 without changing it.
 

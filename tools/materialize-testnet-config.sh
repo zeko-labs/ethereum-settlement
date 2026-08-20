@@ -8,6 +8,7 @@ usage() {
 
 [[ $# -ge 3 && $# -le 4 ]] || usage
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/da-topology.sh"
 FIXTURE_ROOT=$(realpath "$1")
 CIRCUITS_CONFIG=$(realpath "$2")
 POC_OUTPUT=$(realpath "$3")
@@ -31,6 +32,12 @@ done
   echo "Missing cast: $CAST" >&2
   exit 1
 }
+fixture="$FIXTURE_ROOT/deposit-sync/settlement.json"
+scenario="$FIXTURE_ROOT/bridge-scenario.json"
+zeko_validate_da_scenario "$scenario" "$fixture"
+da_node_count=$(jq -er '.daNodeCount' "$scenario")
+da_quorum=$(jq -er '.daQuorum' "$scenario")
+da_commitment=$(jq -er '.daCommitment | ascii_downcase' "$scenario")
 
 set -a
 source "$POC_OUTPUT/deployment.env"
@@ -68,6 +75,12 @@ initial_action_state=$(jq -r '.outerActionStateBeforeDeposit | ascii_downcase' \
   echo "Settlement action state does not match the OCaml bridge genesis" >&2
   exit 1
 }
+live_da_commitment=$(zeko_read_settlement_da_commitment "$CAST" \
+  "$SETTLEMENT_CONTRACT_ADDRESS" "$RPC_URL")
+[[ $live_da_commitment == "$da_commitment" ]] || {
+  echo "Settlement DA commitment does not match the OCaml bridge scenario" >&2
+  exit 1
+}
 
 if [[ $CIRCUITS_CONFIG != "$TESTNET_DIR/config/circuits.json" ]]; then
   cp "$CIRCUITS_CONFIG" "$TESTNET_DIR/config/circuits.json"
@@ -78,7 +91,6 @@ cp "$FIXTURE_ROOT/bridge-genesis-ledger.json" \
   "$TESTNET_DIR/config/bridge-genesis-ledger.json"
 cp "$POC_OUTPUT/manifest.json" "$TESTNET_DIR/artifacts/manifest.json"
 
-fixture="$FIXTURE_ROOT/deposit-sync/settlement.json"
 outer_public_key=$(jq -r '.outerAccountPublicKey' "$fixture")
 inner_public_key=$(jq -r '.[0][1].public_key' \
   "$FIXTURE_ROOT/bridge-genesis-ledger.json")
@@ -161,8 +173,11 @@ sequencer_public_key=$(jq -r '.sequencerPublicKey' \
   echo "Initialize the retained machine identity before materializing config" >&2
   exit 1
 }
-awk -v da="$da_public_keys" -v sequencer="$sequencer_public_key" \
+awk -v da="$da_public_keys" -v da_node_count="$da_node_count" \
+  -v da_quorum="$da_quorum" -v sequencer="$sequencer_public_key" \
   -v unsafe_sepolia_mock="$ZEKO_UNSAFE_SEPOLIA_MOCK" '
+  /^DA_NODE_COUNT=/ { print "DA_NODE_COUNT=" da_node_count; next }
+  /^DA_QUORUM=/ { print "DA_QUORUM=" da_quorum; next }
   /^DA_PUBLIC_KEYS=/ { print "DA_PUBLIC_KEYS=" da; next }
   /^SEQUENCER_PUBLIC_KEY=/ { print "SEQUENCER_PUBLIC_KEY=" sequencer; next }
   /^ZEKO_UNSAFE_SEPOLIA_MOCK=/ {
@@ -175,8 +190,10 @@ chmod 0600 "$TESTNET_DIR/.env"
 
 jq -n --arg directory "$TESTNET_DIR" --arg daPublicKeys "$da_public_keys" \
   --arg sequencerPublicKey "$sequencer_public_key" \
+  --argjson daNodeCount "$da_node_count" --argjson daQuorum "$da_quorum" \
   --argjson unsafeSepoliaMock "$ZEKO_UNSAFE_SEPOLIA_MOCK" \
   '{directory:$directory,daPublicKeys:$daPublicKeys,
+    daNodeCount:$daNodeCount,daQuorum:$daQuorum,
     sequencerPublicKey:$sequencerPublicKey,
     securityMode:(if $unsafeSepoliaMock then "unsafe-sepolia-mock" else "sp1-groth16" end),
     minaSigningNetworkId:"testnet",

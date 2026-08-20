@@ -5,7 +5,9 @@ x-zeko-environment: &zeko-environment
   ZEKO_SIGNATURE_KIND: ${MINA_SIGNING_NETWORK_ID:?set MINA_SIGNING_NETWORK_ID to testnet for Auro compatibility}
   ZEKO_CIRCUITS_CONFIG: /config/circuits.json
   RABBITMQ_USER: zeko
-  DA_PUBLIC_KEYS: ${DA_PUBLIC_KEYS:?set the three comma-separated DA public keys}
+  DA_NODE_COUNT: ${DA_NODE_COUNT:-3}
+  DA_QUORUM: ${DA_QUORUM:-2}
+  DA_PUBLIC_KEYS: ${DA_PUBLIC_KEYS:?set the selected comma-separated DA public keys}
   SEQUENCER_PUBLIC_KEY: ${SEQUENCER_PUBLIC_KEY:?set the even sequencer public key}
 
 x-zeko-service: &zeko-service
@@ -356,14 +358,19 @@ services:
     command:
       - |
         mkdir -p /artifacts
+        da_nodes=(da1:8555 da2:8556 da3:8557)
+        da_node_args=()
+        for ((index = 0; index < DA_NODE_COUNT; index++)); do
+          da_node_args+=(--da-node "$${da_nodes[index]}")
+        done
         exec zeko-deploy generate-deploy-command \
           --l1-uri http://gateway:8080/graphql \
           --sender-pk "$$SEQUENCER_PUBLIC_KEY" \
           --ledger-input /config/bridge-genesis-ledger.json \
-          --da-node da1:8555 --da-node da2:8556 --da-node da3:8557 \
+          "$${da_node_args[@]}" \
           --pause-key "$$SEQUENCER_PUBLIC_KEY" \
           --sequencer-key "$$SEQUENCER_PUBLIC_KEY" \
-          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
+          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum "$$DA_QUORUM" \
           --account-creation-fee 0.000025 \
           --command-output /artifacts/deploy-command.json
     volumes:
@@ -390,6 +397,11 @@ services:
         export ZEKO_ETHEREUM_GATEWAY_TOKEN="$$(cat /run/zeko-secrets/proof-api-key)"
         export RABBITMQ_PASSWORD="$$(cat /run/zeko-secrets/rabbitmq-password)"
         export POSTGRES_URI="postgres://zeko_sequencer:$$(cat /run/zeko-secrets/postgres-sequencer-password)@sequencer-db:5432/zeko_sequencer"
+        da_nodes=(da1:8555 da2:8556 da3:8557)
+        da_node_args=()
+        for ((index = 0; index < DA_NODE_COUNT; index++)); do
+          da_node_args+=(--da-node "$${da_nodes[index]}")
+        done
         exec zeko-run -p 1923 \
           --l1-uri http://gateway:8080/graphql \
           --archive-uri http://gateway:8080/graphql \
@@ -397,8 +409,8 @@ services:
           --commitment-period ${ZEKO_COMMITMENT_PERIOD_SECONDS:-900} \
           --inner-sync-period 30 \
           --signer sequencer-signer:9000 \
-          --da-node da1:8555 --da-node da2:8556 --da-node da3:8557 \
-          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum 2 \
+          "$${da_node_args[@]}" \
+          --da-keys "$$DA_PUBLIC_KEYS" --da-quorum "$$DA_QUORUM" \
           --mq-host rabbitmq:5672 --db-dir /data/db \
           --checkpoints-dir /data/checkpoints --postgres-uri "$$POSTGRES_URI" \
           --deposit-delay-blocks 0 --fee-modifier 1.0 --minimum-fee 0.00000025 \

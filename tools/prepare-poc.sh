@@ -19,6 +19,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 [[ $TARGET_DIR == /* ]] || TARGET_DIR="$ROOT/$TARGET_DIR"
 source "$ROOT/tools/lib/workspace.sh"
+source "$ROOT/tools/lib/da-topology.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 zeko_resolve_companion_repo "$ROOT" ZEKO_UI_ROOT zeko-ui packages/eth-bridge-sdk
 [[ $FIXTURE_DIR == /* ]] || FIXTURE_DIR="$ROOT/$FIXTURE_DIR"
@@ -41,6 +42,10 @@ OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
   exit 1
 }
 BRIDGE_SCENARIO="$FIXTURE_DIR/../bridge-scenario.json"
+if [[ -f $BRIDGE_SCENARIO ]]; then
+  zeko_validate_da_scenario "$BRIDGE_SCENARIO" \
+    "$FIXTURE_DIR/settlement.json"
+fi
 
 vkey() {
   local program=$1

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tools/lib/workspace.sh"
+source "$ROOT/tools/lib/da-topology.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 OUTPUT_DIR=${1:-$ROOT/build/poc/sequential-fixtures}
 ENV_FILE=${POC_ENV_FILE:-$ROOT/build/poc/deployment.env}
@@ -20,11 +21,17 @@ rm -rf "$OUTPUT_DIR"/sequence-*
 set -a
 source "$ENV_FILE"
 set +a
+DA_NODE_COUNT=${DA_NODE_COUNT:-3}
+DA_QUORUM=${DA_QUORUM:-2}
+zeko_validate_da_bounds "$DA_NODE_COUNT" "$DA_QUORUM"
 export ZEKO_ETHEREUM_SETTLEMENT_FIXTURE_DIR="$OUTPUT_DIR"
 export ZEKO_ETHEREUM_SETTLEMENT_FIXTURE_ONLY=true
 export ZEKO_ETHEREUM_SEQUENTIAL_EXPORT_ONLY=true
+export ZEKO_TEST_DA_NODE_COUNT=$DA_NODE_COUNT
+export ZEKO_TEST_DA_QUORUM=$DA_QUORUM
+unset ZEKO_ETHEREUM_BRIDGE_EXPORT_ONLY
 
-echo "Running the real OCaml sequencer test with three DA nodes and quorum 2..."
+echo "Running the real OCaml sequencer test with $DA_NODE_COUNT DA nodes and quorum $DA_QUORUM..."
 echo "Sequential settlement exports: $OUTPUT_DIR"
 (
   cd "$ZEKO_ROOT"
@@ -105,7 +112,9 @@ done
 
 jq -n --arg directory "$OUTPUT_DIR" --argjson count "${#fixtures[@]}" \
   --argjson totalExports "${#exports[@]}" --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
-  --arg vkSha256 "$reference_vk_sha" \
+  --arg vkSha256 "$reference_vk_sha" --argjson daNodeCount "$DA_NODE_COUNT" \
+  --argjson daQuorum "$DA_QUORUM" \
   '{directory:$directory,count:$count,totalExports:$totalExports,
-    sequentialOuterStates:true,bridgeAddress:$bridge,vkSha256:$vkSha256}'
+    sequentialOuterStates:true,bridgeAddress:$bridge,vkSha256:$vkSha256,
+    daNodeCount:$daNodeCount,daQuorum:$daQuorum}'
 echo "No SP1 proof was requested or generated."

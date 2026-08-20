@@ -8,9 +8,13 @@ usage() {
 
 [[ $# -le 1 ]] || usage
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+source "$ROOT/tools/lib/da-topology.sh"
 TESTNET_DIR=${1:-$ROOT/deploy/testnet}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
 FORGE=${FORGE:-$HOME/.foundry/bin/forge}
+DA_NODE_COUNT=${DA_NODE_COUNT:-3}
+DA_QUORUM=${DA_QUORUM:-2}
+zeko_validate_da_bounds "$DA_NODE_COUNT" "$DA_QUORUM"
 
 [[ $TESTNET_DIR == /* ]] || TESTNET_DIR="$ROOT/$TESTNET_DIR"
 mkdir -p "$TESTNET_DIR"
@@ -55,7 +59,9 @@ bridge_address=$(awk '/BRIDGE_CONTRACT_ADDRESS/ { value=$NF } END { print value 
   exit 1
 }
 
-"$ROOT/tools/init-testnet-secrets.sh" "$bridge_address" "$TESTNET_DIR" >/dev/null
+DA_NODE_COUNT=$DA_NODE_COUNT DA_QUORUM=$DA_QUORUM \
+  "$ROOT/tools/init-testnet-secrets.sh" "$bridge_address" "$TESTNET_DIR" \
+  >/dev/null
 
 umask 077
 printf '%s\n' "$admin_private_key" >"$TESTNET_DIR/secrets/admin-private-key"
@@ -91,11 +97,13 @@ chmod 0600 "$TESTNET_DIR/secrets/deployment-roles.env"
 jq -n --arg admin "$admin_address" --arg upgrader "$upgrader_address" \
   --arg gatewayProver "$gateway_address" --arg bridge "$bridge_address" \
   --arg networkRequester "$network_requester_address" \
-  --arg minaSigningNetworkId testnet \
-  '{schemaVersion:1,admin:$admin,upgrader:$upgrader,
+  --arg minaSigningNetworkId testnet --argjson daNodeCount "$DA_NODE_COUNT" \
+  --argjson daQuorum "$DA_QUORUM" \
+  '{schemaVersion:2,admin:$admin,upgrader:$upgrader,
     gatewayProver:$gatewayProver,predictedBridge:$bridge,
     networkRequester:$networkRequester,
-    minaSigningNetworkId:$minaSigningNetworkId}' \
+    minaSigningNetworkId:$minaSigningNetworkId,
+    daNodeCount:$daNodeCount,daQuorum:$daQuorum}' \
   >"$TESTNET_DIR/config/identity.json"
 
 jq -n --arg directory "$TESTNET_DIR" \

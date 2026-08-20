@@ -76,9 +76,12 @@ ZEKO_CIRCUITS_CONFIG=/config/circuits.json
 ZEKO_SIGNATURE_KIND=testnet
 ```
 
-and command-line values for gateway L1/archive URIs, three DA nodes/keys,
-quorum two, `--inner-sync-period 30`, and the proof-bound commit validity
-period. Set `--slot-duration` to the settlement contract's virtual slot
+and command-line values for gateway L1/archive URIs, the selected DA nodes,
+keys and quorum, `--inner-sync-period 30`, and the proof-bound commit validity
+period. The Compose reference defaults to three nodes at quorum two; fixture
+generation records `DA_NODE_COUNT`, `DA_QUORUM`, the public keys, and their
+commitment so deployment tooling can reject mixed topologies. Set
+`--slot-duration` to the settlement contract's virtual slot
 duration; the Sepolia reference profile reads `ZEKO_SLOT_DURATION_SECONDS` and
 uses 12 seconds. Mina deployments retain the 180-second CLI default.
 
@@ -144,7 +147,7 @@ The runtime config directory is mounted read-only:
 | --- | --- |
 | `circuits.json` | Exact OCaml circuit config built with the final bridge proxy. |
 | `bridge-genesis-ledger.json` | Genuine OCaml bridge export. |
-| `bridge-scenario.json` | Public DA/sequencer/recipient identity and bridge checkpoint manifest. |
+| `bridge-scenario.json` | Version 4 public DA topology/commitment, sequencer/recipient identity, and bridge checkpoint manifest. |
 | `virtual-mina-accounts.json` | Outer and fee-payer GraphQL account objects. |
 | `artifacts/manifest.json` | Chain, proxy/implementation/registry-module addresses, registry identity, vkeys, VK identifier, DA mode, and holder address. |
 

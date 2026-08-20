@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tools/lib/workspace.sh"
+source "$ROOT/tools/lib/da-topology.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 OUTPUT_DIR=${1:-$ROOT/build/poc/bridge-fixtures}
 ENV_FILE=${POC_ENV_FILE:-$ROOT/build/poc/deployment.env}
@@ -28,6 +29,11 @@ OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
 set -a
 source "$ENV_FILE"
 set +a
+DA_NODE_COUNT=${DA_NODE_COUNT:-3}
+DA_QUORUM=${DA_QUORUM:-2}
+zeko_validate_da_bounds "$DA_NODE_COUNT" "$DA_QUORUM"
+export ZEKO_TEST_DA_NODE_COUNT=$DA_NODE_COUNT
+export ZEKO_TEST_DA_QUORUM=$DA_QUORUM
 if [[ ${POC_REUSE_OCAML_EXPORT:-false} != true ]]; then
   rm -f "$OUTPUT_DIR"/settlement-*.json "$OUTPUT_DIR"/bridge-scenario.json \
     "$OUTPUT_DIR"/bridge-genesis-ledger.json
@@ -40,7 +46,7 @@ if [[ ${POC_REUSE_OCAML_EXPORT:-false} != true ]]; then
   export ZEKO_ETHEREUM_BRIDGE_EXPORT_ONLY=true
   unset ZEKO_ETHEREUM_SEQUENTIAL_EXPORT_ONLY
 
-  echo "Running the real OCaml deposit/finalize/withdrawal scenario with DA quorum 2 of 3..."
+  echo "Running the real OCaml deposit/finalize/withdrawal scenario with DA quorum $DA_QUORUM of $DA_NODE_COUNT..."
   echo "Bridge settlement exports: $OUTPUT_DIR"
   (
     cd "$ZEKO_ROOT"
@@ -69,9 +75,13 @@ fi
   echo "OCaml bridge genesis ledger was not exported" >&2
   exit 1
 }
-[[ $(jq '[.daPublicKeys[]] | unique | length' \
-  "$OUTPUT_DIR/bridge-scenario.json") == 3 ]] || {
-  echo "OCaml bridge scenario must bind three distinct DA public keys" >&2
+zeko_validate_da_scenario "$OUTPUT_DIR/bridge-scenario.json"
+scenario_da_node_count=$(jq -er '.daNodeCount' \
+  "$OUTPUT_DIR/bridge-scenario.json")
+scenario_da_quorum=$(jq -er '.daQuorum' "$OUTPUT_DIR/bridge-scenario.json")
+[[ $scenario_da_node_count == "$DA_NODE_COUNT" && \
+   $scenario_da_quorum == "$DA_QUORUM" ]] || {
+  echo "OCaml bridge scenario DA topology does not match requested $DA_QUORUM-of-$DA_NODE_COUNT" >&2
   exit 1
 }
 
@@ -150,6 +160,8 @@ else
   expected_withdrawals=1
   expected_outer_actions=1
 fi
+
+zeko_validate_da_scenario "$OUTPUT_DIR/bridge-scenario.json" "$deposit_sync"
 
 [[ $(jq '.proof.innerActionBatch.actions | length' "$deposit_sync") == 0 ]] || {
   echo "Deposit synchronization commit unexpectedly contains inner actions" >&2
@@ -326,8 +338,11 @@ done
 jq -n --arg directory "$OUTPUT_DIR" --arg bridge "$BRIDGE_CONTRACT_ADDRESS" \
   --arg vkSha256 "$reference_vk_sha" --argjson settlements "$expected_exports" \
   --argjson registrationSettlements "$([[ $BRIDGE_ASSET == erc20 ]] && echo 2 || echo 0)" \
-  --argjson bridgeSettlements 2 \
-  '{directory:$directory,settlements:$settlements,daQuorum:"2-of-3",
+  --argjson bridgeSettlements 2 --argjson daNodeCount "$DA_NODE_COUNT" \
+  --arg daQuorum "$DA_QUORUM-of-$DA_NODE_COUNT" \
+  --argjson daQuorumSize "$DA_QUORUM" \
+  '{directory:$directory,settlements:$settlements,
+    daNodeCount:$daNodeCount,daQuorum:$daQuorum,daQuorumSize:$daQuorumSize,
     bridgeAddress:$bridge,vkSha256:$vkSha256,
     registrationSettlements:$registrationSettlements,
     bridgeSettlements:$bridgeSettlements,

@@ -9,12 +9,16 @@ usage() {
 [[ $# -ge 1 && $# -le 2 ]] || usage
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/tools/lib/workspace.sh"
+source "$ROOT/tools/lib/da-topology.sh"
 zeko_resolve_companion_repo "$ROOT" ZEKO_ROOT zeko src/app/zeko
 TESTNET_DIR=${2:-$ROOT/deploy/testnet}
 ENV_TEMPLATE=$ROOT/deploy/testnet/.env.example
 BRIDGE_ADDRESS=$1
 NIX=${NIX:-$HOME/.nix-profile/bin/nix}
 CAST=${CAST:-$HOME/.foundry/bin/cast}
+DA_NODE_COUNT=${DA_NODE_COUNT:-3}
+DA_QUORUM=${DA_QUORUM:-2}
+zeko_validate_da_bounds "$DA_NODE_COUNT" "$DA_QUORUM"
 
 [[ $BRIDGE_ADDRESS =~ ^0x[0-9a-fA-F]{40}$ ]] || {
   echo "Bridge address must be a 20-byte 0x-prefixed value" >&2
@@ -74,6 +78,12 @@ IFS=$'\t' read -r bridge_recipient_private bridge_recipient_public < <(generate_
   echo "Generated duplicate DA keys" >&2
   exit 1
 }
+da_public_keys=("$da1_public" "$da2_public" "$da3_public")
+printf -v selected_da_public_keys '%s,' \
+  "${da_public_keys[@]:0:DA_NODE_COUNT}"
+selected_da_public_keys=${selected_da_public_keys%,}
+zeko_validate_da_topology "$DA_NODE_COUNT" "$DA_QUORUM" \
+  "$selected_da_public_keys"
 
 run_zeko_cli generate-circuits-config \
   --ethereum-bridge-address "$BRIDGE_ADDRESS" \
@@ -122,9 +132,12 @@ chmod 0600 "$TESTNET_DIR/secrets/signer-tls.key" \
   "$TESTNET_DIR/secrets/signer-tls.crt" \
   "$TESTNET_DIR/secrets/zeko-deploy-config.json"
 
-awk -v da="$da1_public,$da2_public,$da3_public" \
+awk -v da="$selected_da_public_keys" -v da_node_count="$DA_NODE_COUNT" \
+  -v da_quorum="$DA_QUORUM" \
   -v sequencer="$sequencer_public" \
   -v bridge_recipient="$bridge_recipient_public" '
+    /^DA_NODE_COUNT=/ { print "DA_NODE_COUNT=" da_node_count; next }
+    /^DA_QUORUM=/ { print "DA_QUORUM=" da_quorum; next }
     /^DA_PUBLIC_KEYS=/ { print "DA_PUBLIC_KEYS=" da; next }
     /^SEQUENCER_PUBLIC_KEY=/ { print "SEQUENCER_PUBLIC_KEY=" sequencer; next }
     /^BRIDGE_RECIPIENT_PUBLIC_KEY=/ {
@@ -143,6 +156,8 @@ chmod 0600 "$TESTNET_DIR/.env"
   printf 'ZEKO_ETHEREUM_COMMIT_VALIDITY_PERIOD=2400\n'
   printf 'ZEKO_TEST_L1_NETWORK_ID=testnet\n'
   printf 'MINA_SIGNING_NETWORK_ID=testnet\n'
+  printf 'DA_NODE_COUNT=%q\n' "$DA_NODE_COUNT"
+  printf 'DA_QUORUM=%q\n' "$DA_QUORUM"
   printf 'ZEKO_ETHEREUM_BRIDGE_RECIPIENT_PRIVATE_KEY=%q\n' \
     "$bridge_recipient_private"
   printf 'ZEKO_ETHEREUM_WITHDRAWAL_RECIPIENT=%q\n' \
@@ -155,13 +170,15 @@ chmod 0600 "$TESTNET_DIR/.env"
 chmod 0600 "$TESTNET_DIR/secrets/fixture-keys.env"
 
 jq -n --arg directory "$TESTNET_DIR" --arg sequencer "$sequencer_public" \
-  --arg da1 "$da1_public" --arg da2 "$da2_public" --arg da3 "$da3_public" \
+  --arg daPublicKeys "$selected_da_public_keys" \
+  --argjson daNodeCount "$DA_NODE_COUNT" --argjson daQuorum "$DA_QUORUM" \
   --arg bridge "$BRIDGE_ADDRESS" --arg gatewayProver "$gateway_prover_address" \
   --arg networkRequester "$network_requester_address" \
   --arg bridgeRecipient "$bridge_recipient_public" \
   --arg minaSigningNetworkId testnet \
   '{directory:$directory,bridge:$bridge,sequencerPublicKey:$sequencer,
-    daPublicKeys:[$da1,$da2,$da3],gatewayProverAddress:$gatewayProver,
+    daPublicKeys:($daPublicKeys | split(",")),daNodeCount:$daNodeCount,
+    daQuorum:$daQuorum,gatewayProverAddress:$gatewayProver,
     networkRequesterAddress:$networkRequester,bridgeRecipientPublicKey:$bridgeRecipient,
     minaSigningNetworkId:$minaSigningNetworkId,
     next:"fill immutable image digests, fund role keys, fund the network requester only for the proof-secured profile, source secrets/fixture-keys.env, then export the bridge fixtures"}'

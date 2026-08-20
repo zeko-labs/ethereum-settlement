@@ -1,8 +1,9 @@
 # Sepolia testnet runbook
 
-This runbook deploys the no-blob PoC: one real sequencer/prover, three retained
-DA nodes at quorum two, the gateway, PostgreSQL, RabbitMQ, isolated signers, and
-the Ethereum settlement/bridge contracts.
+This runbook deploys the no-blob PoC. Its reference profile uses one real
+sequencer/prover, three retained DA nodes at quorum two, the gateway,
+PostgreSQL, RabbitMQ, isolated signers, and the Ethereum settlement/bridge
+contracts.
 
 The pinned Compose reference lives in `deploy/testnet`. For a NixOS deployment,
 implement the same topology and invariants described in the [DevOps guide](/operations/devops).
@@ -19,7 +20,7 @@ The following values must be chosen together and never mixed across builds:
 
 - final deterministic bridge proxy address
 - OCaml circuit configuration containing that address
-- sequencer, three DA, and bridge-recipient public identities
+- DA node count/quorum, sequencer, DA, and bridge-recipient public identities
 - exact genesis ledger and two-commit bridge scenario
 - OCaml wrap verifier index and its PoC SHA-256 identifier
 - settlement and bridge SP1 program vkeys
@@ -48,6 +49,13 @@ The script refuses to overwrite identities and writes private files with mode
 `0600`. Back up the secret directory in an encrypted system. The generated
 fixture environment is build-time only; do not mount it into the running
 gateway.
+
+The reference initializer defaults `DA_NODE_COUNT=3` and `DA_QUORUM=2`. To
+reproduce a smaller deployment, set both before initialization (for example,
+`DA_NODE_COUNT=1 DA_QUORUM=1`). These values are proof-bound release identity:
+changing them requires new OCaml fixtures and a new deployment. Export,
+materialization, and preflight reject mismatches between the scenario,
+settlement outer-state field 6, runtime keys, quorum, and live contract.
 
 Use distinct Mina keys for the sequencer and each DA signer. The current PoC
 uses one Ethereum gateway prover address for both submitter files because
@@ -204,8 +212,9 @@ docker compose --env-file deploy/testnet/.env \
 
 Preflight rejects mutable image tags, non-Sepolia RPC, unacknowledged bypass
 modes, missing price caps in the proof-verified profile, bad secret permissions,
-wrong roles/vkeys/addresses, mismatched identities, non-2-of-3 DA, and invalid
-Compose. In unsafe mode it also calls `isLocalSP1Verifier()` and verifies that
+wrong roles/vkeys/addresses, mismatched identities, invalid or inconsistent DA
+topology, and invalid Compose. In unsafe mode it also calls
+`isLocalSP1Verifier()` and verifies that
 both contract verifier references use that exact address.
 
 `bootstrap-da` posts the retained genesis ledger idempotently. `prover-ready`
