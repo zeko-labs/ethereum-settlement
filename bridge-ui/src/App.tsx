@@ -55,7 +55,6 @@ const missingWalletMessage = (wallet: "ethereum" | "auro", ethereum = "Sepolia")
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig>()
   const [configError, setConfigError] = useState("")
-  const [sdkReady, setSdkReady] = useState(false)
   const [ethereumAccount, setEthereumAccount] = useState<Address>()
   const [zekoAccount, setZekoAccount] = useState<string>()
   const [ethereumBalance, setEthereumBalance] = useState<string>()
@@ -99,17 +98,6 @@ export default function App() {
       active = false
     }
   }, [])
-
-  useEffect(() => {
-    if (!config) return
-    let active = true
-    void loadBridgeModules()
-      .then(() => active && setSdkReady(true))
-      .catch((error: unknown) => active && setActionError(error instanceof Error ? error.message : String(error)))
-    return () => {
-      active = false
-    }
-  }, [config])
 
   const setEthereumConnection = useCallback(
     async (account: Address) => {
@@ -301,8 +289,7 @@ export default function App() {
   const formValid = Boolean(
     amountResult &&
       recipientValid &&
-      (direction === "deposit" ? ethereumAccount : zekoAccount) &&
-      sdkReady
+      (direction === "deposit" ? ethereumAccount : zekoAccount)
   )
 
   const validateForm = async (): Promise<boolean> => {

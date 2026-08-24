@@ -1,11 +1,3 @@
-import { FungibleToken } from "mina-fungible-token"
-import {
-  AccountUpdate,
-  fetchAccount,
-  Mina,
-  PublicKey,
-  UInt64
-} from "o1js"
 import type { RuntimeConfig } from "./config"
 import {
   createAuroSigner,
@@ -77,11 +69,16 @@ export const sendNativePayment = async ({
 
 let compileMftPromise: Promise<unknown> | undefined
 
+const loadMft = () => import("mina-fungible-token")
+const loadO1 = () => import("o1js")
+
 const compileMft = async (): Promise<void> => {
-  compileMftPromise ??= FungibleToken.compile().catch((error: unknown) => {
-    compileMftPromise = undefined
-    throw error
-  })
+  compileMftPromise ??= loadMft()
+    .then(({ FungibleToken }) => FungibleToken.compile())
+    .catch((error: unknown) => {
+      compileMftPromise = undefined
+      throw error
+    })
   await compileMftPromise
 }
 
@@ -102,6 +99,7 @@ export const sendMftPayment = async ({
   const fee = unsignedInteger(input.feeNanomina, "Fee")
   await ensureAuroPoCNetwork(provider, config)
 
+  const { AccountUpdate, fetchAccount, Mina, PublicKey, UInt64 } = await loadO1()
   Mina.setActiveInstance(Mina.Network({
     mina: config.sequencerGraphqlUrl,
     archive: config.zekoArchiveGraphqlUrl,
@@ -109,6 +107,7 @@ export const sendMftPayment = async ({
   }))
   const senderKey = PublicKey.fromBase58(sender)
   const recipientKey = PublicKey.fromBase58(input.recipient)
+  const { FungibleToken } = await loadMft()
   const token = new FungibleToken(PublicKey.fromBase58(input.tokenOwner))
   const tokenId = token.deriveTokenId()
   const [senderAccount, tokenOwnerAccount, recipientAccount] = await Promise.all([

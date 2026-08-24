@@ -39,6 +39,16 @@ const isStaleDepositFinalization = (error: unknown): boolean => {
     message.includes("Account_nonce_precondition_unsatisfied")
 }
 
+const uncachedFetch: typeof globalThis.fetch = async (input, init) => {
+  const response = await globalThis.fetch(input, { ...init, cache: "no-store" })
+  const body = await response.arrayBuffer()
+  return new Response(body, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText
+  })
+}
+
 export const loadBridgeModules = () => {
   modulePromise ??= Promise.all([import("@zeko-labs/eth-bridge-sdk"), import("o1js")]).then(
     ([sdk, o1]) => ({ sdk, o1 })
@@ -48,7 +58,7 @@ export const loadBridgeModules = () => {
 
 export const fetchGatewayConfig = async (config: RuntimeConfig): Promise<BridgeConfig> => {
   const { sdk } = await loadBridgeModules()
-  return new sdk.GatewayClient(config.gatewayUrl).config()
+  return new sdk.GatewayClient(config.gatewayUrl, uncachedFetch).config()
 }
 
 export const isValidZekoAddress = async (address: string): Promise<boolean> => {
@@ -90,6 +100,7 @@ export const createEthereumBridgeClient = async ({
     provider,
     account,
     expectedChainId: config.expectedEthereumChainId,
+    fetch: uncachedFetch,
     zeko: withZeko ? buildZekoSdkConfig(config) : undefined
   })
 }

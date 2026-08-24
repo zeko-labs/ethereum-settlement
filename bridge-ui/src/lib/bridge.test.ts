@@ -61,6 +61,7 @@ describe("SDK integration", () => {
     ).resolves.toBe(client)
     expect(mocks.init).toHaveBeenCalledWith(
       expect.objectContaining({
+        fetch: expect.any(Function),
         zeko: expect.objectContaining({
           l1Network: "testnet",
           l2Network: "testnet",
@@ -68,6 +69,15 @@ describe("SDK integration", () => {
         })
       })
     )
+    const fetcher = mocks.init.mock.calls[0]?.[0]?.fetch as typeof globalThis.fetch
+    const response = new Response("{}", { headers: { "content-type": "application/json" } })
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(response)
+    await fetcher("http://127.0.0.1:8080/v1/bridge/deposits/1")
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080/v1/bridge/deposits/1",
+      { cache: "no-store" }
+    )
+    fetchSpy.mockRestore()
   })
 
   it("converts an Auro onlySign response back into an o1js transaction", async () => {
