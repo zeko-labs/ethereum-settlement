@@ -11,6 +11,8 @@ type Props = {
   onSubmitted: (hash: string, kind: "MINA" | "MFT") => void
 }
 
+const MINIMUM_MFT_FEE_NANOMINA = 1_000_000_000n
+
 export const WalletView = ({ config, account, onConnect, onSubmitted }: Props) => {
   const [kind, setKind] = useState<"MINA" | "MFT">("MINA")
   const [recipient, setRecipient] = useState("")
@@ -20,6 +22,9 @@ export const WalletView = ({ config, account, onConnect, onSubmitted }: Props) =
   const [tokenOwner, setTokenOwner] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const mftFee = BigInt(config.zekoTransactionFeeNanomina) > MINIMUM_MFT_FEE_NANOMINA
+    ? config.zekoTransactionFeeNanomina
+    : MINIMUM_MFT_FEE_NANOMINA.toString()
 
   const submit = async () => {
     setBusy(true)
@@ -61,7 +66,7 @@ export const WalletView = ({ config, account, onConnect, onSubmitted }: Props) =
       </div>
       <div className="tabs" role="tablist" aria-label="Asset type">
         <button type="button" className={`tab${kind === "MINA" ? " active" : ""}`} role="tab" aria-selected={kind === "MINA"} onClick={() => { setKind("MINA"); setFee("0.1") }}>MINA</button>
-        <button type="button" className={`tab${kind === "MFT" ? " active" : ""}`} role="tab" aria-selected={kind === "MFT"} onClick={() => { setKind("MFT"); setFee(config.zekoTransactionFeeNanomina) }}>MFT token</button>
+        <button type="button" className={`tab${kind === "MFT" ? " active" : ""}`} role="tab" aria-selected={kind === "MFT"} onClick={() => { setKind("MFT"); setFee(mftFee) }}>MFT token</button>
       </div>
       {kind === "MFT" && (
         <label className="recipient-editor"><span className="recipient-label-text">MFT token owner</span><input className="recipient-input" aria-label="MFT token owner" placeholder="B62…" value={tokenOwner} onChange={(event) => setTokenOwner(event.target.value.trim())} /></label>

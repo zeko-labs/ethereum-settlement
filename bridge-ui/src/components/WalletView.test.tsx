@@ -60,7 +60,7 @@ describe("Mina wallet payment view", () => {
         tokenOwner,
         recipient,
         amountBaseUnits: "1250000",
-        feeNanomina: validConfig.zekoTransactionFeeNanomina
+        feeNanomina: "1000000000"
       }
     }))
     expect(submitted).toHaveBeenCalledWith("5Jmft", "MFT")

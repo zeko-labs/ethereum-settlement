@@ -22,7 +22,10 @@ application constructs and proves `FungibleToken.transfer` with the pinned
 to sign the completed command through `onlySign`. This keeps the proving runtime
 out of the signing Snap while preserving the wallet approval boundary. MFT
 amounts are exact base units because Mina account data does not provide trusted
-decimal metadata.
+decimal metadata. Because an MFT transfer carries a local proof and is
+materially heavier than an ordinary bridge operation, the form defaults its MFT
+fee to at least one MINA (`1000000000` nanomina). The user can edit that value,
+and a higher deployment-configured operation fee takes precedence.
 
 Deposit batching, SP1 execution/proving, and Ethereum settlement submission
 remain gateway/operator responsibilities. The app polls public deposit and
