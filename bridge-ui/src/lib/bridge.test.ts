@@ -95,10 +95,16 @@ describe("SDK integration", () => {
       if (method === "wallet_getSnaps") {
         return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
       }
+      if (method === "wallet_requestSnaps") {
+        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+      }
       const minaRequest = (params as {
         request: { method: string }
       }).request
       if (minaRequest.method === "mina_requestNetwork") {
+        return { networkID: "zeko:testnet" }
+      }
+      if (minaRequest.method === "mina_addChain") {
         return { networkID: "zeko:testnet" }
       }
       if (minaRequest.method === "mina_sendTransaction") {
@@ -169,7 +175,10 @@ describe("SDK integration", () => {
 
     await expect(result).resolves.toBe("5Jfinalized")
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(2)
-    expect(client.finalizeDeposit).toHaveBeenCalledWith(publicKey, expect.any(Function))
+    expect(client.finalizeDeposit).toHaveBeenCalledWith(publicKey, expect.any(Function), {
+      attempts: 3,
+      feeNanomina: BigInt(config.zekoTransactionFeeNanomina)
+    })
     vi.useRealTimers()
   })
 
@@ -191,6 +200,26 @@ describe("SDK integration", () => {
       provider
     })).rejects.toThrow("No finalizable deposit found")
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(1)
+  })
+
+  it("rebuilds a finalization whose account precondition became stale", async () => {
+    vi.useFakeTimers()
+    const publicKey = { toBase58: () => "B62recipient" }
+    vi.mocked((await import("o1js")).PublicKey.fromBase58).mockReturnValue(publicKey as never)
+    const client = {
+      prepareDepositFinalization: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      finalizeDeposit: vi.fn()
+        .mockRejectedValueOnce(new Error("Account_app_state_precondition_unsatisfied"))
+        .mockResolvedValueOnce("5Jrebuilt")
+    }
+    const provider = { requestNetwork: vi.fn(async () => ({ networkID: "testnet" })) } as unknown as AuroProvider
+
+    const result = finalizeDeposit({ client: client as never, recipient: "B62recipient", config, provider })
+    await vi.advanceTimersByTimeAsync(config.pollIntervalMs)
+
+    await expect(result).resolves.toBe("5Jrebuilt")
+    expect(client.finalizeDeposit).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
   })
 
   it("uses the explorer's canonical transaction detail route", () => {

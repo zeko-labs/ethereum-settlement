@@ -46,6 +46,43 @@ describe("wallet adapters", () => {
     expect(provider.switchChain).not.toHaveBeenCalled()
   })
 
+  it("registers the configured GraphQL endpoint for the Mina Snap", async () => {
+    const provider = {
+      isMinaSnap: true,
+      addChain: vi.fn(async () => ({ networkID: "testnet" })),
+      switchChain: vi.fn(),
+      requestNetwork: vi.fn()
+        .mockResolvedValueOnce({ networkID: "zeko:testnet" })
+        .mockResolvedValueOnce({ networkID: "testnet" })
+    } as unknown as AuroProvider
+
+    await ensureAuroPoCNetwork(provider, config)
+
+    expect(provider.addChain).toHaveBeenCalledWith({
+      url: config.sequencerGraphqlUrl,
+      name: config.auroNetworkName
+    })
+    expect(provider.switchChain).not.toHaveBeenCalled()
+  })
+
+  it("reuses an already approved Mina Snap endpoint without prompting again", async () => {
+    const provider = {
+      isMinaSnap: true,
+      addChain: vi.fn(),
+      switchChain: vi.fn(),
+      requestNetwork: vi.fn(async () => ({
+        networkID: "zeko:testnet",
+        url: config.sequencerGraphqlUrl,
+        name: config.auroNetworkName
+      }))
+    } as unknown as AuroProvider
+
+    await ensureAuroPoCNetwork(provider, config)
+
+    expect(provider.addChain).not.toHaveBeenCalled()
+    expect(provider.switchChain).not.toHaveBeenCalled()
+  })
+
   it("switches Auro using its wallet-facing Zeko testnet identifier", async () => {
     const provider = {
       addChain: vi.fn(),

@@ -25,12 +25,19 @@ type SignTransaction = (
 let modulePromise: Promise<{ sdk: SdkModule; o1: O1Module }> | undefined
 
 const DEPOSIT_PREPARATION_TIMEOUT_MS = 5 * 60 * 1_000
+const DEPOSIT_FINALIZATION_ATTEMPTS = 3
 
 const isTransientDepositPreparationReason = (reason: string | null): boolean =>
   reason === "No outer commit available yet" ||
   reason === "No deposit witnesses found" ||
   reason?.includes("accepted but not confirmed yet") === true ||
   reason?.includes("not finalizable yet") === true
+
+const isStaleDepositFinalization = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("Account_app_state_precondition_unsatisfied") ||
+    message.includes("Account_nonce_precondition_unsatisfied")
+}
 
 export const loadBridgeModules = () => {
   modulePromise ??= Promise.all([import("@zeko-labs/eth-bridge-sdk"), import("o1js")]).then(
@@ -156,7 +163,21 @@ export const finalizeDeposit = async ({
     }
     await new Promise((resolve) => window.setTimeout(resolve, config.pollIntervalMs))
   }
-  return client.finalizeDeposit(publicKey, createAuroSigner(provider, config))
+  const signer = createAuroSigner(provider, config)
+  for (let attempt = 1; attempt <= DEPOSIT_FINALIZATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await client.finalizeDeposit(publicKey, signer, {
+        attempts: DEPOSIT_FINALIZATION_ATTEMPTS,
+        feeNanomina: BigInt(config.zekoTransactionFeeNanomina)
+      })
+    } catch (error) {
+      if (!isStaleDepositFinalization(error) || attempt === DEPOSIT_FINALIZATION_ATTEMPTS) {
+        throw error
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, config.pollIntervalMs))
+    }
+  }
+  throw new Error("Deposit finalization exhausted its retry attempts")
 }
 
 export const requestNativeWithdrawal = async ({

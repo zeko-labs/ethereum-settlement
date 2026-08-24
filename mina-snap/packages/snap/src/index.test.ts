@@ -51,6 +51,24 @@ describe("Auro-compatible Mina Snap RPC", () => {
     }))
   })
 
+  it("does not trust a hard-coded Zeko testnet data source", async () => {
+    const { request, onHomePage } = await installSnap()
+    await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "zeko:testnet" }
+    }))
+
+    expect((await onHomePage()).getInterface()).toRender(renderWalletHome({
+      publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+      networkId: "zeko:testnet",
+      networkName: "Zeko Testnet",
+      tokens: [],
+      error: missingEndpointMessage("zeko:testnet")
+    }))
+  })
+
   it("recovers Auro account zero from MetaMask's recovery phrase", async () => {
     const { request } = await installSnap()
 

@@ -3,7 +3,7 @@ export const DEFAULT_MINA_SNAP_VERSION = "0.1.0"
 
 export type ProviderError = Error & { code: number; data?: unknown }
 export type RequestArguments = { method: string; params?: unknown[] | object }
-export type ChainInfo = { networkID: string }
+export type ChainInfo = { networkID: string; url?: string; name?: string }
 export type SignedData = {
   publicKey: string
   data: string
@@ -144,8 +144,7 @@ export class MinaSnapProvider implements IMinaProvider {
   }
 
   async #ensureInstalled(): Promise<void> {
-    const installed = await this.#ethereum.request({ method: "wallet_getSnaps" }) as Record<string, unknown>
-    if (installed && this.snapId in installed) return
+    await this.#ethereum.request({ method: "wallet_getSnaps" })
     await this.#ethereum.request({
       method: "wallet_requestSnaps",
       params: {

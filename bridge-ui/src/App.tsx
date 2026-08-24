@@ -8,6 +8,7 @@ import { BridgeForm } from "./components/BridgeForm"
 import { CompleteView } from "./components/CompleteView"
 import { ReviewView } from "./components/ReviewView"
 import { SettingsModal } from "./components/SettingsModal"
+import { WalletView } from "./components/WalletView"
 import { bridgeAmountFromEth, formatUnits } from "./lib/amount"
 import {
   createEthereumBridgeClient,
@@ -63,7 +64,7 @@ export default function App() {
   const [zekoClient, setZekoClient] = useState<EthereumBridgeClient>()
   const [bridgeAddress, setBridgeAddress] = useState("")
   const [direction, setDirection] = useState<Direction>("deposit")
-  const [tab, setTab] = useState<"bridge" | "activity">("bridge")
+  const [tab, setTab] = useState<"bridge" | "wallet" | "activity">("bridge")
   const [screen, setScreen] = useState<Screen>("form")
   const [amount, setAmount] = useState("")
   const [recipient, setRecipient] = useState("")
@@ -653,13 +654,13 @@ export default function App() {
         <div className="environment-banner"><strong>Experimental PoC</strong><span>{ethereum}</span><span>·</span><span>No cancellation/refund</span><span>·</span><span>Zeko signs as temporary <code>testnet</code></span></div>
         <div className="bridge-card">
           <div className="card-header">
-            <div className="tabs" role="tablist" aria-label="Bridge navigation"><button type="button" className={`tab${tab === "bridge" ? " active" : ""}`} role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>Bridge</button><button type="button" className={`tab${tab === "activity" ? " active" : ""}`} role="tab" aria-selected={tab === "activity"} onClick={openActivity}>Activity</button></div>
+            <div className="tabs" role="tablist" aria-label="Bridge navigation"><button type="button" className={`tab${tab === "bridge" ? " active" : ""}`} role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>Bridge</button><button type="button" className={`tab${tab === "wallet" ? " active" : ""}`} role="tab" aria-selected={tab === "wallet"} onClick={() => setTab("wallet")}>Wallet</button><button type="button" className={`tab${tab === "activity" ? " active" : ""}`} role="tab" aria-selected={tab === "activity"} onClick={openActivity}>Activity</button></div>
             <button type="button" className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Open bridge settings"><span className="settings-glyph">⚙︎</span></button>
           </div>
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
             {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} account={zekoAccount} onConnect={connectAuroWallet} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>

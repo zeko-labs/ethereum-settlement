@@ -112,15 +112,12 @@ write_secret da3-private-key "$da3_private"
 write_secret da3-signer-token "$(openssl rand -hex 32)"
 write_secret bridge-recipient-private-key "$bridge_recipient_private"
 
-openssl req -x509 -newkey rsa:3072 -nodes -days 30 \
-  -keyout "$TESTNET_DIR/secrets/signer-tls.key" \
-  -out "$TESTNET_DIR/secrets/signer-tls.crt" \
-  -subj '/CN=zeko-testnet-signers' \
-  -addext 'subjectAltName=DNS:sequencer-signer,DNS:da1-signer,DNS:da2-signer,DNS:da3-signer' \
-  >/dev/null 2>&1
-chmod 0600 "$TESTNET_DIR/secrets/signer-tls.key" \
+"$ROOT/tools/generate-local-signer-certificate.sh" \
   "$TESTNET_DIR/secrets/signer-tls.crt" \
-  "$TESTNET_DIR/secrets/zeko-deploy-config.json"
+  "$TESTNET_DIR/secrets/signer-tls.key" \
+  'DNS:sequencer-signer,DNS:da1-signer,DNS:da2-signer,DNS:da3-signer' \
+  zeko-testnet-signers
+chmod 0600 "$TESTNET_DIR/secrets/zeko-deploy-config.json"
 
 awk -v da="$da1_public,$da2_public,$da3_public" \
   -v sequencer="$sequencer_public" \

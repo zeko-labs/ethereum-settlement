@@ -5,6 +5,14 @@ to the public gateway bridge API, gateway/sequencer GraphQL endpoints, injected
 Ethereum wallets, and either Auro or the Auro-compatible MetaMask Mina Snap. It
 never calls proof-operator routes.
 
+The **Wallet** tab sends native MINA and Mina Fungible Token standard assets.
+Native payments use the provider's `sendPayment` operation. Standard MFT
+transfers are built and proved in the browser with the pinned
+`mina-fungible-token` and `o1js` versions, signed through the same Auro-compatible
+`onlySign` boundary used by bridge zkApps, and submitted to the configured
+sequencer. MFT amounts use exact base units; the first proof can take several
+minutes while the token contract compiles.
+
 ## Run locally
 
 ```bash

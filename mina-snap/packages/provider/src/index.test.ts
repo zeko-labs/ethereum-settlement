@@ -56,6 +56,32 @@ describe("Auro-compatible Mina Provider", () => {
     })
   })
 
+  it("lets MetaMask negotiate an update when the Snap is already installed", async () => {
+    const request = vi.fn(async ({ method }: { method: string }) => {
+      if (method === "wallet_getSnaps") {
+        return {
+          "npm:@zeko-labs/mina-snap": {
+            id: "npm:@zeko-labs/mina-snap",
+            version: "0.0.9"
+          }
+        }
+      }
+      if (method === "wallet_requestSnaps") return {}
+      if (method === "wallet_invokeSnap") return []
+      throw new Error(`Unexpected ${method}`)
+    })
+    const provider = new MinaSnapProvider({ request })
+
+    await provider.getAccounts()
+
+    expect(request).toHaveBeenNthCalledWith(2, {
+      method: "wallet_requestSnaps",
+      params: {
+        "npm:@zeko-labs/mina-snap": { version: "0.1.0" }
+      }
+    })
+  })
+
   it("preserves the bridge's Auro onlySign request and response", async () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {

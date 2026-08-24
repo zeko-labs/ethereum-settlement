@@ -44,7 +44,7 @@ const BUILT_IN_NETWORK_NAMES: Record<string, string> = {
 }
 
 type MinaSnapState = {
-  version: 1
+  version: 2
   origins: Record<string, { account: number }>
   selectedNetwork: string
   chains: Record<string, { url: string; name: string }>
@@ -52,15 +52,10 @@ type MinaSnapState = {
 }
 
 const initialState = (): MinaSnapState => ({
-  version: 1,
+  version: 2,
   origins: {},
   selectedNetwork: "mina:mainnet",
-  chains: {
-    "zeko:testnet": {
-      url: "https://testnet.zeko.io/graphql",
-      name: "Zeko Testnet"
-    }
-  },
+  chains: {},
   credentials: {}
 })
 
@@ -68,20 +63,30 @@ const getState = async (): Promise<MinaSnapState> => {
   const stored = await snap.request({
     method: "snap_manageState",
     params: { operation: "get" }
-  }) as Partial<MinaSnapState> | null
+  }) as (Partial<Omit<MinaSnapState, "version">> & {
+    version?: 1 | 2
+  }) | null
   if (
-    stored?.version !== 1 ||
+    (stored?.version !== 1 && stored?.version !== 2) ||
     typeof stored.origins !== "object" ||
     stored.origins === null ||
     typeof stored.selectedNetwork !== "string"
   ) {
     return initialState()
   }
+  const chains = typeof stored.chains === "object" && stored.chains !== null
+    ? { ...stored.chains }
+    : {}
+  if (
+    stored.version === 1 &&
+    chains["zeko:testnet"]?.url === "https://testnet.zeko.io/graphql"
+  ) {
+    delete chains["zeko:testnet"]
+  }
   return {
     ...(stored as MinaSnapState),
-    chains: typeof stored.chains === "object" && stored.chains !== null
-      ? stored.chains
-      : initialState().chains,
+    version: 2,
+    chains,
     credentials: typeof stored.credentials === "object" && stored.credentials !== null
       ? stored.credentials
       : {}
@@ -367,10 +372,12 @@ const graphql = async (
 }
 
 const minaToNanomina = (value: unknown, label: string): string => {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new InvalidParamsError(`${label} must be a non-negative finite number`)
+  if ((typeof value !== "number" && typeof value !== "string") ||
+      (typeof value === "number" && (!Number.isFinite(value) || value < 0))) {
+    throw new InvalidParamsError(`${label} must be a non-negative decimal number`)
   }
-  const match = value.toString().match(/^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu)
+  const input = typeof value === "string" ? value.trim() : value.toString()
+  const match = input.match(/^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu)
   if (!match) throw new InvalidParamsError(`${label} is invalid`)
   const whole = match[1] ?? "0"
   const fraction = match[2] ?? ""
@@ -503,22 +510,122 @@ const loadWalletHome = async (identity?: WalletIdentity): Promise<WalletHomeSnap
   }
 }
 
+type PaymentResult = { hash: string; paymentId?: string }
+
+const sendMinaPayment = async (
+  state: MinaSnapState,
+  params: Record<string, unknown>,
+  requester: string
+): Promise<PaymentResult> => {
+  const to = params.to
+  if (typeof to !== "string") throw new InvalidParamsError("The recipient is invalid")
+  const publicKey = await derivePublicKey()
+  const client = getClient(state.selectedNetwork)
+  validatePublicKey(client, to)
+  const nonce = await getNonce(state, publicKey, params.nonce)
+  const feeInput = params.fee ?? 0.1
+  const amountInput = params.amount
+  const fee = minaToNanomina(feeInput, "Fee")
+  const amount = minaToNanomina(amountInput, "Amount")
+  if (BigInt(amount) === 0n) throw new InvalidParamsError("Amount must be greater than zero")
+  const memo = typeof params.memo === "string" ? params.memo : ""
+  await approveSigning(
+    requester,
+    "Send Mina payment",
+    `${String(amountInput)} MINA to ${to}; fee ${String(feeInput)} MINA`
+  )
+  const account = await deriveAccount()
+  if (account.publicKey !== publicKey) {
+    throw new Error("The derived Mina account changed during approval")
+  }
+  const signed = client.signPayment({
+    to,
+    from: account.publicKey,
+    amount,
+    fee,
+    nonce,
+    memo
+  }, account.privateKey)
+  if (!client.verifyTransaction(signed)) {
+    throw new Error("Mina signer failed to verify its payment signature")
+  }
+  const data = await graphql(getNetworkUrl(state), sendPaymentMutation, {
+    ...(signed.data as unknown as Record<string, Json>),
+    field: signed.signature.field,
+    scalar: signed.signature.scalar
+  })
+  const payment = typeof data.sendPayment === "object" && data.sendPayment !== null
+    ? (data.sendPayment as { payment?: unknown }).payment
+    : undefined
+  const result = typeof payment === "object" && payment !== null
+    ? payment as Record<string, unknown>
+    : {}
+  if (typeof result.hash !== "string") throw new Error("Mina node returned no payment hash")
+  return {
+    hash: result.hash,
+    ...(typeof result.id === "string" ? { paymentId: result.id } : {})
+  }
+}
+
 export const onHomePage: OnHomePageHandler = async () => ({
   content: renderWalletHome(await loadWalletHome())
 })
 
 export const onUserInput: OnUserInputHandler = async ({ id, event }) => {
-  if (event.type !== UserInputEventType.ButtonClickEvent ||
-      event.name !== "refresh-balances") return
+  if (event.type === UserInputEventType.ButtonClickEvent &&
+      event.name === "refresh-balances") {
+    const identity = await loadWalletIdentity()
+    await snap.request({
+      method: "snap_updateInterface",
+      params: { id, ui: renderWalletLoading(identity) }
+    })
+    await snap.request({
+      method: "snap_updateInterface",
+      params: { id, ui: renderWalletHome(await loadWalletHome(identity)) }
+    })
+    return
+  }
+  if (event.type !== UserInputEventType.FormSubmitEvent || event.name !== "send-mina") return
   const identity = await loadWalletIdentity()
-  await snap.request({
-    method: "snap_updateInterface",
-    params: { id, ui: renderWalletLoading(identity) }
-  })
-  await snap.request({
-    method: "snap_updateInterface",
-    params: { id, ui: renderWalletHome(await loadWalletHome(identity)) }
-  })
+  try {
+    const result = await sendMinaPayment(await getState(), {
+      to: event.value.recipient,
+      amount: event.value.amount,
+      fee: event.value.fee || "0.1",
+      memo: event.value.memo || ""
+    }, "MetaMask wallet home")
+    const snapshot = await loadWalletHome(identity)
+    await snap.request({
+      method: "snap_updateInterface",
+      params: {
+        id,
+        ui: renderWalletHome({
+          ...snapshot,
+          transaction: {
+            severity: "success",
+            title: "Payment submitted",
+            message: `Transaction ${result.hash}`
+          }
+        })
+      }
+    })
+  } catch (error) {
+    const snapshot = await loadWalletHome(identity)
+    await snap.request({
+      method: "snap_updateInterface",
+      params: {
+        id,
+        ui: renderWalletHome({
+          ...snapshot,
+          transaction: {
+            severity: "warning",
+            title: "Payment not sent",
+            message: error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240)
+          }
+        })
+      }
+    })
+  }
 }
 
 export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => {
@@ -553,7 +660,12 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     return [await derivePublicKey(state.origins[origin].account)]
   }
   if (request.method === "mina_requestNetwork") {
-    return { networkID: (await getState()).selectedNetwork }
+    const state = await getState()
+    const chain = state.chains[state.selectedNetwork]
+    return {
+      networkID: state.selectedNetwork,
+      ...(chain ? chain : {})
+    }
   }
   if (request.method === "wallet_info") {
     return { version: "0.1.0", init: true }
@@ -679,6 +791,9 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       throw new InvalidParamsError(`${request.method} requires transaction parameters`)
     }
     const params = request.params as Record<string, unknown>
+    if (request.method === "mina_sendPayment") {
+      return sendMinaPayment(state, params, origin)
+    }
     const to = params.to
     if (typeof to !== "string") throw new InvalidParamsError("The recipient is invalid")
     if (request.method === "mina_sendStakeDelegation" &&
@@ -691,45 +806,6 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const nonce = await getNonce(state, publicKey, params.nonce)
     const fee = minaToNanomina(params.fee ?? 0.1, "Fee")
     const memo = typeof params.memo === "string" ? params.memo : ""
-    if (request.method === "mina_sendPayment") {
-      const amount = minaToNanomina(params.amount, "Amount")
-      await approveSigning(
-        origin,
-        "Send Mina payment",
-        `${params.amount as number} MINA to ${to}; fee ${params.fee ?? 0.1} MINA`
-      )
-      const account = await deriveAccount()
-      if (account.publicKey !== publicKey) {
-        throw new Error("The derived Mina account changed during approval")
-      }
-      const signed = client.signPayment({
-        to,
-        from: account.publicKey,
-        amount,
-        fee,
-        nonce,
-        memo
-      }, account.privateKey)
-      if (!client.verifyTransaction(signed)) {
-        throw new Error("Mina signer failed to verify its payment signature")
-      }
-      const data = await graphql(getNetworkUrl(state), sendPaymentMutation, {
-        ...(signed.data as unknown as Record<string, Json>),
-        field: signed.signature.field,
-        scalar: signed.signature.scalar
-      })
-      const payment = typeof data.sendPayment === "object" && data.sendPayment !== null
-        ? (data.sendPayment as { payment?: unknown }).payment
-        : undefined
-      const result = typeof payment === "object" && payment !== null
-        ? payment as Record<string, unknown>
-        : {}
-      if (typeof result.hash !== "string") throw new Error("Mina node returned no payment hash")
-      return {
-        hash: result.hash,
-        ...(typeof result.id === "string" ? { paymentId: result.id } : {})
-      }
-    }
     await approveSigning(
       origin,
       "Send Mina delegation",

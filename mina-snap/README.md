@@ -13,7 +13,8 @@ record is in [`../docs/research/metamask-mina-snap.md`](../docs/research/metamas
 ## Packages
 
 - `packages/snap` derives Mina account 0 from MetaMask, provides a wallet home
-  page for the address, MINA balance, nonce, and token accounts, displays
+  page for the address, MINA balance, nonce, token accounts, and native MINA
+  payments, displays
   confirmations, signs with `mina-signer`, and optionally submits signed
   operations to a user-approved Mina GraphQL endpoint.
 - `packages/provider` discovers MetaMask with EIP-6963, installs or reconnects
@@ -36,6 +37,7 @@ credential-storage request requires a MetaMask confirmation.
 | Message and JSON-message sign/verify | Compatible |
 | Field sign/verify and nullifier creation | Compatible |
 | Payment and delegation sign/broadcast | Compatible after a GraphQL endpoint is configured; delegation is rejected on Zeko like Auro |
+| Standard MFT token transfer | Constructed and proved by the companion wallet UI, then approved and signed by the Snap through `onlySign` |
 | zkApp sign/broadcast, including `onlySign` | Compatible; Berkeley and Mesa shapes are detected, and broadcast needs a configured endpoint |
 | Auro provider errors and change events | Adapter-compatible |
 | Multiple Auro account profiles | Not exposed; the Snap currently uses account 0 |
@@ -105,7 +107,18 @@ Wallet** to view its wallet home page. The page reads the selected network's
 approved GraphQL endpoint and shows the copyable Mina address, exact MINA
 balance breakdown, nonce, and custom token accounts. Custom-token amounts are
 shown in exact base units because Mina account responses do not include trusted
-token-decimal metadata. Use **Refresh balances** after a transaction settles.
+token-decimal metadata. The home-page form signs and broadcasts native MINA
+payments through that same approved endpoint. Use **Refresh balances** after a
+transaction settles.
+
+The bridge application's **Wallet** tab also sends native MINA and standard MFT
+tokens. MFT construction and proving deliberately stay outside the Snap: the
+standard's `FungibleToken.transfer` method requires an `o1js` proof, while
+`mina-signer` supplies the fee-payer and signed-account-update authorization.
+The browser builds and proves against the configured Zeko endpoint, asks the
+Snap to sign the finished command through `onlySign`, then submits it. The first
+MFT transfer can take several minutes while the standard token contract is
+compiled. Token amounts are entered in exact base units.
 
 When updating an existing local installation after the manifest permissions or
 bundle changes, reconnect from the bridge and approve MetaMask's update prompt.

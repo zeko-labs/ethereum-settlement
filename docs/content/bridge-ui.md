@@ -14,6 +14,15 @@ The app supports the four user-owned boundaries of the round trip:
 3. prepare, sign, and submit deposit finalization through the sequencer
 4. prepare, sign, and submit a native withdrawal request, then claim it on
    Ethereum when the public Merkle proof becomes claimable
+5. send native MINA or a standard MFT token from the connected Zeko account
+
+Native payments use the wallet provider directly. For MFT transfers, the web
+application constructs and proves `FungibleToken.transfer` with the pinned
+`mina-fungible-token@1.1.0` and `o1js@2.8.0`, then asks Auro or the MetaMask Snap
+to sign the completed command through `onlySign`. This keeps the proving runtime
+out of the signing Snap while preserving the wallet approval boundary. MFT
+amounts are exact base units because Mina account data does not provide trusted
+decimal metadata.
 
 Deposit batching, SP1 execution/proving, and Ethereum settlement submission
 remain gateway/operator responsibilities. The app polls public deposit and

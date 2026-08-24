@@ -166,3 +166,10 @@ The Compose profile expects separate files for:
 Private files must be mode `0600` or `0400`; the public TLS certificate may be
 `0644`. Prefer NixOS/systemd credentials or an external secret manager over
 putting values in the Nix store or image layers.
+
+`tools/init-testnet-secrets.sh` creates the self-signed development signer
+certificate through `tools/generate-local-signer-certificate.sh`. Its default
+lifetime is 30 days; set `ZEKO_SIGNER_CERT_DAYS` to another positive number of
+days when generating a retained environment. Restarting a retained stack does
+not extend an existing certificate, so rotate it before `notAfter` and restart
+the signer clients and servers together.

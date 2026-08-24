@@ -5,7 +5,10 @@ import {
   Button,
   Copyable,
   Divider,
+  Field,
+  Form,
   Heading,
+  Input,
   Row,
   Section,
   Spinner,
@@ -43,6 +46,7 @@ export type WalletHomeSnapshot = {
   native?: NativeAccount | null
   tokens: TokenAccount[]
   error?: string
+  transaction?: { severity: "success" | "warning"; title: string; message: string }
 }
 
 const readUnsignedInteger = (value: unknown, label: string): string => {
@@ -218,6 +222,33 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
           <Text>Custom-token amounts use exact base units because token decimals are not part of Mina account data.</Text>
         </Box>
       )}
+
+      <Divider />
+      <Heading>Send MINA</Heading>
+      {snapshot.endpoint ? (
+        <Form name="send-mina">
+          <Field label="Recipient">
+            <Input name="recipient" type="text" placeholder="B62…" />
+          </Field>
+          <Field label="Amount (MINA)">
+            <Input name="amount" type="text" placeholder="0.00" />
+          </Field>
+          <Field label="Fee (MINA)">
+            <Input name="fee" type="text" value="0.1" />
+          </Field>
+          <Field label="Memo (optional)">
+            <Input name="memo" type="text" />
+          </Field>
+          <Button type="submit">Review and send</Button>
+        </Form>
+      ) : (
+        <Text>Configure a network endpoint before sending.</Text>
+      )}
+      {snapshot.transaction ? (
+        <Banner title={snapshot.transaction.title} severity={snapshot.transaction.severity}>
+          <Text>{snapshot.transaction.message}</Text>
+        </Banner>
+      ) : null}
 
       <Divider />
       <Button name="refresh-balances">Refresh balances</Button>

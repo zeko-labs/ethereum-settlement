@@ -25,10 +25,11 @@ export type AuroProvider = {
   readonly isAuro?: boolean
   readonly isMinaSnap?: boolean
   requestAccounts: () => Promise<string[] | ProviderError>
-  requestNetwork: () => Promise<{ networkID: string } | ProviderError>
+  requestNetwork: () => Promise<{ networkID: string; url?: string; name?: string } | ProviderError>
   addChain: (input: { url: string; name: string }) => Promise<{ networkID: string } | ProviderError>
   switchChain: (input: { networkID: string }) => Promise<{ networkID: string } | ProviderError>
   sendTransaction: (input: { onlySign: true; transaction: string }) => Promise<AuroSignedResult>
+  sendPayment?: (input: { to: string; amount: number; fee?: number; memo?: string; nonce?: number }) => Promise<{ hash: string; paymentId?: string } | ProviderError | Error>
   on?: {
     (event: "accountsChanged", listener: (accounts: string[]) => void): void
     (event: "chainChanged", listener: (network: { networkID: string }) => void): void
@@ -128,6 +129,29 @@ export const ensureAuroPoCNetwork = async (
 ): Promise<void> => {
   const current = await provider.requestNetwork()
   if (isProviderError(current)) throw new Error(current.message ?? `Mina wallet error ${current.code}`)
+  if (provider.isMinaSnap) {
+    if (current.url && new URL(current.url).href === new URL(config.sequencerGraphqlUrl).href) {
+      if (!isAuroPoCNetwork(current.networkID)) {
+        throw new Error("The configured Zeko endpoint reports an unsupported network ID")
+      }
+      return
+    }
+    const added = await provider
+      .addChain({ url: config.sequencerGraphqlUrl, name: config.auroNetworkName })
+      .catch((error: unknown) => error)
+    if (added instanceof Error) throw added
+    if (isProviderError(added)) {
+      throw new Error(added.message ?? `Mina wallet error ${added.code}`)
+    }
+    const selected = await provider.requestNetwork()
+    if (isProviderError(selected)) {
+      throw new Error(selected.message ?? `Mina wallet error ${selected.code}`)
+    }
+    if (!isAuroPoCNetwork(selected.networkID)) {
+      throw new Error("The Mina Snap did not select the configured Zeko endpoint")
+    }
+    return
+  }
   if (isAuroPoCNetwork(current.networkID)) return
 
   // Zeko testnet is built into current Auro releases. Selecting it is enough
