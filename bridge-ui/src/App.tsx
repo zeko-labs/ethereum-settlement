@@ -339,13 +339,17 @@ export default function App() {
     return full
   }
 
-  const operationKey = (operationRecipient: string) => {
-    if (!config || !bridgeAddress) throw new Error("Bridge configuration is not loaded")
-    return operationStorageKey(config.expectedEthereumChainId, bridgeAddress, operationRecipient)
+  const operationKey = (operationRecipient: string, submittingBridgeAddress?: string) => {
+    const effectiveBridgeAddress = submittingBridgeAddress
+      || bridgeAddress
+      || client?.config.bridgeAddress
+      || zekoClient?.config.bridgeAddress
+    if (!config || !effectiveBridgeAddress) throw new Error("Bridge configuration is not loaded")
+    return operationStorageKey(config.expectedEthereumChainId, effectiveBridgeAddress, operationRecipient)
   }
 
-  const rememberOperation = (operation: PendingOperation) => {
-    const key = operationKey(operation.recipient)
+  const rememberOperation = (operation: PendingOperation, submittingBridgeAddress?: string) => {
+    const key = operationKey(operation.recipient, submittingBridgeAddress)
     upsertOperation(key, operation)
     setOperations((current) => [operation, ...current.filter((row) => row.id !== operation.id)])
   }
@@ -492,7 +496,7 @@ export default function App() {
           depositNonce: result.nonce,
           createdAt: new Date().toISOString()
         }
-        rememberOperation(operation)
+        rememberOperation(operation, base.config.bridgeAddress)
         setSelectedOperation(operation)
         setSelectedDeposit(result.deposit)
         setScreen("deposit-progress")
@@ -516,7 +520,7 @@ export default function App() {
           transactionHash: hash,
           createdAt: new Date().toISOString()
         }
-        rememberOperation(operation)
+        rememberOperation(operation, full.config.bridgeAddress)
         setSelectedOperation(operation)
         setSelectedWithdrawal(undefined)
         setScreen("withdrawal-progress")
