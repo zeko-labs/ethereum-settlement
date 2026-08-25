@@ -6,6 +6,7 @@ import {
 import type { Address, EIP1193Provider, Hex } from "viem"
 import { getAddress } from "viem"
 import type { RuntimeConfig } from "./config"
+import type { MinaWalletKind } from "./storage"
 
 export type EthereumProvider = EIP1193Provider & {
   readonly isMetaMask?: boolean
@@ -67,15 +68,21 @@ export const getSnapProvider = (): AuroProvider => {
   return provider
 }
 
-export const getAuroProvider = (): AuroProvider => {
+export const defaultMinaWallet = (): MinaWalletKind => {
   const preference = import.meta.env.VITE_MINA_WALLET as string | undefined
-  if (preference === "auro") {
+  if (preference === "auro" || preference === "metamask-snap") return preference
+  return window.mina ? "auro" : "metamask-snap"
+}
+
+export const getMinaProvider = (wallet: MinaWalletKind): AuroProvider => {
+  if (wallet === "auro") {
     if (!window.mina) throw new Error("Auro Wallet is not installed")
     return window.mina
   }
-  if (preference !== "metamask-snap" && window.mina) return window.mina
   return getSnapProvider()
 }
+
+export const getAuroProvider = (): AuroProvider => getMinaProvider(defaultMinaWallet())
 
 // Auro exposes the selected chain using its wallet-facing identifier. The
 // transaction signing salt remains `testnet` and is configured separately.
@@ -187,14 +194,17 @@ export const ensureAuroPoCNetwork = async (
   }
 }
 
-export const connectAuro = async (config: RuntimeConfig): Promise<string> => {
-  const provider = getAuroProvider()
+export const connectMina = async (config: RuntimeConfig, wallet: MinaWalletKind): Promise<string> => {
+  const provider = getMinaProvider(wallet)
   const accounts = await provider.requestAccounts()
   if (isProviderError(accounts)) throw new Error(accounts.message ?? `Mina wallet error ${accounts.code}`)
   if (!accounts[0]) throw new Error("No Mina account selected")
   await ensureAuroPoCNetwork(provider, config)
   return accounts[0]
 }
+
+export const connectAuro = async (config: RuntimeConfig): Promise<string> =>
+  connectMina(config, defaultMinaWallet())
 
 export const shortAddress = (address: string, head = 6, tail = 4): string =>
   address.length <= head + tail + 1 ? address : `${address.slice(0, head)}…${address.slice(-tail)}`

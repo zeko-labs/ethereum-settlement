@@ -11,19 +11,61 @@ export type PendingOperation = {
   ethereumClaimHash?: string
 }
 
+export type MinaWalletKind = "metamask-snap" | "auro"
+
 const STORAGE_PREFIX = "zeko-eth-bridge:v1"
-const AURO_CONNECTION_KEY = `${STORAGE_PREFIX}:auro-connected`
+// Retain the original key so authorized sessions survive the provider-choice
+// migration.
+const MINA_CONNECTION_KEY = `${STORAGE_PREFIX}:auro-connected`
+const MINA_WALLET_KEY = `${STORAGE_PREFIX}:mina-wallet`
 
-export const wasAuroConnected = (storage: Storage = localStorage): boolean =>
-  storage.getItem(AURO_CONNECTION_KEY) === "true"
+export const readMinaWallet = (
+  fallback: MinaWalletKind,
+  storage: Storage = localStorage
+): MinaWalletKind => {
+  try {
+    const stored = storage.getItem(MINA_WALLET_KEY)
+    return stored === "metamask-snap" || stored === "auro" ? stored : fallback
+  } catch {
+    return fallback
+  }
+}
 
-export const rememberAuroConnection = (
+export const rememberMinaWallet = (
+  wallet: MinaWalletKind,
+  storage: Storage = localStorage
+): void => {
+  try {
+    storage.setItem(MINA_WALLET_KEY, wallet)
+  } catch {
+    // The in-memory selection still works when browser storage is unavailable.
+  }
+}
+
+export const wasMinaWalletConnected = (storage: Storage = localStorage): boolean => {
+  try {
+    return storage.getItem(MINA_CONNECTION_KEY) === "true"
+  } catch {
+    return false
+  }
+}
+
+export const rememberMinaWalletConnection = (
   connected: boolean,
   storage: Storage = localStorage
 ): void => {
-  if (connected) storage.setItem(AURO_CONNECTION_KEY, "true")
-  else storage.removeItem(AURO_CONNECTION_KEY)
+  try {
+    if (connected) storage.setItem(MINA_CONNECTION_KEY, "true")
+    else storage.removeItem(MINA_CONNECTION_KEY)
+  } catch {
+    // Reconnection is optional when browser storage is unavailable.
+  }
 }
+
+// Preserve the original exports for callers that persisted the v1 connection
+// flag before the bridge supported choosing a Mina wallet at runtime.
+export const wasAuroConnected = wasMinaWalletConnected
+export const rememberAuroConnection = rememberMinaWalletConnection
 
 export const operationStorageKey = (chainId: number, bridge: string, wallet: string): string =>
   `${STORAGE_PREFIX}:${chainId}:${bridge.toLowerCase()}:${wallet.toLowerCase()}`

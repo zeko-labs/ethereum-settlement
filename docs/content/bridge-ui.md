@@ -9,7 +9,8 @@ wrapper SDK and uses only browser-safe APIs.
 
 The app supports the four user-owned boundaries of the round trip:
 
-1. connect an injected Ethereum wallet and Auro
+1. choose either the MetaMask Snap or Auro, then connect it alongside an
+   injected Ethereum wallet
 2. deposit native ETH to the bridge for a Zeko public key
 3. prepare, sign, and submit deposit finalization through the sequencer
 4. prepare, sign, and submit a native withdrawal request, then claim it on
@@ -32,12 +33,20 @@ remain gateway/operator responsibilities. The app polls public deposit and
 withdrawal endpoints; it never calls proof approval routes and never receives
 `PROOF_API_KEY`.
 
-Reloading the page does not reset protocol progress. The app restores an
-authorized Auro session without opening another permission prompt, reloads
+Reloading the page does not reset protocol progress. The app persists the
+selected Mina wallet and restores its authorized session without opening
+another permission prompt, reloads
 deposit status from both the gateway and Zeko bridge state, and reloads pending
 withdrawal requests from the archive-backed gateway endpoint. A locally
 submitted withdrawal is also shown immediately while archive indexing catches
 up. Zeko transaction links use `/transactions/<hash>`.
+
+The selected Mina provider is a runtime browser preference, not a deployment
+split. **Bridge settings → Mina wallet** switches between MetaMask Snap and
+Auro in one build. Switching clears the connected Mina account and rebinds
+account/network listeners; the user must reconnect before any signing or
+payment action. Deposit finalization, withdrawals, native MINA payments, and
+MFT transfers all use that selected provider.
 
 ## Auro signing domain
 

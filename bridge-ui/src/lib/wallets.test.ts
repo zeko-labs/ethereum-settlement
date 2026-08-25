@@ -4,7 +4,7 @@ import {
   ensureAuroPoCNetwork,
   ensureEthereumNetwork,
   formatWalletError,
-  getAuroProvider,
+  getMinaProvider,
   listenAuroChanges,
   listenEthereumChanges,
   type AuroProvider,
@@ -22,7 +22,7 @@ describe("wallet adapters", () => {
     delete window.mina
     window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
 
-    expect(getAuroProvider()).toMatchObject({
+    expect(getMinaProvider("metamask-snap")).toMatchObject({
       isAuro: false,
       isMinaSnap: true
     })
@@ -32,7 +32,15 @@ describe("wallet adapters", () => {
     delete window.mina
     window.ethereum = { request: vi.fn() } as unknown as EthereumProvider
 
-    expect(() => getAuroProvider()).toThrow(/MetaMask is not installed/)
+    expect(() => getMinaProvider("metamask-snap")).toThrow(/MetaMask is not installed/)
+  })
+
+  it("uses Auro when it is explicitly selected even when MetaMask is present", () => {
+    const auro = { isAuro: true } as AuroProvider
+    window.mina = auro
+    window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
+
+    expect(getMinaProvider("auro")).toBe(auro)
   })
 
   it("accepts an already selected Auro Zeko testnet network", async () => {

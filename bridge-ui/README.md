@@ -24,15 +24,18 @@ The default URL is `http://127.0.0.1:5174`. Edit
 `public/runtime-config.json` before deployment; it contains public endpoints and
 limits only.
 
-The Mina wallet selection is a Vite build-time setting:
+The bridge settings dialog lets each browser choose between the MetaMask Snap
+and Auro at runtime. The choice is stored locally and changing it disconnects
+the current Mina account before reconnecting the selected provider. Vite only
+sets the initial choice for browsers without a saved preference:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_MINA_WALLET` | auto | `auro`, `metamask-snap`, or auto-prefer Auro and fall back to the Snap |
+| `VITE_MINA_WALLET` | auto | Initial choice: `auro`, `metamask-snap`, or auto-select Auro when injected and otherwise the Snap |
 | `VITE_MINA_SNAP_ID` | `npm:@zeko-labs/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
 
 To test the local Snap, first build and serve it from `../mina-snap`, then start
-this UI with the explicit provider selection:
+this UI with the Snap as the initial provider:
 
 ```bash
 cd ../mina-snap
@@ -48,6 +51,10 @@ VITE_MINA_WALLET=metamask-snap \
 VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
 pnpm dev
 ```
+
+Open **Bridge settings → Mina wallet** to switch the same running UI between
+the local Snap and Auro. Auro must be installed and configured with the local
+Zeko endpoint before it can sign against this stack.
 
 The npm package is not usable in ordinary MetaMask until it has been published,
 security-reviewed, and allowlisted. See the [Snap workspace

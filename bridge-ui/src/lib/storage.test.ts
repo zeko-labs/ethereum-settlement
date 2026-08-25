@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest"
 import {
   operationStorageKey,
+  readMinaWallet,
   readOperations,
   rememberAuroConnection,
+  rememberMinaWallet,
   upsertOperation,
   wasAuroConnected
 } from "./storage"
 
 describe("operation persistence", () => {
+  it("persists a valid Mina wallet preference and ignores invalid state", () => {
+    const storage = new Map<string, string>()
+    const adapter = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value)
+    } as Storage
+    expect(readMinaWallet("metamask-snap", adapter)).toBe("metamask-snap")
+    rememberMinaWallet("auro", adapter)
+    expect(readMinaWallet("metamask-snap", adapter)).toBe("auro")
+    storage.set("zeko-eth-bridge:v1:mina-wallet", "unknown")
+    expect(readMinaWallet("metamask-snap", adapter)).toBe("metamask-snap")
+  })
+
   it("keys history by chain, bridge, and wallet identity", () => {
     expect(operationStorageKey(11155111, "0xAbC", "B62:0xDEF")).toBe(
       "zeko-eth-bridge:v1:11155111:0xabc:b62:0xdef"
@@ -34,7 +49,7 @@ describe("operation persistence", () => {
     expect(storage.get("key")).not.toContain("privateKey")
   })
 
-  it("remembers only whether Auro was previously authorized", () => {
+  it("remembers only whether the selected Mina wallet was previously authorized", () => {
     const storage = new Map<string, string>()
     const adapter = {
       getItem: (key: string) => storage.get(key) ?? null,

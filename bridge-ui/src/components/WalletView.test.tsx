@@ -18,6 +18,7 @@ import { WalletView } from "./WalletView"
 const account = "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2"
 const recipient = "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA"
 const tokenOwner = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+const provider = {} as ReturnType<Parameters<typeof WalletView>[0]["getProvider"]>
 
 describe("Mina wallet payment view", () => {
   afterEach(() => {
@@ -28,7 +29,7 @@ describe("Mina wallet payment view", () => {
   it("submits a native MINA payment through the connected wallet", async () => {
     const submitted = vi.fn()
     const user = userEvent.setup()
-    render(<WalletView config={validConfig} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
+    render(<WalletView config={validConfig} getProvider={() => provider} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
 
     await user.type(screen.getByLabelText("Payment recipient"), recipient)
     await user.type(screen.getByLabelText("Payment amount"), "1.25")
@@ -37,6 +38,7 @@ describe("Mina wallet payment view", () => {
 
     expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({
       config: validConfig,
+      provider,
       input: { recipient, amountMina: "1.25", feeMina: "0.1", memo: "hello" }
     }))
     expect(submitted).toHaveBeenCalledWith("5Jnative", "MINA")
@@ -45,7 +47,7 @@ describe("Mina wallet payment view", () => {
   it("submits a standard MFT transfer in exact base units", async () => {
     const submitted = vi.fn()
     const user = userEvent.setup()
-    render(<WalletView config={validConfig} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
+    render(<WalletView config={validConfig} getProvider={() => provider} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
 
     await user.click(screen.getByRole("tab", { name: "MFT token" }))
     await user.type(screen.getByLabelText("MFT token owner"), tokenOwner)
@@ -55,6 +57,7 @@ describe("Mina wallet payment view", () => {
 
     expect(mocks.mft).toHaveBeenCalledWith(expect.objectContaining({
       config: validConfig,
+      provider,
       sender: account,
       input: {
         tokenOwner,

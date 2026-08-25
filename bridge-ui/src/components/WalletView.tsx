@@ -1,11 +1,12 @@
 import { useState } from "react"
 import type { RuntimeConfig } from "../lib/config"
 import { sendMftPayment, sendNativePayment } from "../lib/payments"
-import { formatWalletError } from "../lib/wallets"
+import { formatWalletError, type AuroProvider } from "../lib/wallets"
 import { Notice } from "./BridgeUi"
 
 type Props = {
   config: RuntimeConfig
+  getProvider: () => AuroProvider
   account?: string
   onConnect: () => Promise<void>
   onSubmitted: (hash: string, kind: "MINA" | "MFT") => void
@@ -13,7 +14,7 @@ type Props = {
 
 const MINIMUM_MFT_FEE_NANOMINA = 1_000_000_000n
 
-export const WalletView = ({ config, account, onConnect, onSubmitted }: Props) => {
+export const WalletView = ({ config, getProvider, account, onConnect, onSubmitted }: Props) => {
   const [kind, setKind] = useState<"MINA" | "MFT">("MINA")
   const [recipient, setRecipient] = useState("")
   const [amount, setAmount] = useState("")
@@ -34,13 +35,16 @@ export const WalletView = ({ config, account, onConnect, onSubmitted }: Props) =
         await onConnect()
         return
       }
+      const provider = getProvider()
       const hash = kind === "MINA"
         ? await sendNativePayment({
             config,
+            provider,
             input: { recipient, amountMina: amount, feeMina: fee, memo }
           })
         : await sendMftPayment({
             config,
+            provider,
             sender: account,
             input: {
               tokenOwner,

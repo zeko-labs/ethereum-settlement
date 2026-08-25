@@ -9,7 +9,8 @@ const zekoAccount = "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2"
 
 const mocks = vi.hoisted(() => ({
   connectEthereum: vi.fn(),
-  connectAuro: vi.fn(),
+  connectMina: vi.fn(),
+  getMinaProvider: vi.fn(() => ({})),
   createClient: vi.fn(),
   depositNative: vi.fn(),
   finalizeDeposit: vi.fn(),
@@ -31,11 +32,12 @@ vi.mock("./lib/config", async (importOriginal) => ({
 vi.mock("./lib/wallets", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./lib/wallets")>()),
   connectEthereum: mocks.connectEthereum,
-  connectAuro: mocks.connectAuro,
+  connectMina: mocks.connectMina,
+  defaultMinaWallet: vi.fn(() => "metamask-snap"),
   ensureEthereumNetwork: vi.fn(async () => undefined),
   ensureAuroPoCNetwork: vi.fn(async () => undefined),
   getEthereumProvider: vi.fn(() => ({ request: vi.fn() })),
-  getAuroProvider: vi.fn(() => ({}))
+  getMinaProvider: mocks.getMinaProvider
 }))
 
 vi.mock("./lib/bridge", () => ({
@@ -76,7 +78,7 @@ const synchronizedDeposit = {
 describe("bridge application", () => {
   beforeEach(() => {
     mocks.connectEthereum.mockResolvedValue(ethereumAccount)
-    mocks.connectAuro.mockResolvedValue(zekoAccount)
+    mocks.connectMina.mockResolvedValue(zekoAccount)
     mocks.createClient.mockResolvedValue(client)
     mocks.depositNative.mockResolvedValue({
       hash: synchronizedDeposit.ethereumTransactionHash,
@@ -175,13 +177,39 @@ describe("bridge application", () => {
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })
 
-  it("restores an already-authorized Auro connection after reload", async () => {
+  it("restores an already-authorized Mina wallet connection after reload", async () => {
     localStorage.setItem("zeko-eth-bridge:v1:auro-connected", "true")
     window.mina = {} as typeof window.mina
     render(<App />)
 
     expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
-    expect(mocks.connectAuro).toHaveBeenCalledTimes(1)
+    expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "metamask-snap")
+  })
+
+  it("switches between the MetaMask Snap and Auro at runtime", async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "metamask-snap")
+    expect(screen.getByText("Zeko Testnet · Snap")).toBeVisible()
+
+    await user.click(screen.getByRole("button", { name: "Open bridge settings" }))
+    const snap = screen.getByRole("radio", { name: /MetaMask Snap/i })
+    const auro = screen.getByRole("radio", { name: /Auro Wallet/i })
+    expect(snap).toHaveAttribute("aria-checked", "true")
+    expect(auro).toHaveAttribute("aria-checked", "false")
+    await user.click(auro)
+    expect(auro).toHaveAttribute("aria-checked", "true")
+    expect(localStorage.getItem("zeko-eth-bridge:v1:mina-wallet")).toBe("auro")
+    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+
+    await user.click(screen.getByRole("button", { name: "Close settings" }))
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "auro")
+    expect(mocks.getMinaProvider).toHaveBeenCalledWith("auro")
+    expect(screen.getByText("Zeko Testnet · Auro")).toBeVisible()
   })
 
   it("recovers a pending withdrawal from gateway archive activity", async () => {
