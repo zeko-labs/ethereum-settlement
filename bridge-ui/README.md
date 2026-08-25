@@ -24,10 +24,14 @@ The default URL is `http://127.0.0.1:5174`. Edit
 `public/runtime-config.json` before deployment; it contains public endpoints and
 limits only.
 
-The bridge settings dialog lets each browser choose between the MetaMask Snap
-and Auro at runtime. The choice is stored locally and changing it disconnects
-the current Mina account before reconnecting the selected provider. Vite only
-sets the initial choice for browsers without a saved preference:
+Clicking **Connect Mina wallet** opens a dialog that lets each browser choose
+between the MetaMask Snap (shown as MetaMask Flask for a local Snap) and Auro at
+runtime. Clicking the connected Mina wallet chip opens the same account dialog
+with a disconnect action. Snap disconnect also revokes the site's Snap account
+permission; Auro disconnect is local because Auro does not expose an equivalent
+dapp method. The choice is stored locally, and the settings dialog can still
+change the preferred provider. Vite only sets the initial choice for browsers
+without a saved preference:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -52,9 +56,9 @@ VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
 pnpm dev
 ```
 
-Open **Bridge settings → Mina wallet** to switch the same running UI between
-the local Snap and Auro. Auro must be installed and configured with the local
-Zeko endpoint before it can sign against this stack.
+Click **Connect Mina wallet** to choose between the local Snap and Auro. Auro
+must be installed and configured with the local Zeko endpoint before it can sign
+against this stack.
 
 The npm package is not usable in ordinary MetaMask until it has been published,
 security-reviewed, and allowlisted. See the [Snap workspace

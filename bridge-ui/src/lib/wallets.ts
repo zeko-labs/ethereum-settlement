@@ -31,6 +31,7 @@ export type AuroProvider = {
   switchChain: (input: { networkID: string }) => Promise<{ networkID: string } | ProviderError>
   sendTransaction: (input: { onlySign: true; transaction: string }) => Promise<AuroSignedResult>
   sendPayment?: (input: { to: string; amount: number; fee?: number; memo?: string; nonce?: number }) => Promise<{ hash: string; paymentId?: string } | ProviderError | Error>
+  revokePermissions?: () => Promise<string[]>
   on?: {
     (event: "accountsChanged", listener: (accounts: string[]) => void): void
     (event: "chainChanged", listener: (network: { networkID: string }) => void): void

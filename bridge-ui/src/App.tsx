@@ -6,6 +6,7 @@ import { ActivityView } from "./components/ActivityView"
 import { BackgroundWave, DepositProgress, type Direction, Notice, WalletChip, WithdrawalProgress } from "./components/BridgeUi"
 import { BridgeForm } from "./components/BridgeForm"
 import { CompleteView } from "./components/CompleteView"
+import { MinaWalletModal } from "./components/MinaWalletModal"
 import { ReviewView } from "./components/ReviewView"
 import { SettingsModal } from "./components/SettingsModal"
 import { WalletView } from "./components/WalletView"
@@ -75,6 +76,7 @@ export default function App() {
   const [recipientValid, setRecipientValid] = useState(false)
   const [showDetails, setShowDetails] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [minaWalletOpen, setMinaWalletOpen] = useState(false)
   const [minaWallet, setMinaWallet] = useState<MinaWalletKind>(() =>
     readMinaWallet(defaultMinaWallet())
   )
@@ -95,6 +97,7 @@ export default function App() {
   const activityRefreshes = useRef(new Set<string>())
   const selectedOperationRef = useRef<PendingOperation>()
   const ethereumConnectionRequest = useRef(0)
+  const minaWalletRef = useRef(minaWallet)
 
   useEffect(() => {
     let active = true
@@ -141,34 +144,41 @@ export default function App() {
     }
   }, [config, direction, ethereum, setEthereumConnection])
 
-  const connectMinaWallet = useCallback(async () => {
+  const connectMinaWallet = useCallback(async (wallet: MinaWalletKind) => {
     if (!config) return
     setBusy(true)
     setActionError("")
     try {
-      const account = await connectMina(config, minaWallet)
-      rememberMinaWallet(minaWallet)
+      const account = await connectMina(config, wallet)
+      rememberMinaWallet(wallet)
       rememberMinaWalletConnection(true)
       activityRequest.current += 1
+      setMinaWallet(wallet)
       setZekoAccount(account)
       setZekoClient(undefined)
       setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
       setRecipient((current) => direction === "deposit" && !current ? account : current)
-      setToast(`${minaWallet === "auro" ? "Auro Wallet" : "MetaMask Snap"} connected to Zeko Testnet.`)
+      setMinaWalletOpen(false)
+      setToast(`${wallet === "auro" ? "Auro Wallet" : "MetaMask Snap"} connected to Zeko Testnet.`)
     } catch (error) {
       setActionError(formatWalletError(error))
     } finally {
       setBusy(false)
     }
-  }, [config, direction, minaWallet])
+  }, [config, direction])
+
+  useEffect(() => {
+    minaWalletRef.current = minaWallet
+  }, [minaWallet])
 
   useEffect(() => {
     if (!config || !wasMinaWalletConnected()) return
+    const wallet = minaWalletRef.current
     let active = true
-    void connectMina(config, minaWallet)
+    void connectMina(config, wallet)
       .then(async (account) => {
         if (!active) return
-        rememberMinaWallet(minaWallet)
+        rememberMinaWallet(wallet)
         activityRequest.current += 1
         setZekoAccount(account)
         setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
@@ -180,7 +190,7 @@ export default function App() {
     return () => {
       active = false
     }
-  }, [config, minaWallet])
+  }, [config])
 
   useEffect(() => {
     if (!config) return
@@ -284,6 +294,32 @@ export default function App() {
     setActionError("")
     setToast(`${wallet === "auro" ? "Auro Wallet" : "MetaMask Snap"} selected. Connect it to continue.`)
   }
+
+  const disconnectMinaWallet = useCallback(async () => {
+    setBusy(true)
+    setActionError("")
+    let revokeError = ""
+    try {
+      const provider = getMinaProvider(minaWallet)
+      if (minaWallet === "metamask-snap") await provider.revokePermissions?.()
+    } catch (error) {
+      revokeError = formatWalletError(error)
+    } finally {
+      rememberMinaWalletConnection(false)
+      activityRequest.current += 1
+      setZekoAccount(undefined)
+      setZekoBalance(undefined)
+      setZekoClient(undefined)
+      setActivityLoading(false)
+      setScreen("form")
+      setCompletion(undefined)
+      setRecipient((current) => direction === "deposit" && current === zekoAccount ? "" : current)
+      setMinaWalletOpen(false)
+      setBusy(false)
+      setToast("Mina wallet disconnected from the bridge.")
+      if (revokeError) setActionError(`The bridge disconnected locally, but the wallet permission could not be revoked: ${revokeError}`)
+    }
+  }, [direction, minaWallet, zekoAccount])
 
   useEffect(() => {
     if (!recipient) {
@@ -671,7 +707,7 @@ export default function App() {
         <div className="network-health"><span className="health-dot"></span><span>{ethereum} · Experimental</span></div>
         <div className="header-actions">
           <WalletChip network="ethereum" ethereumNetworkName={ethereum} account={ethereumAccount} balance={ethereumBalance} onClick={() => void connectEthereumWallet()} />
-          <WalletChip network="zeko" minaWallet={minaWallet} account={zekoAccount} balance={zekoBalance} onClick={() => void connectMinaWallet()} />
+          <WalletChip network="zeko" minaWallet={minaWallet} account={zekoAccount} balance={zekoBalance} onClick={() => { setActionError(""); setMinaWalletOpen(true) }} />
         </div>
       </header>
       <main className="main-content">
@@ -685,13 +721,14 @@ export default function App() {
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
             {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={connectMinaWallet} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>
         <footer className="page-footer"><span><span className="health-dot"></span>{client ? "Gateway connected" : "Connect wallet to verify gateway"}</span><span>{bridgeAddress ? `Bridge ${shortAddress(bridgeAddress)}` : "Bridge address from gateway"}</span><span>Proof of concept</span></footer>
       </main>
       {settingsOpen && <SettingsModal config={config} minaWallet={minaWallet} minaWalletBusy={busy} showDetails={showDetails} onMinaWalletChange={selectMinaWallet} onToggleDetails={() => setShowDetails((value) => !value)} onClose={() => setSettingsOpen(false)} />}
+      {minaWalletOpen && <MinaWalletModal account={zekoAccount} minaWallet={minaWallet} busy={busy} error={actionError} onConnect={(wallet) => void connectMinaWallet(wallet)} onDisconnect={() => void disconnectMinaWallet()} onClose={() => setMinaWalletOpen(false)} />}
       {toast && <div className="toast" role="status"><span className="toast-dot"></span>{toast}</div>}
     </div>
   )

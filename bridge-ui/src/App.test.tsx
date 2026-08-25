@@ -10,7 +10,8 @@ const zekoAccount = "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2"
 const mocks = vi.hoisted(() => ({
   connectEthereum: vi.fn(),
   connectMina: vi.fn(),
-  getMinaProvider: vi.fn(() => ({})),
+  revokeMinaPermissions: vi.fn(),
+  getMinaProvider: vi.fn(),
   createClient: vi.fn(),
   depositNative: vi.fn(),
   finalizeDeposit: vi.fn(),
@@ -79,6 +80,11 @@ describe("bridge application", () => {
   beforeEach(() => {
     mocks.connectEthereum.mockResolvedValue(ethereumAccount)
     mocks.connectMina.mockResolvedValue(zekoAccount)
+    mocks.revokeMinaPermissions.mockResolvedValue([])
+    mocks.getMinaProvider.mockReturnValue({
+      isMinaSnap: true,
+      revokePermissions: mocks.revokeMinaPermissions
+    })
     mocks.createClient.mockResolvedValue(client)
     mocks.depositNative.mockResolvedValue({
       hash: synchronizedDeposit.ethereumTransactionHash,
@@ -107,6 +113,7 @@ describe("bridge application", () => {
 
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
     await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.1")
     expect(screen.getByLabelText("Zeko recipient")).toHaveValue(zekoAccount)
 
@@ -151,6 +158,7 @@ describe("bridge application", () => {
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
     await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     await user.click(screen.getByRole("button", { name: "Reverse bridge direction" }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.05")
 
@@ -192,6 +200,7 @@ describe("bridge application", () => {
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "metamask-snap")
     expect(screen.getByText("Zeko Testnet · Snap")).toBeVisible()
 
@@ -207,9 +216,63 @@ describe("bridge application", () => {
 
     await user.click(screen.getByRole("button", { name: "Close settings" }))
     await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(await screen.findByRole("button", { name: /Auro Wallet/i }))
     expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "auro")
     expect(mocks.getMinaProvider).toHaveBeenCalledWith("auro")
     expect(screen.getByText("Zeko Testnet · Auro")).toBeVisible()
+  })
+
+  it("asks which Mina wallet to use before connecting", async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+
+    expect(screen.getByRole("dialog", { name: "Connect Mina wallet" })).toBeVisible()
+    expect(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Auro Wallet/i })).toBeVisible()
+    expect(mocks.connectMina).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
+    await waitFor(() => expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "auro"))
+    expect(mocks.connectMina).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole("dialog", { name: "Connect Mina wallet" })).not.toBeInTheDocument()
+    expect(screen.getByText("Zeko Testnet · Auro")).toBeVisible()
+  })
+
+  it("disconnects the connected Mina wallet", async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
+    const connected = await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })
+    await user.click(connected)
+
+    expect(screen.getByRole("dialog", { name: "Mina wallet" })).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Disconnect Mina wallet" }))
+
+    await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
+    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
+  })
+
+  it("disconnects Auro locally without calling the Snap permission API", async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
+    const connected = await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })
+    await user.click(connected)
+    await user.click(screen.getByRole("button", { name: "Disconnect Mina wallet" }))
+
+    expect(mocks.revokeMinaPermissions).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
   })
 
   it("recovers a pending withdrawal from gateway archive activity", async () => {

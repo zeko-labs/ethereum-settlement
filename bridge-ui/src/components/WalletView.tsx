@@ -8,7 +8,7 @@ type Props = {
   config: RuntimeConfig
   getProvider: () => AuroProvider
   account?: string
-  onConnect: () => Promise<void>
+  onConnect: () => void | Promise<void>
   onSubmitted: (hash: string, kind: "MINA" | "MFT") => void
 }
 

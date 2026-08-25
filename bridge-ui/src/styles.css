@@ -240,6 +240,13 @@ code { padding: 1px 4px; border-radius: 4px; background: oklch(89% 0 0 / .62); f
 .wallet-option.selected { border-color: var(--gold-100); background: color-mix(in oklch, var(--gold-50) 9%, var(--white)); box-shadow: 0 0 0 2px color-mix(in oklch, var(--gold-100) 13%, transparent); }
 .wallet-option strong { font-size: 10px; }
 .wallet-option span { color: var(--gray-500); font-size: 9px; line-height: 1.4; }
+.wallet-choice-copy { margin: 0; color: var(--gray-600); font-size: 11px; line-height: 1.5; }
+.wallet-connect-options .wallet-option { min-height: 92px; }
+.connected-wallet-summary { display: grid; gap: 7px; padding: 14px; border: 1px solid var(--gray-200); border-radius: 11px; background: var(--white); }
+.connected-wallet-summary strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.disconnect-button { display: flex; min-height: 46px; align-items: center; justify-content: center; border: 1px solid color-mix(in oklch, var(--red) 30%, var(--gray-200)); border-radius: 11px; background: var(--red-soft); color: var(--red); font-size: 12px; font-weight: 700; cursor: pointer; }
+.disconnect-button:hover:not(:disabled) { border-color: color-mix(in oklch, var(--red) 55%, var(--gray-200)); }
+.disconnect-button:disabled { opacity: .55; cursor: not-allowed; }
 .setting-label { font-size: 11px; font-weight: 600; }
 .setting-help { margin: -3px 0 0; color: var(--gray-500); font-size: 9px; line-height: 1.45; }
 .read-only-setting { padding: 11px 12px; border: 1px solid var(--gray-200); border-radius: 9px; background: var(--white); color: var(--gray-700); font-size: 10px; }
