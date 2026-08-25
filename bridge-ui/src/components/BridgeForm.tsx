@@ -1,6 +1,6 @@
 import { normalizeAmountInput } from "../lib/amount"
 import { ethereumNetworkName, type RuntimeConfig } from "../lib/config"
-import { shortAddress } from "../lib/wallets"
+import { minaWalletName, shortAddress } from "../lib/wallets"
 import { NetworkIcon, Notice, type Direction } from "./BridgeUi"
 
 type Props = {
@@ -64,7 +64,7 @@ export const BridgeForm = (props: Props) => {
       <div className="route-summary"><div className="route-line"><span className="route-label">Route</span><span className="route-value"><span className="route-node">{deposit ? "Ethereum" : "Zeko"}</span><span className="route-arrow">→</span><span className="route-node"><NetworkIcon network="proof" compact /> SP1</span><span className="route-arrow">→</span><span className="route-node">{deposit ? "Zeko" : "Ethereum"}</span></span></div><button className="details-button" type="button" onClick={props.onToggleDetails} aria-expanded={props.showDetails}>{props.showDetails ? "Hide details" : "Route details"}</button></div>
       {props.showDetails && <div className="route-details"><div className="detail-cell"><span className="detail-label">Custody</span><strong className="detail-value">Ethereum bridge escrow</strong></div><div className="detail-cell"><span className="detail-label">Deposit policy</span><strong className="detail-value">No cancellation/refund</strong></div><div className="detail-cell"><span className="detail-label">Signing domain</span><strong className="detail-value">Mina wallet · testnet placeholder</strong></div></div>}
       <Notice kind="warning"><strong>No cancellation/refund.</strong> {deposit ? "First sign the ETH lock in your Ethereum wallet." : "First sign the withdrawal request with your Mina wallet. Ethereum claim becomes available after settlement and the safety delay."}</Notice>
-      <Notice kind="warning">Zeko Testnet currently uses Mina’s <code>testnet</code> signing-domain placeholder in Auro and the MetaMask Snap.</Notice>
+      <Notice kind="warning">Zeko Testnet currently uses Mina’s <code>testnet</code> signing-domain placeholder in Auro and the {minaWalletName("metamask-snap")}.</Notice>
       <button type="button" className="primary-button" disabled={!props.canReview} onClick={props.onReview}>Review {props.direction}<span>→</span></button>
     </section>
   )

@@ -13,7 +13,16 @@ import {
   type OnRpcRequestHandler,
   type OnUserInputHandler
 } from "@metamask/snaps-sdk"
-import { Box, Bold, Heading, Text } from "@metamask/snaps-sdk/jsx"
+import {
+  Box,
+  Bold,
+  Copyable,
+  Divider,
+  Heading,
+  Row,
+  Section,
+  Text
+} from "@metamask/snaps-sdk/jsx"
 import { sha256 } from "@noble/hashes/sha256"
 import { base58check } from "@scure/base"
 import Client from "mina-signer"
@@ -27,6 +36,10 @@ import {
 
 const MINA_COIN_TYPE = 12_586
 const MINA_ENTROPY_PATH = ["m", "44'", "12586'"] as const
+const MAX_UINT32 = 4_294_967_295n
+const MAX_UINT64 = 18_446_744_073_709_551_615n
+const MAX_ZKAPP_BYTES = 100_000
+const MAX_ZKAPP_UPDATES = 32
 const BUILT_IN_NETWORKS = new Set([
   "mina:mainnet",
   "mina:devnet",
@@ -203,12 +216,20 @@ const readFields = (params: unknown, property: "message" | "data"): Array<string
   return value as Array<string | number>
 }
 
-const getClient = (networkID: string, era?: "berkeley"): Client => new Client({
-  network: networkID === "mina:mainnet"
+const signerNetwork = (networkID: string): "mainnet" | "testnet" | { custom: string } =>
+  networkID === "mina:mainnet"
     ? "mainnet"
     : networkID === "zeko:mainnet"
       ? { custom: "zeko-mainnet" }
-      : "testnet",
+      : "testnet"
+
+const signingDomain = (networkID: string): string => {
+  const network = signerNetwork(networkID)
+  return typeof network === "string" ? network : network.custom
+}
+
+const getClient = (networkID: string, era?: "berkeley"): Client => new Client({
+  network: signerNetwork(networkID),
   ...(era ? { era } : {})
 })
 
@@ -276,7 +297,7 @@ const signedAccountUpdateIndexes = (
 const readZkappCommand = (params: unknown): {
   command: Record<string, unknown>
   onlySign: boolean
-  feePayerMemo: string
+  feePayerMemo?: string
   feePayerFee: unknown
   nonce: unknown
 } => {
@@ -284,6 +305,10 @@ const readZkappCommand = (params: unknown): {
     throw new InvalidParamsError("mina_sendTransaction requires a transaction")
   }
   const record = params as Record<string, unknown>
+  if (typeof record.transaction === "string" &&
+      record.transaction.length > MAX_ZKAPP_BYTES) {
+    throw new InvalidParamsError("The zkApp transaction exceeds 100 KB")
+  }
   let parsed: unknown
   try {
     parsed = typeof record.transaction === "string"
@@ -295,15 +320,235 @@ const readZkappCommand = (params: unknown): {
   if (typeof parsed !== "object" || parsed === null) {
     throw new InvalidParamsError("The zkApp transaction must be a JSON object")
   }
+  let serialized: string | undefined
+  try {
+    serialized = JSON.stringify(parsed)
+  } catch {
+    throw new InvalidParamsError("The zkApp transaction must contain JSON values")
+  }
+  if (!serialized || serialized.length > MAX_ZKAPP_BYTES) {
+    throw new InvalidParamsError("The zkApp transaction exceeds 100 KB")
+  }
   const feePayer = typeof record.feePayer === "object" && record.feePayer !== null
     ? record.feePayer as Record<string, unknown>
     : {}
   return {
     command: parsed as Record<string, unknown>,
     onlySign: record.onlySign === true,
-    feePayerMemo: typeof feePayer.memo === "string" ? feePayer.memo : "",
+    ...(typeof feePayer.memo === "string" ? { feePayerMemo: feePayer.memo } : {}),
     feePayerFee: feePayer.fee,
     nonce: record.nonce
+  }
+}
+
+const readUnsigned = (
+  value: unknown,
+  label: string,
+  maximum: bigint,
+  typeName: "UInt32" | "UInt64"
+): string => {
+  const input = typeof value === "number" && Number.isSafeInteger(value)
+    ? value.toString()
+    : typeof value === "string"
+      ? value
+      : ""
+  if (!/^\d+$/u.test(input)) {
+    throw new InvalidParamsError(`${label} must be a non-negative integer`)
+  }
+  const normalized = input.replace(/^0+(?=\d)/u, "")
+  if (normalized.length > maximum.toString().length || BigInt(normalized) > maximum) {
+    throw new InvalidParamsError(`${label} exceeds Mina ${typeName}`)
+  }
+  return normalized
+}
+
+const readCommandMemo = (value: unknown): string => {
+  if (typeof value !== "string") {
+    throw new InvalidParamsError("The zkApp command memo is invalid")
+  }
+  try {
+    const payload = base58check(sha256).decode(value)
+    const length = payload[2]
+    if (payload.length !== 35 || payload[0] !== 20 || payload[1] !== 1 ||
+        length === undefined || length > 32 ||
+        payload.slice(3 + length).some((byte) => byte !== 0)) {
+      throw new Error("invalid memo payload")
+    }
+    const bytes = payload.slice(3, 3 + length)
+    const memo = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    const encoded = new TextEncoder().encode(memo)
+    if (encoded.length !== bytes.length || encoded.some((byte, index) => byte !== bytes[index])) {
+      throw new Error("invalid memo encoding")
+    }
+    return memo
+  } catch {
+    throw new InvalidParamsError("The zkApp command memo is invalid")
+  }
+}
+
+const canonicalJson = (value: unknown): string => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value) as string
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value) as string
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+  if (typeof value === "object") {
+    const entries = Object.entries(value).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0)
+    return `{${entries.map(([key, item]) =>
+      `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`
+  }
+  throw new InvalidParamsError("The zkApp transaction must contain JSON values")
+}
+
+const sha256Hex = (value: string): string =>
+  Array.from(sha256(new TextEncoder().encode(value)), (byte) =>
+    byte.toString(16).padStart(2, "0")).join("")
+
+const reviewValue = (value: unknown): string => {
+  const canonical = canonicalJson(value)
+  return canonical.length <= 180
+    ? canonical
+    : `SHA-256 ${sha256Hex(canonical)} (${canonical.length} characters)`
+}
+
+const reviewString = (value: string): string => value.length <= 180
+  ? value
+  : `SHA-256 ${sha256Hex(value)} (${value.length} characters)`
+
+type ZkappUpdateReview = {
+  index: number
+  publicKey: string
+  tokenId: string
+  balanceChange: string
+  authorization: string
+  signingScope: string
+  actions: string
+  events: string
+  callData: string
+}
+
+const readZkappUpdateReviews = (
+  command: Record<string, unknown>,
+  signedIndexes: number[]
+): ZkappUpdateReview[] => {
+  const updates = Array.isArray(command.accountUpdates) ? command.accountUpdates : []
+  if (updates.length > MAX_ZKAPP_UPDATES) {
+    throw new InvalidParamsError(`The Snap supports at most ${MAX_ZKAPP_UPDATES} account updates`)
+  }
+  return updates.map((update, index) => {
+    if (typeof update !== "object" || update === null) {
+      throw new InvalidParamsError(`Account update ${index + 1} is invalid`)
+    }
+    const body = (update as { body?: unknown }).body
+    if (typeof body !== "object" || body === null) {
+      throw new InvalidParamsError(`Account update ${index + 1} has no body`)
+    }
+    const record = body as Record<string, unknown>
+    const publicKey = record.publicKey
+    const tokenId = record.tokenId
+    const balance = record.balanceChange
+    const authorizationKind = record.authorizationKind
+    if (typeof publicKey !== "string" || typeof tokenId !== "string" ||
+        typeof balance !== "object" || balance === null ||
+        typeof authorizationKind !== "object" || authorizationKind === null ||
+        !Array.isArray(record.actions) || !Array.isArray(record.events) ||
+        typeof record.callData !== "string") {
+      throw new InvalidParamsError(`Account update ${index + 1} cannot be reviewed safely`)
+    }
+    const magnitude = (balance as Record<string, unknown>).magnitude
+    const sign = (balance as Record<string, unknown>).sgn
+    if ((typeof magnitude !== "string" && typeof magnitude !== "number") ||
+        typeof sign !== "string") {
+      throw new InvalidParamsError(`Account update ${index + 1} has an invalid balance change`)
+    }
+    const kind = authorizationKind as Record<string, unknown>
+    const isSigned = kind.isSigned === true
+    const isProved = kind.isProved === true
+    if (isSigned && isProved) {
+      throw new InvalidParamsError(`Account update ${index + 1} has conflicting authorization`)
+    }
+    return {
+      index,
+      publicKey,
+      tokenId,
+      balanceChange: `${sign} ${String(magnitude)}`,
+      authorization: isSigned ? "Signature" : isProved ? "Proof" : "None",
+      signingScope: signedIndexes.includes(index)
+        ? "This Snap will sign this update"
+        : "This Snap will not sign this update",
+      actions: reviewValue(record.actions),
+      events: reviewValue(record.events),
+      callData: reviewString(record.callData)
+    }
+  })
+}
+
+const approveZkappSigning = async ({
+  origin,
+  networkId,
+  signingPublicKey,
+  feePayerPublicKey,
+  fee,
+  nonce,
+  validUntil,
+  memo,
+  updates,
+  payloadHash
+}: {
+  origin: string
+  networkId: string
+  signingPublicKey: string
+  feePayerPublicKey: string
+  fee: string
+  nonce: string
+  validUntil: string | null
+  memo: string
+  updates: ZkappUpdateReview[]
+  payloadHash: string
+}): Promise<void> => {
+  const networkName = BUILT_IN_NETWORK_NAMES[networkId] ?? networkId
+  const approved = await snap.request({
+    method: "snap_dialog",
+    params: {
+      type: "confirmation",
+      content: (
+        <Box>
+          <Heading>Sign Mina zkApp transaction</Heading>
+          <Text>Requesting site: <Bold>{origin}</Bold></Text>
+          <Section>
+            <Row label="Network"><Text>{`${networkName} (${networkId})`}</Text></Row>
+            <Row label="Signature domain"><Text>{signingDomain(networkId)}</Text></Row>
+            <Row label="Signing account"><Copyable value={signingPublicKey} /></Row>
+            <Row label="Fee payer"><Copyable value={feePayerPublicKey} /></Row>
+            <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
+            <Row label="Nonce"><Text>{nonce}</Text></Row>
+            <Row label="Valid until"><Text>{validUntil ?? "No limit"}</Text></Row>
+            <Row label="Memo"><Copyable value={memo || "(empty)"} /></Row>
+            <Row label="Account updates"><Text>{String(updates.length)}</Text></Row>
+          </Section>
+          {updates.map((update) => (
+            <Section key={String(update.index)}>
+              <Heading>{`Account update ${update.index + 1}`}</Heading>
+              <Row label="Target public key"><Copyable value={update.publicKey} /></Row>
+              <Row label="Token ID"><Copyable value={update.tokenId} /></Row>
+              <Row label="Balance change"><Text>{update.balanceChange}</Text></Row>
+              <Row label="Authorization"><Text>{update.authorization}</Text></Row>
+              <Row label="Signing scope"><Text>{update.signingScope}</Text></Row>
+              <Row label="Actions"><Copyable value={update.actions} /></Row>
+              <Row label="Events"><Copyable value={update.events} /></Row>
+              <Row label="Call data"><Copyable value={update.callData} /></Row>
+            </Section>
+          ))}
+          <Divider />
+          <Text>Canonical payload SHA-256</Text>
+          <Copyable value={payloadHash} />
+        </Box>
+      )
+    }
+  })
+  if (!approved) {
+    throw new UserRejectedRequestError("Sign Mina zkApp transaction was rejected")
   }
 }
 
@@ -377,22 +622,38 @@ const minaToNanomina = (value: unknown, label: string): string => {
     throw new InvalidParamsError(`${label} must be a non-negative decimal number`)
   }
   const input = typeof value === "string" ? value.trim() : value.toString()
+  if (input.length > 128) throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
   const match = input.match(/^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu)
   if (!match) throw new InvalidParamsError(`${label} is invalid`)
   const whole = match[1] ?? "0"
   const fraction = match[2] ?? ""
-  const exponent = Number(match[3] ?? 0)
+  const exponent = BigInt(match[3] ?? 0)
   const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "")
-  const decimalPlaces = fraction.length - exponent
-  const nanoPlaces = decimalPlaces - 9
-  if (nanoPlaces > 0) {
-    const discarded = digits.slice(-nanoPlaces)
+  if (digits === "0") return "0"
+  const decimalPlaces = BigInt(fraction.length) - exponent
+  const nanoPlaces = decimalPlaces - 9n
+  let nanomina: string
+  if (nanoPlaces > 0n) {
+    if (nanoPlaces >= BigInt(digits.length)) {
+      throw new InvalidParamsError(`${label} supports at most 9 decimal places`)
+    }
+    const places = Number(nanoPlaces)
+    const discarded = digits.slice(-places)
     if (/[1-9]/u.test(discarded)) {
       throw new InvalidParamsError(`${label} supports at most 9 decimal places`)
     }
-    return (digits.slice(0, -nanoPlaces) || "0").replace(/^0+(?=\d)/u, "")
+    nanomina = (digits.slice(0, -places) || "0").replace(/^0+(?=\d)/u, "")
+  } else {
+    const zeroes = -nanoPlaces
+    if (BigInt(digits.length) + zeroes > BigInt(MAX_UINT64.toString().length)) {
+      throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
+    }
+    nanomina = `${digits}${"0".repeat(Number(zeroes))}`.replace(/^0+(?=\d)/u, "")
   }
-  return `${digits}${"0".repeat(-nanoPlaces)}`.replace(/^0+(?=\d)/u, "")
+  if (BigInt(nanomina) > MAX_UINT64) {
+    throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
+  }
+  return nanomina
 }
 
 const getNetworkUrl = (state: MinaSnapState): string => {
@@ -852,9 +1113,10 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       nonce: nonceOverride
     } = readZkappCommand(request.params)
     const feePayer = command.feePayer
-    const feePayerBody = typeof feePayer === "object" && feePayer !== null
-      ? (feePayer as { body?: unknown }).body
+    const feePayerRecord = typeof feePayer === "object" && feePayer !== null
+      ? feePayer as Record<string, unknown>
       : undefined
+    const feePayerBody = feePayerRecord?.body
     if (typeof feePayerBody !== "object" || feePayerBody === null) {
       throw new InvalidParamsError("The zkApp transaction has no fee payer body")
     }
@@ -862,21 +1124,30 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const publicKey = body.publicKey
     const commandFee = body.fee
     const commandNonce = body.nonce
+    const feePayerAuthorization = feePayerRecord?.authorization
     if (typeof publicKey !== "string" ||
         (typeof commandFee !== "string" && typeof commandFee !== "number") ||
-        (typeof commandNonce !== "string" && typeof commandNonce !== "number")) {
+        (typeof commandNonce !== "string" && typeof commandNonce !== "number") ||
+        typeof feePayerAuthorization !== "string") {
       throw new InvalidParamsError("The zkApp fee payer is invalid")
     }
     const fee = feePayerFee === undefined
-      ? String(commandFee)
+      ? readUnsigned(commandFee, "Fee", MAX_UINT64, "UInt64")
       : minaToNanomina(feePayerFee, "Fee")
-    let nonce = String(commandNonce)
+    let nonce = readUnsigned(commandNonce, "Nonce", MAX_UINT32, "UInt32")
     if (nonceOverride !== undefined) {
       if (typeof nonceOverride !== "number" ||
           !Number.isSafeInteger(nonceOverride) || nonceOverride < 0) {
         throw new InvalidParamsError("Nonce must be a non-negative safe integer")
       }
-      nonce = nonceOverride.toString()
+      nonce = readUnsigned(nonceOverride, "Nonce", MAX_UINT32, "UInt32")
+    }
+    const validUntil = body.validUntil === null || body.validUntil === undefined
+      ? null
+      : readUnsigned(body.validUntil, "Valid until", MAX_UINT32, "UInt32")
+    const memo = feePayerMemo ?? readCommandMemo(command.memo)
+    if (new TextEncoder().encode(memo).length > 32) {
+      throw new InvalidParamsError("The zkApp memo exceeds 32 bytes")
     }
     const connectedPublicKey = await derivePublicKey()
     const signsFeePayer = publicKey === connectedPublicKey
@@ -891,30 +1162,39 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         "A zkApp with a different fee payer can only be partially signed"
       )
     }
-    const accountUpdates = Array.isArray(command.accountUpdates)
-      ? command.accountUpdates.length
-      : 0
-    await approveSigning(
-      origin,
-      "Sign Mina zkApp transaction",
-      `${state.selectedNetwork}; fee payer ${publicKey}; fee ${fee} nanomina; nonce ${nonce}; ` +
-      `${accountUpdates} account update(s); signing ${signsFeePayer ? "fee payer and " : ""}` +
-      `${signedUpdateIndexes.length} account update(s)`
-    )
-    const account = await deriveAccount()
-    if (account.publicKey !== connectedPublicKey) {
-      throw new Error("The derived Mina account changed during approval")
+    if (!signsFeePayer &&
+        (feePayerFee !== undefined || feePayerMemo !== undefined || nonceOverride !== undefined)) {
+      throw new InvalidParamsError("Fee-payer overrides require the connected fee-payer account")
     }
-    const client = getClient(state.selectedNetwork, getZkappEra(command))
-    const signed = client.signTransaction({
+    const signingPayload = {
       zkappCommand: command,
       feePayer: {
         feePayer: publicKey,
         fee,
         nonce,
-        memo: feePayerMemo
+        validUntil,
+        memo
       }
-    } as never, account.privateKey) as unknown as {
+    }
+    const updates = readZkappUpdateReviews(command, signedUpdateIndexes)
+    await approveZkappSigning({
+      origin,
+      networkId: state.selectedNetwork,
+      signingPublicKey: connectedPublicKey,
+      feePayerPublicKey: publicKey,
+      fee,
+      nonce,
+      validUntil,
+      memo,
+      updates,
+      payloadHash: sha256Hex(canonicalJson(signingPayload))
+    })
+    const account = await deriveAccount()
+    if (account.publicKey !== connectedPublicKey) {
+      throw new Error("The derived Mina account changed during approval")
+    }
+    const client = getClient(state.selectedNetwork, getZkappEra(command))
+    const signed = client.signTransaction(signingPayload as never, account.privateKey) as unknown as {
       data: { zkappCommand?: unknown }
     }
     if (signsFeePayer && !client.verifyTransaction(signed as never)) {
@@ -922,6 +1202,14 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     }
     if (!signsFeePayer) {
       const signedCommand = signed.data.zkappCommand
+      const signedFeePayer = typeof signedCommand === "object" && signedCommand !== null
+        ? (signedCommand as { feePayer?: unknown }).feePayer
+        : undefined
+      if (typeof signedFeePayer !== "object" || signedFeePayer === null) {
+        throw new Error("Mina signer returned no fee payer")
+      }
+      const mutableFeePayer = signedFeePayer as { authorization: string }
+      mutableFeePayer.authorization = feePayerAuthorization
       const signedUpdates = typeof signedCommand === "object" && signedCommand !== null &&
         Array.isArray((signedCommand as { accountUpdates?: unknown }).accountUpdates)
         ? (signedCommand as { accountUpdates: unknown[] }).accountUpdates

@@ -57,10 +57,14 @@ export const getEthereumProvider = (): EthereumProvider => {
 let cachedSnapProvider: { ethereum: EthereumProvider; provider: AuroProvider } | undefined
 
 export const getSnapProvider = (): AuroProvider => {
-  const ethereum = discoverMetaMaskProvider(window)
-  if (!ethereum) throw new Error("MetaMask is not installed")
-  if (cachedSnapProvider?.ethereum === ethereum) return cachedSnapProvider.provider
   const snapId = import.meta.env.VITE_MINA_SNAP_ID as string | undefined
+  const ethereum = discoverMetaMaskProvider(window, snapId)
+  if (!ethereum) {
+    throw new Error(snapId?.startsWith("local:")
+      ? "MetaMask Flask is not installed"
+      : "MetaMask is not installed")
+  }
+  if (cachedSnapProvider?.ethereum === ethereum) return cachedSnapProvider.provider
   const provider = new MinaSnapProvider(
     ethereum,
     snapId ? { snapId } : undefined
@@ -74,6 +78,24 @@ export const defaultMinaWallet = (): MinaWalletKind => {
   if (preference === "auro" || preference === "metamask-snap") return preference
   return window.mina ? "auro" : "metamask-snap"
 }
+
+export const minaWalletName = (
+  wallet: MinaWalletKind,
+  snapId = import.meta.env.VITE_MINA_SNAP_ID as string | undefined
+): string => wallet === "auro"
+  ? "Auro Wallet"
+  : snapId?.startsWith("local:")
+    ? "MetaMask Flask"
+    : "MetaMask Snap"
+
+export const minaWalletShortName = (
+  wallet: MinaWalletKind,
+  snapId = import.meta.env.VITE_MINA_SNAP_ID as string | undefined
+): string => wallet === "auro"
+  ? "Auro"
+  : snapId?.startsWith("local:")
+    ? "Flask"
+    : "Snap"
 
 export const getMinaProvider = (wallet: MinaWalletKind): AuroProvider => {
   if (wallet === "auro") {

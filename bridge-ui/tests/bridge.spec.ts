@@ -210,6 +210,7 @@ const openConnectedApp = async (page: Page, options: { rejectDeposit?: boolean; 
   if (!options.rejectSwitch) {
     await expect(page.getByRole("button", { name: "Ethereum wallet 0x0000…0001" })).toBeVisible({ timeout: 20_000 })
     await page.getByRole("button", { name: /Connect Mina wallet/ }).click()
+    await page.getByRole("button", { name: /Auro Wallet/ }).click()
     await expect(page.getByRole("button", { name: "Mina wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
   }
 }
@@ -266,16 +267,17 @@ test("persists and reconnects the selected Mina wallet provider", async ({ page 
   await openConnectedApp(page)
   await page.getByRole("button", { name: "Open bridge settings" }).click()
   await expect(page.getByRole("radio", { name: /Auro Wallet/i })).toHaveAttribute("aria-checked", "true")
-  await page.getByRole("radio", { name: /MetaMask Snap/i }).click()
-  await expect(page.getByRole("radio", { name: /MetaMask Snap/i })).toHaveAttribute("aria-checked", "true")
+  await page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i }).click()
+  await expect(page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i })).toHaveAttribute("aria-checked", "true")
   await expect(page.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
 
   await page.reload()
   await page.getByRole("button", { name: "Open bridge settings" }).click()
-  await expect(page.getByRole("radio", { name: /MetaMask Snap/i })).toHaveAttribute("aria-checked", "true")
+  await expect(page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i })).toHaveAttribute("aria-checked", "true")
   await page.getByRole("radio", { name: /Auro Wallet/i }).click()
   await page.getByRole("button", { name: "Close settings" }).click()
   await page.getByRole("button", { name: /Connect Mina wallet/i }).click()
+  await page.getByRole("button", { name: /Auro Wallet/i }).click()
   await expect(page.getByRole("button", { name: "Mina wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
 })
 

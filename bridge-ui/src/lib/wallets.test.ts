@@ -7,6 +7,7 @@ import {
   getMinaProvider,
   listenAuroChanges,
   listenEthereumChanges,
+  minaWalletName,
   type AuroProvider,
   type EthereumProvider
 } from "./wallets"
@@ -18,6 +19,15 @@ const config = {
 } as RuntimeConfig
 
 describe("wallet adapters", () => {
+  it("uses the Flask display name for a local Mina Snap", () => {
+    expect(minaWalletName("metamask-snap", "local:http://127.0.0.1:8080"))
+      .toBe("MetaMask Flask")
+    expect(minaWalletName("metamask-snap", "npm:@zeko-labs/mina-snap"))
+      .toBe("MetaMask Snap")
+    expect(minaWalletName("auro", "local:http://127.0.0.1:8080"))
+      .toBe("Auro Wallet")
+  })
+
   it("uses the Auro-compatible Mina Snap provider when Auro is absent", () => {
     delete window.mina
     window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider

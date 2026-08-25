@@ -60,6 +60,7 @@ test("two destination wallets complete isolated deposit and withdrawal roundtrip
     await page.goto("/")
     await expect(page.getByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })).toBeVisible()
     await page.getByRole("button", { name: /Connect (?:Auro|Mina wallet)/ }).click()
+    await page.getByRole("button", { name: /Auro Wallet/ }).click()
     await expect(page.getByRole("button", { name: /^Mina wallet B62/ })).toBeVisible()
 
     const depositA = await submitDeposit(page, 0, wallets.zekoAccounts[0], "2")

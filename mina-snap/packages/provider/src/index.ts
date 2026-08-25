@@ -38,29 +38,35 @@ export interface MetaMaskProvider {
 }
 
 export const discoverMetaMaskProvider = (
-  target: EventTarget & { ethereum?: unknown }
+  target: EventTarget & { ethereum?: unknown },
+  snapId = DEFAULT_MINA_SNAP_ID
 ): MetaMaskProvider | undefined => {
-  let discovered: MetaMaskProvider | undefined
+  let metamask: MetaMaskProvider | undefined
+  let flask: MetaMaskProvider | undefined
   const onAnnouncement = (event: Event) => {
     const detail = (event as CustomEvent<{
       info?: { rdns?: string }
       provider?: unknown
     }>).detail
-    if ((detail?.info?.rdns !== "io.metamask" &&
-        detail?.info?.rdns !== "io.metamask.flask") ||
+    const rdns = detail?.info?.rdns
+    if ((rdns !== "io.metamask" && rdns !== "io.metamask.flask") ||
         typeof detail.provider !== "object" || detail.provider === null ||
         !("request" in detail.provider) ||
         typeof detail.provider.request !== "function") return
-    discovered = detail.provider as MetaMaskProvider
+    if (rdns === "io.metamask.flask") flask = detail.provider as MetaMaskProvider
+    else metamask = detail.provider as MetaMaskProvider
   }
   target.addEventListener("eip6963:announceProvider", onAnnouncement)
   target.dispatchEvent(new Event("eip6963:requestProvider"))
   target.removeEventListener("eip6963:announceProvider", onAnnouncement)
+  const local = snapId.startsWith("local:")
+  const discovered = local ? flask : metamask ?? flask
   if (discovered) return discovered
   const injected = target.ethereum
   if (typeof injected === "object" && injected !== null &&
       "request" in injected && typeof injected.request === "function" &&
-      "isMetaMask" in injected && injected.isMetaMask === true) {
+      "isMetaMask" in injected && injected.isMetaMask === true &&
+      (!local || ("isFlask" in injected && injected.isFlask === true))) {
     return injected as MetaMaskProvider
   }
   return undefined

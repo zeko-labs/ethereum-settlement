@@ -5,8 +5,10 @@ import {
   readOperations,
   rememberAuroConnection,
   rememberMinaWallet,
+  rememberMinaWalletConnection,
   upsertOperation,
-  wasAuroConnected
+  wasAuroConnected,
+  wasMinaWalletConnected
 } from "./storage"
 
 describe("operation persistence", () => {
@@ -21,6 +23,19 @@ describe("operation persistence", () => {
     expect(readMinaWallet("metamask-snap", adapter)).toBe("auro")
     storage.set("zeko-eth-bridge:v1:mina-wallet", "unknown")
     expect(readMinaWallet("metamask-snap", adapter)).toBe("metamask-snap")
+  })
+
+  it("attributes the legacy connection flag to Auro", () => {
+    const storage = new Map<string, string>([
+      ["zeko-eth-bridge:v1:auro-connected", "true"]
+    ])
+    const adapter = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key)
+    } as Storage
+
+    expect(readMinaWallet("metamask-snap", adapter)).toBe("auro")
   })
 
   it("keys history by chain, bridge, and wallet identity", () => {
@@ -59,8 +74,13 @@ describe("operation persistence", () => {
     expect(wasAuroConnected(adapter)).toBe(false)
     rememberAuroConnection(true, adapter)
     expect(wasAuroConnected(adapter)).toBe(true)
-    expect([...storage.values()]).toEqual(["true"])
+    expect(wasMinaWalletConnected("metamask-snap", adapter)).toBe(false)
+    expect([...storage.values()]).toEqual(["auro"])
     rememberAuroConnection(false, adapter)
     expect(wasAuroConnected(adapter)).toBe(false)
+
+    rememberMinaWalletConnection("metamask-snap", true, adapter)
+    expect(wasMinaWalletConnected("metamask-snap", adapter)).toBe(true)
+    expect(wasMinaWalletConnected("auro", adapter)).toBe(false)
   })
 })

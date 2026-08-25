@@ -168,7 +168,24 @@ describe("Auro-compatible Mina Provider", () => {
       }))
     })
 
-    expect(discoverMetaMaskProvider(target)).toBe(flask)
+    expect(discoverMetaMaskProvider(target, "local:http://127.0.0.1:8080")).toBe(flask)
+  })
+
+  it("prefers Flask for local Snaps regardless of announcement order", () => {
+    const target = new EventTarget() as EventTarget & { ethereum?: unknown }
+    const metamask = { request: vi.fn() }
+    const flask = { request: vi.fn() }
+    target.addEventListener("eip6963:requestProvider", () => {
+      target.dispatchEvent(new CustomEvent("eip6963:announceProvider", {
+        detail: { info: { rdns: "io.metamask.flask" }, provider: flask }
+      }))
+      target.dispatchEvent(new CustomEvent("eip6963:announceProvider", {
+        detail: { info: { rdns: "io.metamask" }, provider: metamask }
+      }))
+    })
+
+    expect(discoverMetaMaskProvider(target, "local:http://127.0.0.1:8080")).toBe(flask)
+    expect(discoverMetaMaskProvider(target, "npm:@zeko-labs/mina-snap")).toBe(metamask)
   })
 
   it("does not treat an unidentified injected wallet as MetaMask", () => {

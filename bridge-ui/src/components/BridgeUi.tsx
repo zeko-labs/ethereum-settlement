@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react"
 import type { DepositStatus, WithdrawalProof } from "@zeko-labs/eth-bridge-sdk"
 import { formatUnits } from "../lib/amount"
 import { DEPOSIT_STEPS, depositProgress, WITHDRAWAL_STEPS, withdrawalProgress } from "../lib/status"
-import { shortAddress } from "../lib/wallets"
+import { minaWalletShortName, shortAddress } from "../lib/wallets"
 import type { MinaWalletKind } from "../lib/storage"
 
 export type Direction = "deposit" | "withdrawal"
@@ -77,7 +77,7 @@ export const WalletChip = ({
   >
     <NetworkIcon network={network} compact />
     <span className="wallet-copy">
-      <span className="wallet-network">{network === "ethereum" ? ethereumNetworkName : `Zeko Testnet · ${minaWallet === "auro" ? "Auro" : "Snap"}`}</span>
+      <span className="wallet-network">{network === "ethereum" ? ethereumNetworkName : `Zeko Testnet · ${minaWalletShortName(minaWallet ?? "metamask-snap")}`}</span>
       <span className="wallet-address">{account ? shortAddress(account) : `Connect ${network === "ethereum" ? "wallet" : "Mina wallet"}`}</span>
       {balance !== undefined && <span className="wallet-balance">{balance} ETH</span>}
     </span>

@@ -1,13 +1,6 @@
 import { useEffect } from "react"
 import type { MinaWalletKind } from "../lib/storage"
-import { shortAddress } from "../lib/wallets"
-
-const snapName = (import.meta.env.VITE_MINA_SNAP_ID as string | undefined)?.startsWith("local:")
-  ? "MetaMask Flask"
-  : "MetaMask Snap"
-
-const walletName = (wallet: MinaWalletKind): string =>
-  wallet === "auro" ? "Auro Wallet" : snapName
+import { minaWalletName, shortAddress } from "../lib/wallets"
 
 export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, onDisconnect, onClose }: {
   account?: string
@@ -19,6 +12,7 @@ export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, o
   onClose: () => void
 }) => {
   const title = account ? "Mina wallet" : "Connect Mina wallet"
+  const snapName = minaWalletName("metamask-snap")
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => event.key === "Escape" && !busy && onClose()
@@ -37,7 +31,7 @@ export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, o
           {account ? (
             <>
               <div className="connected-wallet-summary">
-                <span className="setting-label">Connected with {walletName(minaWallet)}</span>
+                <span className="setting-label">Connected with {minaWalletName(minaWallet)}</span>
                 <strong title={account}>{shortAddress(account, 12, 10)}</strong>
               </div>
               <button type="button" className="disconnect-button" disabled={busy} onClick={onDisconnect}>

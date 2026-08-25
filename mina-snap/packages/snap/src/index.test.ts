@@ -29,6 +29,13 @@ describe("Auro-compatible Mina Snap RPC", () => {
     return pending
   }
 
+  const interfaceValues = (value: unknown): string[] => {
+    if (typeof value === "string") return [value]
+    if (Array.isArray(value)) return value.flatMap(interfaceValues)
+    if (typeof value !== "object" || value === null) return []
+    return Object.values(value).flatMap(interfaceValues)
+  }
+
   it("renders a wallet home page and refreshes it interactively", async () => {
     const { onHomePage } = await installSnap()
     const response = await onHomePage()
@@ -262,6 +269,118 @@ describe("Auro-compatible Mina Snap RPC", () => {
     expect(signed.zkappCommand.feePayer.authorization).toBe(
       auroBerkeleyFixture.expectedFeePayerAuthorization
     )
+  })
+
+  it("preserves a non-empty command memo when no override is supplied", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "zeko:testnet" }
+    }))
+    const transaction = JSON.parse(JSON.stringify(auroBerkeleyFixture.transaction)) as {
+      feePayer: { body: { validUntil: string | null } }
+      memo: string
+      [key: string]: unknown
+    }
+    transaction.feePayer.body.validUntil = "42"
+    const withMemo = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: {
+        onlySign: true,
+        feePayer: { memo: "Keep this memo" },
+        transaction: JSON.stringify(transaction)
+      }
+    })
+    await approve(withMemo)
+    const first = await withMemo
+    if (!("result" in first.response)) {
+      throw new Error(`Snap returned ${JSON.stringify(first.response.error)}`)
+    }
+    const memo = (JSON.parse(
+      (first.response.result as { signedData: string }).signedData
+    ) as { zkappCommand: { memo: string } }).zkappCommand.memo
+    const preservedTransaction = { ...transaction, memo }
+
+    const pending = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: {
+        onlySign: true,
+        transaction: JSON.stringify(preservedTransaction)
+      }
+    })
+    await approve(pending)
+    const result = await pending
+    if (!("result" in result.response)) {
+      throw new Error(`Snap returned ${JSON.stringify(result.response.error)}`)
+    }
+    const signed = JSON.parse(
+      (result.response.result as { signedData: string }).signedData
+    ) as { zkappCommand: { feePayer: { body: { validUntil: string | null } }; memo: string } }
+
+    expect(signed.zkappCommand.memo).toBe(memo)
+    expect(signed.zkappCommand.feePayer.body.validUntil).toBe("42")
+  })
+
+  it("shows every signed zkApp update and a canonical payload hash", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "zeko:testnet" }
+    }))
+    const transaction = JSON.parse(JSON.stringify(auroBerkeleyFixture.transaction)) as {
+      accountUpdates: Array<{ body: { actions: string[][]; events: string[][]; callData: string } }>
+    }
+    const update = transaction.accountUpdates[0]?.body
+    if (!update) throw new Error("Fixture has no account update")
+    update.actions = [["11", "12"]]
+    update.events = [["21", "22"]]
+    update.callData = "314159"
+    const pending = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: {
+        onlySign: true,
+        transaction: JSON.stringify(transaction)
+      }
+    })
+    const dialog = await pending.getInterface()
+    assertIsConfirmationDialog(dialog)
+    const values = interfaceValues(dialog.content)
+
+    expect(values).toContain("B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA")
+    expect(values).toContain("wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf")
+    expect(values).toContain("Negative 1")
+    expect(values).toContain("[[\"11\",\"12\"]]")
+    expect(values).toContain("[[\"21\",\"22\"]]")
+    expect(values).toContain("314159")
+    expect(values).toContain("Signature")
+    expect(values).toContain("This Snap will sign this update")
+    expect(values).toContain("Canonical payload SHA-256")
+    expect(values.some((value) => /^[0-9a-f]{64}$/u.test(value))).toBe(true)
+    await dialog.cancel()
+  })
+
+  it("rejects decimal quantities that exceed Mina UInt64 without expanding them", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    const recipient = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+
+    for (const amount of ["1e100000000", "18446744073.709551616"]) {
+      const response = await request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_sendPayment",
+        params: { to: recipient, amount, fee: "0.1", nonce: 0 }
+      })
+      expect(response.response).toMatchObject({
+        error: { code: -32602, message: "Amount exceeds Mina UInt64" }
+      })
+    }
   })
 
   it("partially signs a bridge zkApp whose fee payer is the sequencer", async () => {

@@ -6,6 +6,7 @@ import { validConfig } from "./test/fixtures"
 const ethereumAccount = "0x0000000000000000000000000000000000000001"
 const ethereumAccountB = "0x0000000000000000000000000000000000000002"
 const zekoAccount = "B62qkekmS9273D1EsFfMSJMMDAmgvh1WyoYE2vs1r7k4GtGBqVYABn2"
+const zekoAccountB = "B62qjHYvRcQSTZnvjCZcHQ8B8pZxh8LZBJaq63zcChBrcT5FQqqAPq8"
 
 const mocks = vi.hoisted(() => ({
   connectEthereum: vi.fn(),
@@ -191,7 +192,34 @@ describe("bridge application", () => {
     render(<App />)
 
     expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
-    expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "metamask-snap")
+    expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "auro")
+  })
+
+  it("ignores a stale reload reconnection after switching Mina wallets", async () => {
+    let resolveReload!: (account: string) => void
+    mocks.connectMina
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveReload = resolve
+    }))
+      .mockResolvedValueOnce(zekoAccountB)
+    localStorage.setItem("zeko-eth-bridge:v1:mina-wallet", "metamask-snap")
+    localStorage.setItem("zeko-eth-bridge:v1:mina-connected", "metamask-snap")
+    const user = userEvent.setup()
+    render(<App />)
+
+    await waitFor(() => expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "metamask-snap"))
+    await user.click(screen.getByRole("button", { name: "Open bridge settings" }))
+    await user.click(screen.getByRole("radio", { name: /Auro Wallet/i }))
+    await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
+    await user.click(screen.getByRole("button", { name: "Close settings" }))
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
+    expect(await screen.findByRole("button", { name: /Mina wallet B62qjH…APq8/ })).toBeVisible()
+
+    await act(async () => resolveReload(zekoAccount))
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Mina wallet B62qjH…APq8/ })).toBeVisible()
+    })
   })
 
   it("switches between the MetaMask Snap and Auro at runtime", async () => {
@@ -210,6 +238,7 @@ describe("bridge application", () => {
     expect(snap).toHaveAttribute("aria-checked", "true")
     expect(auro).toHaveAttribute("aria-checked", "false")
     await user.click(auro)
+    await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
     expect(auro).toHaveAttribute("aria-checked", "true")
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-wallet")).toBe("auro")
     expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
@@ -257,9 +286,19 @@ describe("bridge application", () => {
     await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
     expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
   })
 
   it("disconnects Auro locally without calling the Snap permission API", async () => {
+    let onAccountsChanged: ((accounts: string[]) => void) | undefined
+    const provider = {
+      isAuro: true,
+      on: vi.fn((event: string, listener: (accounts: string[]) => void) => {
+        if (event === "accountsChanged") onAccountsChanged = listener
+      }),
+      removeAllListeners: vi.fn()
+    }
+    mocks.getMinaProvider.mockReturnValue(provider)
     const user = userEvent.setup()
     render(<App />)
 
@@ -273,6 +312,36 @@ describe("bridge application", () => {
     expect(mocks.revokeMinaPermissions).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
+
+    await act(async () => onAccountsChanged?.([zekoAccount]))
+    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+  })
+
+  it("ignores account events until Mina network setup succeeds", async () => {
+    let onAccountsChanged: ((accounts: string[]) => void) | undefined
+    mocks.getMinaProvider.mockReturnValue({
+      isMinaSnap: true,
+      on: vi.fn((event: string, listener: (accounts: string[]) => void) => {
+        if (event === "accountsChanged") onAccountsChanged = listener
+      }),
+      removeAllListeners: vi.fn()
+    })
+    mocks.connectMina.mockImplementationOnce(async () => {
+      onAccountsChanged?.([zekoAccount])
+      throw new Error("Mina network setup failed")
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
+
+    expect(await screen.findAllByText("Mina network setup failed")).not.toHaveLength(0)
+    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
   })
 
   it("recovers a pending withdrawal from gateway archive activity", async () => {
