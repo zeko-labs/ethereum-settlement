@@ -160,8 +160,9 @@ a coordinated bridge configuration and MetaMask allowlisting update.
 
 ## Release boundary
 
-The npm name and bridge default are wired, but this repository change does not
-publish a package or request MetaMask allowlisting. Before production use:
+The npm name and bridge default are wired. Public npm publication does not
+request MetaMask allowlisting or make this protected-permission Snap available
+in ordinary MetaMask. Before production use:
 
 1. Complete an independent security review of derivation, RPC authorization,
    confirmation content, GraphQL submission, and dependency provenance.
