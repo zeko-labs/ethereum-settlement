@@ -35,11 +35,12 @@ promoted to a persistent live Sepolia deployment.
   existing bridge SDK for sequencer-side deposit finalization and withdrawal
   requests. The Actions services consume the gateway's Mina archive shape.
 - `bridge-ui/` is a standalone React application for the four browser-owned
-  operations: ETH deposit, Zeko deposit finalization, Zeko withdrawal request,
-  and Ethereum claim. It uses injected Ethereum wallets plus either Auro or the
-  Auro-compatible MetaMask Mina Snap. Users choose and persist the Mina provider
-  at runtime in bridge settings; all signing and payment flows follow that
-  choice. The PoC signing domain remains fixed to Mina `testnet`.
+  bridge operations—ETH deposit, Zeko deposit finalization, Zeko withdrawal
+  request, and Ethereum claim—plus native MINA and standard MFT payments. It
+  uses injected Ethereum wallets plus either Auro or the Auro-compatible
+  MetaMask Mina Snap. The [bridge application guide](/bridge-ui) owns provider
+  selection and reconnection behavior. The PoC signing domain remains fixed to
+  Mina `testnet`.
 - `mina-snap/` contains the `mina-signer` Snap and Mina Provider adapter. Its
   tests lock account derivation and message/field/nullifier/zkApp signatures to
   Auro 2.5.2 reference results, including a bridge-shaped Berkeley transaction;

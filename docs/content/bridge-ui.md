@@ -7,7 +7,7 @@ wrapper SDK and uses only browser-safe APIs.
 
 ## User flows
 
-The app supports the four user-owned boundaries of the round trip:
+The app supports these user-owned bridge and wallet flows:
 
 1. choose either the MetaMask Snap or Auro, then connect it alongside an
    injected Ethereum wallet
@@ -33,39 +33,22 @@ remain gateway/operator responsibilities. The app polls public deposit and
 withdrawal endpoints; it never calls proof approval routes and never receives
 `PROOF_API_KEY`.
 
-Reloading the page does not reset protocol progress. The app persists the
-selected Mina wallet and restores its authorized session without opening
-another permission prompt, reloads
-deposit status from both the gateway and Zeko bridge state, and reloads pending
-withdrawal requests from the archive-backed gateway endpoint. A locally
-submitted withdrawal is also shown immediately while archive indexing catches
-up. Zeko transaction links use `/transactions/<hash>`.
+The user-facing wallet chooser, disconnect semantics, provider preference, and
+reload reconnection contract are owned by `bridge-ui/README.md`.
 
-The selected Mina provider is a runtime browser preference, not a deployment
-split. **Bridge settings → Mina wallet** switches between MetaMask Snap and
-Auro in one build. Switching clears the connected Mina account and rebinds
-account/network listeners; the user must reconnect before any signing or
-payment action. Deposit finalization, withdrawals, native MINA payments, and
-MFT transfers all use that selected provider.
+Protocol progress also survives reload. The app reloads deposit status from
+both the gateway and Zeko bridge state, and reloads pending withdrawal requests
+from the archive-backed gateway endpoint. A locally submitted withdrawal is
+shown immediately while archive indexing catches up. Zeko transaction links
+use `/transactions/<hash>`.
 
-## Auro signing domain
+## Mina wallet signing domain
 
-Auro currently assigns the built-in network ID `testnet` when a custom Mina
-endpoint is added. For this PoC, the display name is configurable but the
-signing ID is deliberately fixed:
-
-```json
-{
-  "minaSigningNetworkId": "testnet",
-  "auroNetworkName": "Zeko Ethereum PoC"
-}
-```
-
-The same exact value must be used by Auro, the live Zeko circuit configuration,
-the sequencer signer, and the deployment preflight. `Zeko Testnet` is a display
-label only. A future Auro release that supports custom signing salts should be
-handled as a versioned network migration rather than silently changing this
-field.
+Both supported Mina wallets must follow the deployment signing-domain contract
+in the [configuration reference](/reference/configuration#sequencer).
+Wallet-facing network names are display values only. Treat any future wallet
+support for custom signing salts as a versioned network migration rather than
+silently changing the deployment field.
 
 ## Runtime configuration
 
@@ -95,7 +78,7 @@ in `bridge-ui/README.md`.
 | `actionsApiUrl` | Public Actions GraphQL endpoint used to prepare inclusion witnesses. |
 | `expectedEthereumChainId` | `11155111` for Sepolia or `31337` for the local Anvil profile. |
 | `minaSigningNetworkId` | Exact value `testnet`. |
-| `auroNetworkName` | Wallet display name for the custom endpoint. |
+| `auroNetworkName` | Mina wallet display name for the custom endpoint. |
 | `zekoTransactionFeeNanomina` | Fee supplied to sequencer bridge operations, as a decimal string. |
 | `ethereumExplorerUrl` / `zekoExplorerUrl` | Public transaction explorer bases. |
 | `pollIntervalMs` | UI status polling period. |

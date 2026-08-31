@@ -117,9 +117,10 @@ configuration. Registration rejects an owner equal to the shared vault and any
 record whose MFT or universal VK identifier differs from this configuration.
 
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
-materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing
-domain to custom endpoints. Do not substitute the display name or
-`zeko-testnet`; signatures and circuit commitments must use the same salt.
+materialize `ZEKO_SIGNATURE_KIND`. Auro assigns that built-in signing domain to
+custom endpoints, and the MetaMask Mina Snap applies the same mapping for Zeko
+testnet. Do not substitute the display name or `zeko-testnet`; signatures and
+circuit commitments must use the same salt.
 
 ## Browser application
 

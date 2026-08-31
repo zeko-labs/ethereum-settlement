@@ -27,19 +27,20 @@ limits only.
 Clicking **Connect Mina wallet** opens a dialog that lets each browser choose
 between the MetaMask Snap (shown as MetaMask Flask for a local Snap) and Auro at
 runtime. Clicking the connected Mina wallet chip opens the same account dialog
-with a disconnect action. Snap disconnect also revokes the site's Snap account
-permission; Auro disconnect is local because Auro does not expose an equivalent
-dapp method. The choice is stored locally, and the settings dialog can still
-change the preferred provider. Vite only sets the initial choice for browsers
-without a saved preference:
+with a disconnect action. Snap disconnect attempts to revoke the bridge
+origin's Mina-account permission and still clears the local session if
+revocation fails; Auro disconnect is local because Auro does not expose an
+equivalent dapp method. The choice is stored locally, and the settings dialog
+can still change the preferred provider. Vite only seeds the initial preference
+for browsers without a saved preference:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_MINA_WALLET` | auto | Initial choice: `auro`, `metamask-snap`, or auto-select Auro when injected and otherwise the Snap |
+| `VITE_MINA_WALLET` | auto | Initial preference: `auro`, `metamask-snap`, or prefer Auro when injected and otherwise the Snap; the connection dialog still requires an explicit wallet click |
 | `VITE_MINA_SNAP_ID` | `npm:@zeko-labs/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
 
 To test the local Snap, first build and serve it from `../mina-snap`, then start
-this UI with the Snap as the initial provider:
+this UI with the Snap as the initial preference:
 
 ```bash
 cd ../mina-snap

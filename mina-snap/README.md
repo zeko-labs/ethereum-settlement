@@ -25,8 +25,10 @@ The Snap derives `m/44'/12586'/0'/0/0`. It reproduces Auro's conversion from
 the BIP-32 secp256k1 scalar to a Mina private-key payload, but never stores or
 returns that private key. Only the public address, per-origin authorization,
 selected network, approved endpoints, and optional credential JSON are kept in
-Snap state. Every connection, signature, transaction, network change, and
-credential-storage request requires a MetaMask confirmation.
+Snap state. Every new origin grant, signature, transaction, network change, and
+credential-storage request requires a MetaMask confirmation. Reloading an
+already authorized bridge origin does not open another account-permission
+prompt.
 
 ## Supported Mina Provider surface
 
@@ -97,9 +99,10 @@ VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
 pnpm dev
 ```
 
-The bridge detects MetaMask through EIP-6963, asks MetaMask to install the local
-Snap, connects Mina account 0, selects `zeko:testnet`, and uses the Snap for the
-same `onlySign` request used with Auro. For a retained local Zeko stack, update
+After the user chooses MetaMask Flask in the bridge's Mina-wallet dialog, the
+bridge detects Flask through EIP-6963, asks it to install the local Snap,
+connects Mina account 0, selects `zeko:testnet`, and uses the Snap for the same
+`onlySign` request used with Auro. For a retained local Zeko stack, update
 `bridge-ui/public/runtime-config.json` as described in the bridge UI README.
 
 After connecting once, open MetaMask, select **Snaps**, then select **Zeko Mina
@@ -125,9 +128,9 @@ bundle changes, reconnect from the bridge and approve MetaMask's update prompt.
 If MetaMask continues to use the cached build, remove **Zeko Mina Wallet** from
 MetaMask's Snaps settings, reload the bridge, and connect it again.
 
-Set `VITE_MINA_WALLET=auro` to force Auro. With no override, the bridge prefers
-an injected Auro provider and falls back to the MetaMask Snap. These are Vite
-build-time settings.
+`VITE_MINA_WALLET` only seeds the bridge's initial provider preference; it never
+bypasses the explicit connection chooser. `bridge-ui/README.md` owns the
+selection, persistence, and disconnect behavior.
 
 ## Dapp integration
 
