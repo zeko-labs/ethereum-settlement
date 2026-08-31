@@ -248,6 +248,30 @@ describe("bridge application", () => {
     expect(await screen.findByText("2.5 ETH")).toBeVisible()
   })
 
+  it("commits a reloaded Mina session before balance loading finishes", async () => {
+    let resolveReload!: (account: string) => void
+    let resolveBalance!: (balance: string) => void
+    mocks.connectMina.mockReturnValueOnce(new Promise((resolve) => {
+      resolveReload = resolve
+    }))
+    mocks.fetchZekoBalance.mockReturnValueOnce(new Promise((resolve) => {
+      resolveBalance = resolve
+    }))
+    localStorage.setItem("zeko-eth-bridge:v1:mina-wallet", "metamask-snap")
+    localStorage.setItem("zeko-eth-bridge:v1:mina-connected", "metamask-snap")
+    render(<App />)
+
+    await waitFor(() => expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "metamask-snap"))
+    localStorage.removeItem("zeko-eth-bridge:v1:mina-connected")
+    await act(async () => resolveReload(zekoAccount))
+
+    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
+    expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBe("metamask-snap")
+
+    await act(async () => resolveBalance("2.5"))
+    expect(await screen.findByText("2.5 ETH")).toBeVisible()
+  })
+
   it("switches between the MetaMask Snap and Auro at runtime", async () => {
     const user = userEvent.setup()
     render(<App />)

@@ -484,6 +484,10 @@ const readZkappUpdateReviews = (
   })
 }
 
+const renderMemoReview = (memo: string) => memo.length === 0
+  ? <Text>No memo</Text>
+  : <Copyable value={memo} />
+
 const approveZkappSigning = async ({
   origin,
   onlySign,
@@ -527,7 +531,7 @@ const approveZkappSigning = async ({
             <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
             <Row label="Valid until"><Text>{validUntil ?? "No limit"}</Text></Row>
-            <Row label="Memo"><Copyable value={memo || "(empty)"} /></Row>
+            <Row label="Memo">{renderMemoReview(memo)}</Row>
             <Row label="Account updates"><Text>{String(updates.length)}</Text></Row>
           </Section>
           {updates.map((update) => (
@@ -629,7 +633,7 @@ const approveTransactionSigning = async ({
               : <Row label="Amount"><Text>{`${amount} nanomina`}</Text></Row>}
             <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
-            <Row label="Memo"><Copyable value={memo || "(empty)"} /></Row>
+            <Row label="Memo">{renderMemoReview(memo)}</Row>
           </Section>
         </Box>
       )

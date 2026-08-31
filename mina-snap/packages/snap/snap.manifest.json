@@ -8,7 +8,7 @@
     "directory": "mina-snap/packages/snap"
   },
   "source": {
-    "shasum": "31oSV7ZmOp5YNhx36/pDLsKfGEJaOrfd6qt0/CuqnmE=",
+    "shasum": "Y/1104TcB7+JjqJiCiZrPjXjkVbwfWRZ3mpKvT/ADHg=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",

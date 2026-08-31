@@ -399,6 +399,40 @@ describe("Auro-compatible Mina Snap RPC", () => {
     await signAndSubmitDialog.cancel()
   })
 
+  it("distinguishes no zkApp memo from a literal empty marker", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    const transaction = JSON.parse(JSON.stringify(auroBerkeleyFixture.transaction))
+    const hashes: string[] = []
+
+    for (const [memo, expected, absent] of [
+      ["", "No memo", "(empty)"],
+      ["(empty)", "(empty)", "No memo"]
+    ] as const) {
+      const pending = request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_sendTransaction",
+        params: {
+          onlySign: true,
+          feePayer: { memo },
+          transaction: JSON.stringify(transaction)
+        }
+      })
+      const dialog = await pending.getInterface()
+      assertIsConfirmationDialog(dialog)
+      const values = interfaceValues(dialog.content)
+      const hash = values.find((value) => /^[0-9a-f]{64}$/u.test(value))
+
+      expect(values).toContain(expected)
+      expect(values).not.toContain(absent)
+      expect(hash).toBeDefined()
+      hashes.push(hash ?? "")
+      await dialog.cancel()
+    }
+
+    expect(hashes[1]).not.toBe(hashes[0])
+  })
+
   it("shows the exact normalized payment payload before signing", async () => {
     const { request } = await installSnap()
     await connect(request)
@@ -433,6 +467,30 @@ describe("Auro-compatible Mina Snap RPC", () => {
     await dialog.cancel()
   })
 
+  it("distinguishes no payment memo from a literal empty marker", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    const recipient = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+
+    for (const [memo, expected, absent] of [
+      ["", "No memo", "(empty)"],
+      ["(empty)", "(empty)", "No memo"]
+    ] as const) {
+      const pending = request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_sendPayment",
+        params: { to: recipient, amount: "1.25", fee: "0.02", nonce: 7, memo }
+      })
+      const dialog = await pending.getInterface()
+      assertIsConfirmationDialog(dialog)
+      const values = interfaceValues(dialog.content)
+
+      expect(values).toContain(expected)
+      expect(values).not.toContain(absent)
+      await dialog.cancel()
+    }
+  })
+
   it("shows the exact normalized delegation payload before signing", async () => {
     const { request } = await installSnap()
     await connect(request)
@@ -463,6 +521,30 @@ describe("Auro-compatible Mina Snap RPC", () => {
       "Delegate stake"
     ]))
     await dialog.cancel()
+  })
+
+  it("distinguishes no delegation memo from a literal empty marker", async () => {
+    const { request } = await installSnap()
+    await connect(request)
+    const delegate = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
+
+    for (const [memo, expected, absent] of [
+      ["", "No memo", "(empty)"],
+      ["(empty)", "(empty)", "No memo"]
+    ] as const) {
+      const pending = request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_sendStakeDelegation",
+        params: { to: delegate, fee: "0.03", nonce: 9, memo }
+      })
+      const dialog = await pending.getInterface()
+      assertIsConfirmationDialog(dialog)
+      const values = interfaceValues(dialog.content)
+
+      expect(values).toContain(expected)
+      expect(values).not.toContain(absent)
+      await dialog.cancel()
+    }
   })
 
   it("rejects decimal quantities that exceed Mina UInt64 without expanding them", async () => {
