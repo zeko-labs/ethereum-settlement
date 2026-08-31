@@ -82,6 +82,7 @@ export default function App() {
     readMinaWallet(defaultMinaWallet())
   )
   const [busy, setBusy] = useState(false)
+  const [minaConnectionBusy, setMinaConnectionBusy] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityError, setActivityError] = useState("")
   const [deposits, setDeposits] = useState<DepositStatus[]>([])
@@ -99,6 +100,7 @@ export default function App() {
   const selectedOperationRef = useRef<PendingOperation>()
   const ethereumConnectionRequest = useRef(0)
   const minaConnectionRequest = useRef(0)
+  const minaConnectionPending = useRef(false)
   const activeMinaSession = useRef<MinaWalletKind>()
   const minaWalletRef = useRef(minaWallet)
 
@@ -148,18 +150,18 @@ export default function App() {
   }, [config, direction, ethereum, setEthereumConnection])
 
   const connectMinaWallet = useCallback(async (wallet: MinaWalletKind) => {
-    if (!config) return
+    if (!config || minaConnectionPending.current) return
     const request = ++minaConnectionRequest.current
+    minaConnectionPending.current = true
     activeMinaSession.current = undefined
     minaWalletRef.current = wallet
     rememberMinaWallet(wallet)
     rememberMinaWalletConnection(wallet, false)
     setMinaWallet(wallet)
-    setBusy(true)
+    setMinaConnectionBusy(true)
     setActionError("")
     try {
       const account = await connectMina(config, wallet)
-      const balance = await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0")
       if (request !== minaConnectionRequest.current || minaWalletRef.current !== wallet) return
       rememberMinaWallet(wallet)
       rememberMinaWalletConnection(wallet, true)
@@ -167,17 +169,31 @@ export default function App() {
       activityRequest.current += 1
       setZekoAccount(account)
       setZekoClient(undefined)
-      setZekoBalance(balance)
+      setZekoBalance(undefined)
       setRecipient((current) => direction === "deposit" && !current ? account : current)
       setMinaWalletOpen(false)
       setToast(`${minaWalletName(wallet)} connected to Zeko Testnet.`)
+      minaConnectionPending.current = false
+      setMinaConnectionBusy(false)
+      void fetchZekoBalance(config.sequencerGraphqlUrl, account)
+        .then((balance) => {
+          if (request === minaConnectionRequest.current &&
+              activeMinaSession.current === wallet) setZekoBalance(balance)
+        })
+        .catch(() => {
+          if (request === minaConnectionRequest.current &&
+              activeMinaSession.current === wallet) setZekoBalance("0")
+        })
     } catch (error) {
       if (request === minaConnectionRequest.current) {
         rememberMinaWalletConnection(wallet, false)
         setActionError(formatWalletError(error))
       }
     } finally {
-      if (request === minaConnectionRequest.current) setBusy(false)
+      if (request === minaConnectionRequest.current && minaConnectionPending.current) {
+        minaConnectionPending.current = false
+        setMinaConnectionBusy(false)
+      }
     }
   }, [config, direction])
 
@@ -189,27 +205,49 @@ export default function App() {
     if (!config) return
     const wallet = minaWalletRef.current
     if (!wasMinaWalletConnected(wallet)) return
+    if (minaConnectionPending.current) return
     const request = ++minaConnectionRequest.current
+    minaConnectionPending.current = true
     activeMinaSession.current = undefined
+    setMinaConnectionBusy(true)
     void connectMina(config, wallet)
-      .then(async (account) => {
-        const balance = await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0")
+      .then((account) => {
         if (request !== minaConnectionRequest.current || minaWalletRef.current !== wallet) return
         rememberMinaWallet(wallet)
         rememberMinaWalletConnection(wallet, true)
         activeMinaSession.current = wallet
         activityRequest.current += 1
         setZekoAccount(account)
-        setZekoBalance(balance)
+        setZekoBalance(undefined)
         setRecipient((current) => current || account)
+        minaConnectionPending.current = false
+        setMinaConnectionBusy(false)
+        void fetchZekoBalance(config.sequencerGraphqlUrl, account)
+          .then((balance) => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === wallet) setZekoBalance(balance)
+          })
+          .catch(() => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === wallet) setZekoBalance("0")
+          })
       })
       .catch(() => {
         if (request === minaConnectionRequest.current) {
           rememberMinaWalletConnection(wallet, false)
         }
       })
+      .finally(() => {
+        if (request === minaConnectionRequest.current && minaConnectionPending.current) {
+          minaConnectionPending.current = false
+          setMinaConnectionBusy(false)
+        }
+      })
     return () => {
-      if (request === minaConnectionRequest.current) minaConnectionRequest.current += 1
+      if (request === minaConnectionRequest.current) {
+        minaConnectionRequest.current += 1
+        minaConnectionPending.current = false
+      }
     }
   }, [config])
 
@@ -323,7 +361,7 @@ export default function App() {
   }, [direction, zekoAccount])
 
   const selectMinaWallet = async (wallet: MinaWalletKind) => {
-    if (wallet === minaWallet) return
+    if (minaConnectionPending.current || wallet === minaWallet) return
     const previousWallet = minaWallet
     const shouldRevoke = previousWallet === "metamask-snap" &&
       (activeMinaSession.current === previousWallet ||
@@ -354,6 +392,7 @@ export default function App() {
   }
 
   const disconnectMinaWallet = useCallback(async () => {
+    if (minaConnectionPending.current) return
     ++minaConnectionRequest.current
     activeMinaSession.current = undefined
     rememberMinaWalletConnection(minaWallet, false)
@@ -373,6 +412,8 @@ export default function App() {
       if (revokeError) setActionError(`The bridge disconnected locally, but the wallet permission could not be revoked: ${revokeError}`)
     }
   }, [clearMinaConnection, minaWallet])
+
+  const minaWalletBusy = busy || minaConnectionBusy
 
   useEffect(() => {
     if (!recipient) {
@@ -780,8 +821,8 @@ export default function App() {
         </div>
         <footer className="page-footer"><span><span className="health-dot"></span>{client ? "Gateway connected" : "Connect wallet to verify gateway"}</span><span>{bridgeAddress ? `Bridge ${shortAddress(bridgeAddress)}` : "Bridge address from gateway"}</span><span>Proof of concept</span></footer>
       </main>
-      {settingsOpen && <SettingsModal config={config} minaWallet={minaWallet} minaWalletBusy={busy} showDetails={showDetails} onMinaWalletChange={selectMinaWallet} onToggleDetails={() => setShowDetails((value) => !value)} onClose={() => setSettingsOpen(false)} />}
-      {minaWalletOpen && <MinaWalletModal account={zekoAccount} minaWallet={minaWallet} busy={busy} error={actionError} onConnect={(wallet) => void connectMinaWallet(wallet)} onDisconnect={() => void disconnectMinaWallet()} onClose={() => setMinaWalletOpen(false)} />}
+      {settingsOpen && <SettingsModal config={config} minaWallet={minaWallet} minaWalletBusy={minaWalletBusy} showDetails={showDetails} onMinaWalletChange={selectMinaWallet} onToggleDetails={() => setShowDetails((value) => !value)} onClose={() => setSettingsOpen(false)} />}
+      {minaWalletOpen && <MinaWalletModal account={zekoAccount} minaWallet={minaWallet} busy={minaWalletBusy} error={actionError} onConnect={(wallet) => void connectMinaWallet(wallet)} onDisconnect={() => void disconnectMinaWallet()} onClose={() => setMinaWalletOpen(false)} />}
       {toast && <div className="toast" role="status"><span className="toast-dot"></span>{toast}</div>}
     </div>
   )

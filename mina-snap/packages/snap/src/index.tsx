@@ -486,6 +486,7 @@ const readZkappUpdateReviews = (
 
 const approveZkappSigning = async ({
   origin,
+  onlySign,
   networkId,
   signingPublicKey,
   feePayerPublicKey,
@@ -497,6 +498,7 @@ const approveZkappSigning = async ({
   payloadHash
 }: {
   origin: string
+  onlySign: boolean
   networkId: string
   signingPublicKey: string
   feePayerPublicKey: string
@@ -517,6 +519,7 @@ const approveZkappSigning = async ({
           <Heading>Sign Mina zkApp transaction</Heading>
           <Text>Requesting site: <Bold>{origin}</Bold></Text>
           <Section>
+            <Row label="Operation"><Text>{onlySign ? "Sign only" : "Sign and submit"}</Text></Row>
             <Row label="Network"><Text>{`${networkName} (${networkId})`}</Text></Row>
             <Row label="Signature domain"><Text>{signingDomain(networkId)}</Text></Row>
             <Row label="Signing account"><Copyable value={signingPublicKey} /></Row>
@@ -574,6 +577,60 @@ const approveSigning = async (
           <Heading>{title}</Heading>
           <Text>Requesting site: <Bold>{origin}</Bold></Text>
           <Text>{detail}</Text>
+        </Box>
+      )
+    }
+  })
+  if (!approved) throw new UserRejectedRequestError(`${title} was rejected`)
+}
+
+const approveTransactionSigning = async ({
+  origin,
+  title,
+  operation,
+  networkId,
+  signingPublicKey,
+  recipientLabel,
+  recipient,
+  amount,
+  fee,
+  nonce,
+  memo
+}: {
+  origin: string
+  title: string
+  operation: string
+  networkId: string
+  signingPublicKey: string
+  recipientLabel: "Recipient" | "Delegate"
+  recipient: string
+  amount?: string
+  fee: string
+  nonce: string
+  memo: string
+}): Promise<void> => {
+  const networkName = BUILT_IN_NETWORK_NAMES[networkId] ?? networkId
+  const approved = await snap.request({
+    method: "snap_dialog",
+    params: {
+      type: "confirmation",
+      content: (
+        <Box>
+          <Heading>{title}</Heading>
+          <Text>Requesting site: <Bold>{origin}</Bold></Text>
+          <Section>
+            <Row label="Operation"><Text>{operation}</Text></Row>
+            <Row label="Network"><Text>{`${networkName} (${networkId})`}</Text></Row>
+            <Row label="Signature domain"><Text>{signingDomain(networkId)}</Text></Row>
+            <Row label="Signing account"><Copyable value={signingPublicKey} /></Row>
+            <Row label={recipientLabel}><Copyable value={recipient} /></Row>
+            {amount === undefined
+              ? null
+              : <Row label="Amount"><Text>{`${amount} nanomina`}</Text></Row>}
+            <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
+            <Row label="Nonce"><Text>{nonce}</Text></Row>
+            <Row label="Memo"><Copyable value={memo || "(empty)"} /></Row>
+          </Section>
         </Box>
       )
     }
@@ -790,11 +847,19 @@ const sendMinaPayment = async (
   const amount = minaToNanomina(amountInput, "Amount")
   if (BigInt(amount) === 0n) throw new InvalidParamsError("Amount must be greater than zero")
   const memo = typeof params.memo === "string" ? params.memo : ""
-  await approveSigning(
-    requester,
-    "Send Mina payment",
-    `${String(amountInput)} MINA to ${to}; fee ${String(feeInput)} MINA`
-  )
+  await approveTransactionSigning({
+    origin: requester,
+    title: "Send Mina payment",
+    operation: "Payment (sign and submit)",
+    networkId: state.selectedNetwork,
+    signingPublicKey: publicKey,
+    recipientLabel: "Recipient",
+    recipient: to,
+    amount,
+    fee,
+    nonce,
+    memo
+  })
   const account = await deriveAccount()
   if (account.publicKey !== publicKey) {
     throw new Error("The derived Mina account changed during approval")
@@ -1067,11 +1132,18 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const nonce = await getNonce(state, publicKey, params.nonce)
     const fee = minaToNanomina(params.fee ?? 0.1, "Fee")
     const memo = typeof params.memo === "string" ? params.memo : ""
-    await approveSigning(
+    await approveTransactionSigning({
       origin,
-      "Send Mina delegation",
-      `Delegate to ${to}; fee ${params.fee ?? 0.1} MINA`
-    )
+      title: "Send Mina delegation",
+      operation: "Stake delegation (sign and submit)",
+      networkId: state.selectedNetwork,
+      signingPublicKey: publicKey,
+      recipientLabel: "Delegate",
+      recipient: to,
+      fee,
+      nonce,
+      memo
+    })
     const account = await deriveAccount()
     if (account.publicKey !== publicKey) {
       throw new Error("The derived Mina account changed during approval")
@@ -1177,8 +1249,16 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       }
     }
     const updates = readZkappUpdateReviews(command, signedUpdateIndexes)
+    const approvalPayload = {
+      onlySign,
+      networkId: state.selectedNetwork,
+      signatureDomain: signingDomain(state.selectedNetwork),
+      signingPublicKey: connectedPublicKey,
+      transaction: signingPayload
+    }
     await approveZkappSigning({
       origin,
+      onlySign,
       networkId: state.selectedNetwork,
       signingPublicKey: connectedPublicKey,
       feePayerPublicKey: publicKey,
@@ -1187,7 +1267,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       validUntil,
       memo,
       updates,
-      payloadHash: sha256Hex(canonicalJson(signingPayload))
+      payloadHash: sha256Hex(canonicalJson(approvalPayload))
     })
     const account = await deriveAccount()
     if (account.publicKey !== connectedPublicKey) {
