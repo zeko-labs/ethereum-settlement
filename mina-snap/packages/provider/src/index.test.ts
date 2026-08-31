@@ -51,7 +51,7 @@ describe("Auro-compatible Mina Provider", () => {
     expect(request).toHaveBeenNthCalledWith(2, {
       method: "wallet_requestSnaps",
       params: {
-        "npm:@zeko-labs/mina-snap": { version: "0.1.0" }
+        "npm:@mondejka/mina-snap": { version: "0.1.0" }
       }
     })
   })
@@ -60,8 +60,8 @@ describe("Auro-compatible Mina Provider", () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {
         return {
-          "npm:@zeko-labs/mina-snap": {
-            id: "npm:@zeko-labs/mina-snap",
+          "npm:@mondejka/mina-snap": {
+            id: "npm:@mondejka/mina-snap",
             version: "0.0.9"
           }
         }
@@ -77,7 +77,7 @@ describe("Auro-compatible Mina Provider", () => {
     expect(request).toHaveBeenNthCalledWith(2, {
       method: "wallet_requestSnaps",
       params: {
-        "npm:@zeko-labs/mina-snap": { version: "0.1.0" }
+        "npm:@mondejka/mina-snap": { version: "0.1.0" }
       }
     })
   })
@@ -85,7 +85,7 @@ describe("Auro-compatible Mina Provider", () => {
   it("preserves the bridge's Auro onlySign request and response", async () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       return { signedData: "{\"zkappCommand\":{}}" }
     })
@@ -98,7 +98,7 @@ describe("Auro-compatible Mina Provider", () => {
     expect(request).toHaveBeenLastCalledWith({
       method: "wallet_invokeSnap",
       params: {
-        snapId: "npm:@zeko-labs/mina-snap",
+        snapId: "npm:@mondejka/mina-snap",
         request: {
           method: "mina_sendTransaction",
           params: { onlySign: true, transaction: "{\"feePayer\":{}}" }
@@ -110,7 +110,7 @@ describe("Auro-compatible Mina Provider", () => {
   it("maps MetaMask rejection errors to Auro's provider codes", async () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       throw Object.assign(new Error("User rejected the request"), { code: 4001 })
     })
@@ -128,7 +128,7 @@ describe("Auro-compatible Mina Provider", () => {
     })
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       throw failure
     })
@@ -185,7 +185,7 @@ describe("Auro-compatible Mina Provider", () => {
     })
 
     expect(discoverMetaMaskProvider(target, "local:http://127.0.0.1:8080")).toBe(flask)
-    expect(discoverMetaMaskProvider(target, "npm:@zeko-labs/mina-snap")).toBe(metamask)
+    expect(discoverMetaMaskProvider(target, "npm:@mondejka/mina-snap")).toBe(metamask)
   })
 
   it("does not treat an unidentified injected wallet as MetaMask", () => {
@@ -217,7 +217,7 @@ describe("Auro-compatible Mina Provider", () => {
   it("rehydrates nullifier field elements as bigints like Auro", async () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       return {
         publicKey: { x: "1", y: "2" },

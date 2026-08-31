@@ -87,7 +87,7 @@ Local Snaps require MetaMask Flask. Build and serve the Snap:
 cd mina-snap
 corepack pnpm install --frozen-lockfile
 pnpm build
-pnpm --filter @zeko-labs/mina-snap start
+pnpm --filter @mondejka/mina-snap start
 ```
 
 Then run the bridge in another shell:
@@ -153,7 +153,10 @@ const signed = await mina.sendTransaction({
 
 For local development, pass `{ snapId:
 "local:http://127.0.0.1:8080" }` to the constructor. The production default is
-`npm:@zeko-labs/mina-snap` pinned to version `0.1.0`.
+`npm:@mondejka/mina-snap` pinned to version `0.1.0`. This personal npm scope is
+the interim release location until the Zeko Labs npm organization grants
+publisher access; changing scopes later creates a distinct Snap ID and requires
+a coordinated bridge configuration and MetaMask allowlisting update.
 
 ## Release boundary
 
@@ -162,8 +165,9 @@ publish a package or request MetaMask allowlisting. Before production use:
 
 1. Complete an independent security review of derivation, RPC authorization,
    confirmation content, GraphQL submission, and dependency provenance.
-2. Publish only `packages/snap` and `packages/provider`, preserving matching
-   package/manifest versions and the generated manifest shasum.
+2. Publish `packages/snap`, preserving matching package/manifest versions and
+   the generated manifest shasum. The bridge currently bundles the source-linked
+   provider adapter, so publishing `packages/provider` is optional and separate.
 3. Test the npm Snap in Flask, submit it for MetaMask allowlisting, and pin the
    audited version in the bridge deployment.
 4. Run a real browser bridge roundtrip against the deployment intended for

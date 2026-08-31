@@ -1,5 +1,5 @@
 {
-  "name": "@zeko-labs/mina-snap",
+  "name": "@mondejka/mina-snap",
   "version": "0.1.0",
   "description": "Auro-compatible Mina signer for MetaMask Snaps",
   "license": "MIT",

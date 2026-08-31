@@ -103,10 +103,10 @@ describe("SDK integration", () => {
   it("uses the MetaMask Snap through the same Auro onlySign bridge boundary", async () => {
     const request = vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
       if (method === "wallet_getSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       if (method === "wallet_requestSnaps") {
-        return { "npm:@zeko-labs/mina-snap": { id: "npm:@zeko-labs/mina-snap" } }
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
       }
       const minaRequest = (params as {
         request: { method: string }
@@ -137,7 +137,7 @@ describe("SDK integration", () => {
     expect(request).toHaveBeenLastCalledWith({
       method: "wallet_invokeSnap",
       params: {
-        snapId: "npm:@zeko-labs/mina-snap",
+        snapId: "npm:@mondejka/mina-snap",
         request: {
           method: "mina_sendTransaction",
           params: { onlySign: true, transaction: "{\"unsigned\":true}" }

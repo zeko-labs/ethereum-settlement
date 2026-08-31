@@ -8,12 +8,12 @@
     "directory": "mina-snap/packages/snap"
   },
   "source": {
-    "shasum": "Y/1104TcB7+JjqJiCiZrPjXjkVbwfWRZ3mpKvT/ADHg=",
+    "shasum": "5BKptCuE5ufeAbJLMjiv7Liyva63VR+jNejV7SmXxjc=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
         "iconPath": "images/icon.svg",
-        "packageName": "@zeko-labs/mina-snap",
+        "packageName": "@mondejka/mina-snap",
         "registry": "https://registry.npmjs.org/"
       }
     }

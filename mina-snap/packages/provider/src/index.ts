@@ -1,4 +1,4 @@
-export const DEFAULT_MINA_SNAP_ID = "npm:@zeko-labs/mina-snap"
+export const DEFAULT_MINA_SNAP_ID = "npm:@mondejka/mina-snap"
 export const DEFAULT_MINA_SNAP_VERSION = "0.1.0"
 
 export type ProviderError = Error & { code: number; data?: unknown }

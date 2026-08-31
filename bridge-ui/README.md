@@ -37,7 +37,7 @@ for browsers without a saved preference:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `VITE_MINA_WALLET` | auto | Initial preference: `auro`, `metamask-snap`, or prefer Auro when injected and otherwise the Snap; the connection dialog still requires an explicit wallet click |
-| `VITE_MINA_SNAP_ID` | `npm:@zeko-labs/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
+| `VITE_MINA_SNAP_ID` | `npm:@mondejka/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
 
 To test the local Snap, first build and serve it from `../mina-snap`, then start
 this UI with the Snap as the initial preference:
@@ -45,7 +45,7 @@ this UI with the Snap as the initial preference:
 ```bash
 cd ../mina-snap
 pnpm build
-pnpm --filter @zeko-labs/mina-snap start
+pnpm --filter @mondejka/mina-snap start
 ```
 
 In another terminal:

@@ -10,8 +10,10 @@ MINA balance and nonce, and custom token accounts from the user-approved Mina
 GraphQL endpoint. Custom-token balances remain in exact base units when no
 trusted decimal metadata is available.
 
-Use it through
-[`@zeko-labs/mina-snap-provider`](https://www.npmjs.com/package/@zeko-labs/mina-snap-provider).
+Install this interim release from npm as `@mondejka/mina-snap`. Integrating
+dapps use the source-linked `@zeko-labs/mina-snap-provider` adapter in this
+repository; that adapter is bundled into the bridge and is not required at
+Snap-install time.
 The source, security model, compatibility matrix, local MetaMask Flask setup,
 and release status are in the
 [`mina-snap` workspace](https://github.com/zeko-labs/ethereum-settlement/tree/main/mina-snap).

@@ -22,7 +22,7 @@ describe("wallet adapters", () => {
   it("uses the Flask display name for a local Mina Snap", () => {
     expect(minaWalletName("metamask-snap", "local:http://127.0.0.1:8080"))
       .toBe("MetaMask Flask")
-    expect(minaWalletName("metamask-snap", "npm:@zeko-labs/mina-snap"))
+    expect(minaWalletName("metamask-snap", "npm:@mondejka/mina-snap"))
       .toBe("MetaMask Snap")
     expect(minaWalletName("auro", "local:http://127.0.0.1:8080"))
       .toBe("Auro Wallet")

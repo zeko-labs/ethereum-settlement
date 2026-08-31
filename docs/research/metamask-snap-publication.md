@@ -1,6 +1,6 @@
 # MetaMask Snap publication and distribution
 
-Research snapshot: 2026-08-24
+Research snapshot: 2026-08-31
 
 ## Bottom line
 
@@ -122,7 +122,7 @@ list]. npm likewise refuses reuse of an already published name/version; see
 The Snap at [`mina-snap/packages/snap`] is structurally aligned with public npm:
 
 - package and manifest are both `0.1.0`;
-- `@zeko-labs/mina-snap` matches the manifest package name;
+- `@mondejka/mina-snap` matches the manifest package name;
 - the repository URL/directory agree;
 - the scope is configured with `publishConfig.access: "public"`;
 - `Zeko Mina Wallet` avoids the prohibited name terms; and
@@ -137,12 +137,14 @@ confirmations, persisted state, and the network/submission boundary. The
 companion provider and bridge dapp are not automatically in MetaMask's required
 audit scope, but security-critical code on which the Snap relies is.
 
-As of this snapshot, the official npm registry returns `Not found` for
-[`@zeko-labs/mina-snap`], and the package is absent from the official
-[`snaps-registry`]. Before release, confirm that the `zeko-labs` npm organization
-exists and that release automation has permission to publish both the Snap and
-the separate `@zeko-labs/mina-snap-provider` package. Only the former is the
-Snap submitted to MetaMask.
+The interim release uses the publisher's personal npm scope,
+[`@mondejka/mina-snap`], because the publisher does not yet have access to the
+Zeko Labs npm organization. The package remains absent from the official
+[`snaps-registry`] until MetaMask completes its protected-permission review.
+Moving it to a future `@zeko-labs` package creates a distinct Snap ID; the
+bridge default, audit target, and allowlisting submission must move together.
+The separate `@zeko-labs/mina-snap-provider` package is currently source-linked
+and bundled by the bridge, so it is not required for Snap installation.
 
 The provider pins `0.1.0` and always calls `wallet_requestSnaps`, including when
 an older installation is already present. This lets MetaMask perform its normal
@@ -175,6 +177,6 @@ and registry deployment; then deploy the bridge against the approved version.
 [`registry PR CI`]: https://github.com/MetaMask/snaps-registry/blob/e7951ba640f6d8a43181dbacc2c25ae9d97a0808/.github/workflows/build-lint-test.yml
 [`registry deployment workflow`]: https://github.com/MetaMask/snaps-registry/blob/e7951ba640f6d8a43181dbacc2c25ae9d97a0808/.github/workflows/publish-registry.yml
 [`mina-snap/packages/snap`]: ../../mina-snap/packages/snap/package.json
-[`@zeko-labs/mina-snap`]: https://registry.npmjs.org/%40zeko-labs%2Fmina-snap
+[`@mondejka/mina-snap`]: https://registry.npmjs.org/%40mondejka%2Fmina-snap
 [`snaps-registry`]: https://github.com/MetaMask/snaps-registry/blob/e7951ba640f6d8a43181dbacc2c25ae9d97a0808/src/registry.json
 [`#ensureInstalled` implementation]: ../../mina-snap/packages/provider/src/index.ts#L146-L156
