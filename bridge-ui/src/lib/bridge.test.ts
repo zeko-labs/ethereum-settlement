@@ -23,6 +23,7 @@ import {
   createAuroSigner,
   createEthereumBridgeClient,
   finalizeDeposit,
+  finalizeTokenDeposit,
   zekoTransactionUrl
 } from "./bridge"
 
@@ -56,7 +57,8 @@ describe("SDK integration", () => {
         config,
         provider,
         account: "0x0000000000000000000000000000000000000001",
-        withZeko: true
+        withZeko: true,
+        assetSnapshot: { root: "snapshot" } as never
       })
     ).resolves.toBe(client)
     expect(mocks.init).toHaveBeenCalledWith(
@@ -66,7 +68,8 @@ describe("SDK integration", () => {
           l1Network: "testnet",
           l2Network: "testnet",
           v2DepositsStartIndex: 0
-        })
+        }),
+        assets: { snapshot: { root: "snapshot" } }
       })
     )
     const fetcher = mocks.init.mock.calls[0]?.[0]?.fetch as typeof globalThis.fetch
@@ -210,6 +213,35 @@ describe("SDK integration", () => {
       provider
     })).rejects.toThrow("No finalizable deposit found")
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(1)
+  })
+
+  it("prepares and finalizes an ERC20 deposit through the authenticated SDK path", async () => {
+    const publicKey = { toBase58: () => "B62recipient" }
+    vi.mocked((await import("o1js")).PublicKey.fromBase58).mockReturnValue(publicKey as never)
+    const client = {
+      prepareTokenDepositFinalization: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      finalizeTokenDeposit: vi.fn().mockResolvedValue("5Jtoken-finalized")
+    }
+    const provider = {
+      requestNetwork: vi.fn(async () => ({ networkID: "testnet" }))
+    } as unknown as AuroProvider
+    const token = "0x00000000000000000000000000000000000000c0"
+
+    await expect(finalizeTokenDeposit({
+      client: client as never,
+      token,
+      recipient: "B62recipient",
+      encodingVersion: 2,
+      config,
+      provider
+    })).resolves.toBe("5Jtoken-finalized")
+    expect(client.prepareTokenDepositFinalization).toHaveBeenCalledWith(publicKey, token)
+    expect(client.finalizeTokenDeposit).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: publicKey,
+      token,
+      encodingVersion: 2,
+      options: { attempts: 3, feeNanomina: 2500n }
+    }))
   })
 
   it("rebuilds a finalization whose account precondition became stale", async () => {

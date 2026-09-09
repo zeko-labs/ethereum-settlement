@@ -6,6 +6,8 @@ import { DepositProgress, WalletChip } from "./BridgeUi"
 const synchronizedDeposit: DepositStatus = {
   nonce: 9,
   token: "0x0000000000000000000000000000000000000000",
+  assetId: null,
+  encodingVersion: null,
   sender: "0x0000000000000000000000000000000000000001",
   zekoRecipient: "0x01",
   ethereumAmount: "100000000000000000",

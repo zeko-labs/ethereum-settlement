@@ -87,6 +87,7 @@ const installApiMocks = async (page: Page) => {
   await page.route(/.*\/v1\/bridge\/deposits(?:\?.*)?$/, (route) => route.fulfill({ json: [deposit] }))
   await page.route(/.*\/v1\/bridge\/withdrawal-requests(?:\?.*)?$/, (route) => route.fulfill({ json: [] }))
   await page.route(/.*\/v1\/bridge\/withdrawals(?:\?.*)?$/, (route) => route.fulfill({ json: [] }))
+  await page.route(/.*\/v1\/bridge\/token-withdrawals(?:\?.*)?$/, (route) => route.fulfill({ json: [] }))
   await page.route("**/graphql", async (route) => {
     const request = route.request()
     if (request.method() !== "POST") return route.continue()

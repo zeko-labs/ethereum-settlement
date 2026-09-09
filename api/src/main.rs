@@ -464,6 +464,7 @@ async fn main() -> Result<()> {
             get(get_token_withdrawal_proof),
         )
         .route("/v1/bridge/withdrawals", get(list_native_withdrawals))
+        .route("/v1/bridge/token-withdrawals", get(list_token_withdrawals))
         .route(
             "/v1/bridge/withdrawal-requests",
             get(list_pending_withdrawals),
@@ -1339,6 +1340,100 @@ async fn list_native_withdrawals(
     Json(withdrawals).into_response()
 }
 
+async fn list_token_withdrawals(
+    State(state): State<AppState>,
+    Query(query): Query<ListWithdrawalsQuery>,
+) -> Response {
+    let recipient = match query.recipient {
+        Some(recipient) => match recipient.parse::<Address>() {
+            Ok(recipient) => Some(recipient.to_string()),
+            Err(_) => {
+                return api_error(
+                    StatusCode::BAD_REQUEST,
+                    "recipient must be a 20-byte Ethereum address",
+                )
+            }
+        },
+        None => None,
+    };
+    let after = match query.after.map(i64::try_from).transpose() {
+        Ok(after) => after,
+        Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
+    };
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let rows = sqlx::query(
+        "SELECT settlement_sequence, action_offset
+         FROM gateway_inner_action_leaves
+         WHERE recipient IS NOT NULL AND token IS NOT NULL AND NOT removed
+           AND ($1::text IS NULL OR lower(recipient) = lower($1))
+           AND ($2::bigint IS NULL OR global_action_index > $2)
+         ORDER BY global_action_index
+         LIMIT $3",
+    )
+    .bind(recipient)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(&state.pool)
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(%error, "list ERC20 withdrawals");
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not list token withdrawals",
+            );
+        }
+    };
+    let current_slot = match state.ethereum.current_virtual_slot().await {
+        Ok(slot) => slot,
+        Err(error) => {
+            tracing::error!(%error, "read current virtual slot");
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                "could not read settlement virtual slot",
+            );
+        }
+    };
+    let delay = match state.ethereum.withdrawal_delay_slots().await {
+        Ok(delay) => delay,
+        Err(error) => {
+            tracing::error!(%error, "read withdrawal delay");
+            return api_error(StatusCode::BAD_GATEWAY, "could not read withdrawal delay");
+        }
+    };
+    let mut withdrawals = Vec::with_capacity(rows.len());
+    for row in rows {
+        let location = (|| -> Result<(u64, u32)> {
+            Ok((
+                u64::try_from(row.try_get::<i64, _>("settlement_sequence")?)?,
+                u32::try_from(row.try_get::<i32, _>("action_offset")?)?,
+            ))
+        })();
+        let (sequence, offset) = match location {
+            Ok(location) => location,
+            Err(error) => {
+                tracing::error!(%error, "decode indexed ERC20 withdrawal location");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "invalid indexed token withdrawal location",
+                );
+            }
+        };
+        match load_token_withdrawal_proof_at(&state, sequence, offset, current_slot, delay).await {
+            Ok(proof) => withdrawals.push(proof),
+            Err(error) => {
+                tracing::error!(%error, sequence, offset, "build ERC20 withdrawal proof");
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not build token withdrawal proof",
+                );
+            }
+        }
+    }
+    Json(withdrawals).into_response()
+}
+
 async fn list_pending_withdrawals(
     State(state): State<AppState>,
     Query(query): Query<ListWithdrawalsQuery>,
@@ -1469,6 +1564,16 @@ async fn load_token_withdrawal_proof(
 ) -> Result<TokenWithdrawalProof> {
     let current_slot = state.ethereum.current_virtual_slot().await?;
     let delay = state.ethereum.withdrawal_delay_slots().await?;
+    load_token_withdrawal_proof_at(state, sequence, offset, current_slot, delay).await
+}
+
+async fn load_token_withdrawal_proof_at(
+    state: &AppState,
+    sequence: u64,
+    offset: u32,
+    current_slot: u64,
+    delay: u32,
+) -> Result<TokenWithdrawalProof> {
     let InnerActionBatchProof {
         target,
         siblings,
@@ -2918,10 +3023,14 @@ mod tests {
     #[test]
     fn native_withdrawal_queries_require_the_native_asset_discriminator() {
         let source = include_str!("main.rs");
-        let list = &source[source.find("async fn list_native_withdrawals").unwrap()
+        let native_list = &source[source.find("async fn list_native_withdrawals").unwrap()
+            ..source.find("async fn list_token_withdrawals").unwrap()];
+        let token_list = &source[source.find("async fn list_token_withdrawals").unwrap()
             ..source.find("async fn list_pending_withdrawals").unwrap()];
 
-        assert!(list.contains("token IS NULL"));
+        assert!(native_list.contains("token IS NULL"));
+        assert!(token_list.contains("token IS NOT NULL"));
+        assert!(token_list.contains("load_token_withdrawal_proof"));
         assert!(ensure_native_withdrawal_kind(None).is_ok());
         assert!(ensure_native_withdrawal_kind(Some(
             "0x1111111111111111111111111111111111111111".into()

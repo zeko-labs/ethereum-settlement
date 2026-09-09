@@ -60,6 +60,7 @@ export const WalletChip = ({
   minaWallet,
   account,
   balance,
+  symbol = "ETH",
   onClick
 }: {
   network: "ethereum" | "zeko"
@@ -67,6 +68,7 @@ export const WalletChip = ({
   minaWallet?: MinaWalletKind
   account?: string
   balance?: string
+  symbol?: string
   onClick: () => void
 }) => (
   <button
@@ -79,7 +81,7 @@ export const WalletChip = ({
     <span className="wallet-copy">
       <span className="wallet-network">{network === "ethereum" ? ethereumNetworkName : `Zeko Testnet · ${minaWalletShortName(minaWallet ?? "metamask-snap")}`}</span>
       <span className="wallet-address">{account ? shortAddress(account) : `Connect ${network === "ethereum" ? "wallet" : "Mina wallet"}`}</span>
-      {balance !== undefined && <span className="wallet-balance">{balance} ETH</span>}
+      {balance !== undefined && <span className="wallet-balance">{balance} {symbol}</span>}
     </span>
   </button>
 )
@@ -105,11 +107,15 @@ export const Notice = ({ kind = "info", children }: { kind?: "info" | "warning" 
 export const DepositProgress = ({
   deposit,
   ethereumTransactionUrl,
+  symbol = "ETH",
+  decimals = 9,
   onFinalize,
   busy
 }: {
   deposit: DepositStatus
   ethereumTransactionUrl: string
+  symbol?: string
+  decimals?: number
   onFinalize: () => void
   busy: boolean
 }) => {
@@ -118,7 +124,7 @@ export const DepositProgress = ({
     <section className="progress-view" data-screen-label="Deposit progress" data-testid="deposit-progress">
       <div className="progress-top">
         <div><h2>Deposit #{deposit.nonce}</h2><p>Gateway status is authoritative and refreshes automatically.</p></div>
-        <div className="amount-lockup"><strong>{formatUnits(BigInt(deposit.zekoAmount), 9, 9)} ETH</strong><span>Ethereum → Zeko</span></div>
+        <div className="amount-lockup"><strong>{formatUnits(BigInt(deposit.zekoAmount), decimals, decimals)} {symbol}</strong><span>Ethereum → Zeko</span></div>
       </div>
       <StepTrack steps={DEPOSIT_STEPS} current={progress.step} tone={progress.tone} />
       <div className={`current-status ${progress.tone}`}>
@@ -141,6 +147,7 @@ export const DepositProgress = ({
 export const WithdrawalProgress = ({
   withdrawal,
   amount,
+  symbol = "ETH",
   transactionHash,
   zekoTransactionUrl,
   onClaim,
@@ -148,6 +155,7 @@ export const WithdrawalProgress = ({
 }: {
   withdrawal?: WithdrawalProof
   amount: string
+  symbol?: string
   transactionHash: string
   zekoTransactionUrl?: string
   onClaim: () => void
@@ -160,7 +168,7 @@ export const WithdrawalProgress = ({
     <section className="progress-view" data-screen-label="Withdrawal progress" data-testid="withdrawal-progress">
       <div className="progress-top">
         <div><h2>Withdrawal in progress</h2><p>The request is recovered from Zeko and Ethereum state after reload.</p></div>
-        <div className="amount-lockup"><strong>{amount} ETH</strong><span>Zeko → Ethereum</span></div>
+        <div className="amount-lockup"><strong>{amount} {symbol}</strong><span>Zeko → Ethereum</span></div>
       </div>
       <StepTrack steps={WITHDRAWAL_STEPS} current={progress.step} tone={progress.tone} />
       <div className={`current-status ${progress.tone}`}>
@@ -174,7 +182,7 @@ export const WithdrawalProgress = ({
         <div className="summary-row"><span>Recipient cursor</span><strong>{withdrawal?.recipientCursor ?? "Pending"}</strong></div>
       </div>
       <button className="primary-button" type="button" disabled={busy || withdrawal?.status !== "claimable"} onClick={onClaim}>
-        {busy ? "Opening Ethereum wallet…" : withdrawal?.status === "claimable" ? "Claim ETH on Ethereum" : "Waiting for settlement"}
+        {busy ? "Opening Ethereum wallet…" : withdrawal?.status === "claimable" ? `Claim ${symbol} on Ethereum` : "Waiting for settlement"}
       </button>
     </section>
   )

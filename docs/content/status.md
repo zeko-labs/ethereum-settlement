@@ -120,6 +120,9 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   leaf schema, SP1/OCaml share the exact Poseidon action vector, and the
   mock-verifier contract test exercises the complete custody, checkpoint, and
   delayed-release sequence without requesting an SP1 proof.
+- The standalone bridge UI authenticates the Actions registry snapshot against
+  Zeko, filters it through the Ethereum activation state, and supports approval,
+  deposit finalization, withdrawal, reload recovery, and delayed ERC-20 claims.
 
 The universal registry runtime path is also implemented:
 

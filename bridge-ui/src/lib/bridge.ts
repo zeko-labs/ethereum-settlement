@@ -1,7 +1,9 @@
 import type {
   BridgeConfig,
   DepositActivity,
+  EthereumAssetRegistrySnapshot,
   EthereumBridgeClient,
+  TokenWithdrawalProof,
   WithdrawalRequest,
   WithdrawalProof
 } from "@zeko-labs/eth-bridge-sdk"
@@ -87,12 +89,14 @@ export const createEthereumBridgeClient = async ({
   config,
   provider,
   account,
-  withZeko = false
+  withZeko = false,
+  assetSnapshot
 }: {
   config: RuntimeConfig
   provider: EthereumProvider
   account: Address
   withZeko?: boolean
+  assetSnapshot?: EthereumAssetRegistrySnapshot
 }): Promise<EthereumBridgeClient> => {
   const { sdk } = await loadBridgeModules()
   return sdk.EthereumBridgeClient.init({
@@ -101,7 +105,8 @@ export const createEthereumBridgeClient = async ({
     account,
     expectedChainId: config.expectedEthereumChainId,
     fetch: uncachedFetch,
-    zeko: withZeko ? buildZekoSdkConfig(config) : undefined
+    zeko: withZeko ? buildZekoSdkConfig(config) : undefined,
+    assets: assetSnapshot ? { snapshot: assetSnapshot } : undefined
   })
 }
 
@@ -152,6 +157,21 @@ export const depositNative = async ({
   return client.depositNative({ recipient: o1.PublicKey.fromBase58(recipient), valueWei })
 }
 
+export const depositToken = async ({
+  client,
+  token,
+  recipient,
+  amount
+}: {
+  client: EthereumBridgeClient
+  token: Address
+  recipient: string
+  amount: bigint
+}) => {
+  const { o1 } = await loadBridgeModules()
+  return client.depositToken({ token, recipient: o1.PublicKey.fromBase58(recipient), amount })
+}
+
 export const finalizeDeposit = async ({
   client,
   recipient,
@@ -191,6 +211,42 @@ export const finalizeDeposit = async ({
   throw new Error("Deposit finalization exhausted its retry attempts")
 }
 
+export const finalizeTokenDeposit = async ({
+  client,
+  token,
+  recipient,
+  encodingVersion,
+  config,
+  provider = getAuroProvider()
+}: {
+  client: EthereumBridgeClient
+  token: Address
+  recipient: string
+  encodingVersion?: 1 | 2
+  config: RuntimeConfig
+  provider?: AuroProvider
+}): Promise<string> => {
+  const { o1 } = await loadBridgeModules()
+  const publicKey = o1.PublicKey.fromBase58(recipient)
+  const deadline = Date.now() + DEPOSIT_PREPARATION_TIMEOUT_MS
+  for (;;) {
+    const preparation = await client.prepareTokenDepositFinalization(publicKey, token)
+    if (preparation.available) break
+    if (!isTransientDepositPreparationReason(preparation.reason) || Date.now() >= deadline) {
+      throw new Error(preparation.reason ?? "Token deposit is not ready to finalize")
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, config.pollIntervalMs))
+  }
+  return client.finalizeTokenDeposit({
+    feePayer: { sender: publicKey, fee: config.zekoTransactionFeeNanomina },
+    recipient: publicKey,
+    token,
+    encodingVersion,
+    signTransaction: createAuroSigner(provider, config),
+    options: { attempts: DEPOSIT_FINALIZATION_ATTEMPTS, feeNanomina: BigInt(config.zekoTransactionFeeNanomina) }
+  })
+}
+
 export const requestNativeWithdrawal = async ({
   client,
   sender,
@@ -215,6 +271,82 @@ export const requestNativeWithdrawal = async ({
     amount: o1.UInt64.from(amount),
     signTransaction: createAuroSigner(provider, config)
   })
+}
+
+export const requestTokenWithdrawal = async ({
+  client,
+  sender,
+  recipient,
+  token,
+  amount,
+  config,
+  provider = getAuroProvider()
+}: {
+  client: EthereumBridgeClient
+  sender: string
+  recipient: Address
+  token: Address
+  amount: bigint
+  config: RuntimeConfig
+  provider?: AuroProvider
+}): Promise<string> => {
+  const { o1 } = await loadBridgeModules()
+  const publicKey = o1.PublicKey.fromBase58(sender)
+  return client.requestTokenWithdrawal({
+    feePayer: { sender: publicKey, fee: config.zekoTransactionFeeNanomina },
+    sender: publicKey,
+    recipient,
+    token,
+    amount: o1.UInt64.from(amount),
+    signTransaction: createAuroSigner(provider, config),
+    options: { attempts: DEPOSIT_FINALIZATION_ATTEMPTS, feeNanomina: BigInt(config.zekoTransactionFeeNanomina) }
+  })
+}
+
+const tokenWithdrawalLocations = async (
+  gatewayUrl: string,
+  recipient: Address,
+  after?: number
+): Promise<Array<{ settlementSequence: number; offset: number; globalActionIndex: number }>> => {
+  const query = new URLSearchParams({ recipient, limit: "100" })
+  if (after !== undefined) query.set("after", String(after))
+  const response = await uncachedFetch(`${gatewayUrl}/v1/bridge/token-withdrawals?${query}`)
+  if (!response.ok) throw new Error(`Gateway token withdrawals returned ${response.status}`)
+  const value: unknown = await response.json()
+  if (!Array.isArray(value)) throw new Error("Gateway token withdrawals must be an array")
+  return value.map((row) => {
+    if (typeof row !== "object" || row === null) throw new Error("Invalid token withdrawal")
+    const value = row as Record<string, unknown>
+    for (const key of ["settlementSequence", "offset", "globalActionIndex"] as const) {
+      if (typeof value[key] !== "number" || !Number.isSafeInteger(value[key]) || value[key] < 0) {
+        throw new Error(`Invalid token withdrawal ${key}`)
+      }
+    }
+    return value as { settlementSequence: number; offset: number; globalActionIndex: number }
+  })
+}
+
+export const listTokenWithdrawals = async ({
+  client,
+  gatewayUrl,
+  recipient
+}: {
+  client: EthereumBridgeClient
+  gatewayUrl: string
+  recipient: Address
+}): Promise<TokenWithdrawalProof[]> => {
+  const rows: TokenWithdrawalProof[] = []
+  let after: number | undefined
+  for (;;) {
+    const locations = await tokenWithdrawalLocations(gatewayUrl, recipient, after)
+    rows.push(...await Promise.all(locations.map((location) =>
+      client.getTokenWithdrawal(location.settlementSequence, location.offset)
+    )))
+    if (locations.length < 100) return rows
+    const next = locations.at(-1)?.globalActionIndex
+    if (next === undefined || next === after) throw new Error("Token withdrawal pagination did not advance")
+    after = next
+  }
 }
 
 export const listWalletActivity = async ({
@@ -308,6 +440,40 @@ export const fetchZekoBalance = async (endpoint: string, account: string): Promi
   if (total === undefined) return "0"
   // Mina-compatible GraphQL reports the balance as whole native units.
   return typeof total === "number" ? total.toString() : total
+}
+
+export const fetchZekoTokenBalance = async (
+  endpoint: string,
+  account: string,
+  tokenId: string,
+  decimals: number
+): Promise<string> => {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      query: `query AccountBalance($publicKey: PublicKey!, $tokenId: Field) {
+        account(publicKey: $publicKey, tokenId: $tokenId) { balance { total } }
+      }`,
+      variables: { publicKey: account, tokenId: BigInt(tokenId).toString() }
+    })
+  })
+  if (!response.ok) throw new Error(`Zeko token balance request returned ${response.status}`)
+  const body = (await response.json()) as {
+    data?: { account?: { balance?: { total?: string | number } } }
+    errors?: Array<{ message?: string }>
+  }
+  if (body.errors?.length) throw new Error(body.errors[0]?.message ?? "Zeko token balance query failed")
+  const total = body.data?.account?.balance?.total
+  if (total === undefined) return "0"
+  const normalized = String(total)
+  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(normalized)) {
+    throw new Error("Zeko returned an invalid token balance")
+  }
+  const [whole, fraction = ""] = normalized.split(".")
+  if (fraction.length > 9) throw new Error("Zeko returned an over-precise token balance")
+  const raw = BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0") || "0")
+  return formatUnits(raw, decimals, Math.min(decimals, 6))
 }
 
 export const ethereumTransactionUrl = (config: RuntimeConfig, hash: Hash | string): string =>

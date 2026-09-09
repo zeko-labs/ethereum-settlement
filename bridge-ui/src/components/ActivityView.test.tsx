@@ -57,4 +57,48 @@ describe("bridge activity", () => {
     expect(onWithdrawal).toHaveBeenCalledWith(expect.objectContaining({ globalActionIndex: 7 }), matching)
     expect(screen.getByTestId("activity-withdrawal-8")).toHaveTextContent("Waiting for Zeko settlement")
   })
+
+  it("matches a settled token claim to its locally persisted request", async () => {
+    const onWithdrawal = vi.fn()
+    const token = "0x00000000000000000000000000000000000000c0" as const
+    const assetId = `0x${"56".repeat(32)}` as const
+    const operation = {
+      id: "withdrawal:token",
+      direction: "withdrawal" as const,
+      amount: "50",
+      recipient,
+      transactionHash: "5Jtoken",
+      createdAt: "2026-07-16T00:00:00.000Z",
+      asset: { kind: "erc20" as const, token, assetId, symbol: "USDC", decimals: 6 }
+    }
+    const proof = { ...withdrawal(9, 4), amount: "50000000", token, assetId }
+    const asset = {
+      kind: "erc20" as const,
+      id: token,
+      token,
+      assetId,
+      tokenIdL2: `0x${"78".repeat(32)}` as const,
+      name: "USD Coin",
+      symbol: "USDC",
+      ethereumDecimals: 6,
+      zekoDecimals: 6,
+      inventoryCap: 1_000_000_000n
+    }
+
+    render(
+      <ActivityView
+        deposits={[]}
+        withdrawals={[proof]}
+        operations={[operation]}
+        assets={[asset]}
+        loading={false}
+        onDeposit={vi.fn()}
+        onWithdrawal={onWithdrawal}
+      />
+    )
+
+    expect(screen.getAllByText(/50 USDC/)).toHaveLength(1)
+    await userEvent.click(screen.getByTestId("activity-withdrawal-9").querySelector("button")!)
+    expect(onWithdrawal).toHaveBeenCalledWith(proof, operation)
+  })
 })

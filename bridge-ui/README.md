@@ -1,9 +1,16 @@
 # Ethereum ↔ Zeko bridge UI
 
-Standalone React application for the native ETH bridge PoC. It talks directly
+Standalone React application for the native ETH and canonical ERC-20 bridge PoC. It talks directly
 to the public gateway bridge API, gateway/sequencer GraphQL endpoints, injected
 Ethereum wallets, and either Auro or the Auro-compatible MetaMask Mina Snap. It
 never calls proof-operator routes.
+
+After an Ethereum wallet connects, the bridge fetches the canonical asset
+snapshot from the configured Actions API, authenticates its root/count/schema
+against the Zeko runtime, and checks each record's active Ethereum registration
+before displaying it. ERC-20 deposits request an exact allowance only when the
+current allowance is insufficient. Token amounts use the registry's precision
+(at most nine decimals) on both chains.
 
 The **Wallet** tab sends native MINA and Mina Fungible Token standard assets.
 Native payments use the provider's `sendPayment` operation. Standard MFT
@@ -105,9 +112,10 @@ Supported public variables:
 browser validator always require `testnet`, matching Auro's current signing salt
 for custom networks.
 
-Both Zeko bridge SDK packages are vendored from the same pinned source commit.
-Do not replace only one with the same-numbered registry package: the published
-bridge SDK artifact lacks runtime exports required by the Ethereum wrapper.
+Both Zeko bridge SDK packages and their shared GraphQL package are vendored from
+the same pinned source commit. Do not replace only one with the same-numbered
+registry package: the published artifacts lack runtime exports and registry
+queries required by the Ethereum wrapper.
 
 ## Mina wallet signing domain
 

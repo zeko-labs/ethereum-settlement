@@ -1,4 +1,4 @@
-import type { DepositStatus, EthereumBridgeClient, WithdrawalProof } from "@zeko-labs/eth-bridge-sdk"
+import type { DepositStatus, EthereumAssetRegistrySnapshot, EthereumBridgeClient, TokenWithdrawalProof, WithdrawalProof } from "@zeko-labs/eth-bridge-sdk"
 import type { Address } from "viem"
 import { getAddress, isAddress } from "viem"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -10,18 +10,31 @@ import { MinaWalletModal } from "./components/MinaWalletModal"
 import { ReviewView } from "./components/ReviewView"
 import { SettingsModal } from "./components/SettingsModal"
 import { WalletView } from "./components/WalletView"
-import { bridgeAmountFromEth, formatUnits } from "./lib/amount"
+import { bridgeAmountFromEth, bridgeAmountFromToken, formatUnits } from "./lib/amount"
+import {
+  discoverBridgeAssets,
+  ensureTokenAllowance,
+  fetchAssetRegistrySnapshot,
+  fetchTokenBalance,
+  NATIVE_ASSET,
+  type BridgeAsset
+} from "./lib/assets"
 import {
   createEthereumBridgeClient,
   depositNative,
+  depositToken,
   ethereumTransactionUrl,
   fetchEthereumBalance,
   fetchZekoBalance,
+  fetchZekoTokenBalance,
   finalizeDeposit,
+  finalizeTokenDeposit,
   isValidZekoAddress,
   listWalletActivity,
+  listTokenWithdrawals,
   loadBridgeModules,
   requestNativeWithdrawal,
+  requestTokenWithdrawal,
   zekoTransactionUrl
 } from "./lib/bridge"
 import { ethereumNetworkName, loadRuntimeConfig, type RuntimeConfig } from "./lib/config"
@@ -51,7 +64,7 @@ import {
 } from "./lib/wallets"
 
 type Screen = "form" | "review" | "deposit-progress" | "withdrawal-progress" | "complete"
-type Completion = { direction: Direction; amount: string; hash: string; url: string }
+type Completion = { direction: Direction; amount: string; symbol: string; hash: string; url: string }
 type MinaSessionPresentation = {
   kind: "interactive" | "reload"
   fillRecipient: boolean
@@ -70,6 +83,11 @@ export default function App() {
   const [zekoAccount, setZekoAccount] = useState<string>()
   const [ethereumBalance, setEthereumBalance] = useState<string>()
   const [zekoBalance, setZekoBalance] = useState<string>()
+  const [assets, setAssets] = useState<BridgeAsset[]>([NATIVE_ASSET])
+  const [asset, setAsset] = useState<BridgeAsset>(NATIVE_ASSET)
+  const [assetSnapshot, setAssetSnapshot] = useState<EthereumAssetRegistrySnapshot>()
+  const [assetsLoading, setAssetsLoading] = useState(false)
+  const [assetWarning, setAssetWarning] = useState("")
   const [client, setClient] = useState<EthereumBridgeClient>()
   const [zekoClient, setZekoClient] = useState<EthereumBridgeClient>()
   const [bridgeAddress, setBridgeAddress] = useState("")
@@ -91,10 +109,10 @@ export default function App() {
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityError, setActivityError] = useState("")
   const [deposits, setDeposits] = useState<DepositStatus[]>([])
-  const [withdrawals, setWithdrawals] = useState<WithdrawalProof[]>([])
+  const [withdrawals, setWithdrawals] = useState<Array<WithdrawalProof | TokenWithdrawalProof>>([])
   const [operations, setOperations] = useState<PendingOperation[]>([])
   const [selectedDeposit, setSelectedDeposit] = useState<DepositStatus>()
-  const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalProof>()
+  const [selectedWithdrawal, setSelectedWithdrawal] = useState<WithdrawalProof | TokenWithdrawalProof>()
   const [selectedOperation, setSelectedOperation] = useState<PendingOperation>()
   const [completion, setCompletion] = useState<Completion>()
   const [toast, setToast] = useState("")
@@ -131,8 +149,42 @@ export default function App() {
       setEthereumAccount(account)
       setClient(connectedClient)
       setZekoClient(undefined)
+      setAssets([NATIVE_ASSET])
+      setAsset((current) => current.kind === "native" ? current : NATIVE_ASSET)
+      setAssetSnapshot(undefined)
+      setAssetWarning("")
       setBridgeAddress(connectedClient.config.bridgeAddress)
       setEthereumBalance(await fetchEthereumBalance(provider, account).catch(() => "0"))
+      setAssetsLoading(true)
+      try {
+        const snapshot = await fetchAssetRegistrySnapshot(config.actionsApiUrl)
+        if (request !== ethereumConnectionRequest.current) return connectedClient
+        if (!snapshot) {
+          setAssetWarning("No canonical ERC-20 registry is published yet; native ETH remains available.")
+          return connectedClient
+        }
+        const authenticatedClient = await createEthereumBridgeClient({
+          config,
+          provider,
+          account,
+          withZeko: true,
+          assetSnapshot: snapshot
+        })
+        const discovered = await discoverBridgeAssets(authenticatedClient, provider)
+        if (request !== ethereumConnectionRequest.current) return connectedClient
+        setAssetSnapshot(snapshot)
+        setZekoClient(authenticatedClient)
+        setAssets(discovered.assets)
+        setAssetWarning(discovered.warnings.length > 0
+          ? `${discovered.warnings.length} registry asset${discovered.warnings.length === 1 ? " was" : "s were"} hidden because validation failed.`
+          : "")
+      } catch (error) {
+        if (request === ethereumConnectionRequest.current) {
+          setAssetWarning(`ERC-20 assets unavailable: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      } finally {
+        if (request === ethereumConnectionRequest.current) setAssetsLoading(false)
+      }
       return connectedClient
     },
     [config]
@@ -231,6 +283,23 @@ export default function App() {
   useEffect(() => {
     minaWalletRef.current = minaWallet
   }, [minaWallet])
+
+  useEffect(() => {
+    if (!ethereumAccount) return
+    const provider = getEthereumProvider()
+    const balance = asset.kind === "native"
+      ? fetchEthereumBalance(provider, ethereumAccount)
+      : fetchTokenBalance(provider, ethereumAccount, asset)
+    void balance.then(setEthereumBalance).catch(() => setEthereumBalance("0"))
+  }, [asset, ethereumAccount])
+
+  useEffect(() => {
+    if (!config || !zekoAccount) return
+    const balance = asset.kind === "native"
+      ? fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount)
+      : fetchZekoTokenBalance(config.sequencerGraphqlUrl, zekoAccount, asset.tokenIdL2, asset.zekoDecimals)
+    void balance.then(setZekoBalance).catch(() => setZekoBalance("0"))
+  }, [asset, config, zekoAccount])
 
   useEffect(() => {
     if (!config) return
@@ -429,11 +498,13 @@ export default function App() {
   const amountResult = useMemo(() => {
     if (!amount || !config) return undefined
     try {
-      return bridgeAmountFromEth(amount)
+      return asset.kind === "native"
+        ? bridgeAmountFromEth(amount)
+        : bridgeAmountFromToken(amount, asset.zekoDecimals)
     } catch {
       return undefined
     }
-  }, [amount, config, direction])
+  }, [amount, asset, config])
 
   const formValid = Boolean(
     amountResult &&
@@ -444,7 +515,8 @@ export default function App() {
   const validateForm = async (): Promise<boolean> => {
     if (!config) return false
     try {
-      bridgeAmountFromEth(amount)
+      if (asset.kind === "native") bridgeAmountFromEth(amount)
+      else bridgeAmountFromToken(amount, asset.zekoDecimals)
     } catch (error) {
       setValidation(error instanceof Error ? error.message : String(error))
       return false
@@ -476,13 +548,13 @@ export default function App() {
   const ensureFullClient = async (): Promise<EthereumBridgeClient> => {
     if (zekoClient) return zekoClient
     if (!config) throw new Error("Runtime configuration is not loaded")
-    if (!zekoAccount) throw new Error(missingWalletMessage("auro"))
     const base = await ensureClient()
     const full = await createEthereumBridgeClient({
       config,
       provider: getEthereumProvider(),
       account: base.account,
-      withZeko: true
+      withZeko: true,
+      assetSnapshot
     })
     setZekoClient(full)
     return full
@@ -526,10 +598,21 @@ export default function App() {
         zekoRecipient: zekoAccount,
         ethereumRecipient: ethereumAccount
       })
+      const tokenWithdrawals = ethereumAccount
+        ? await listTokenWithdrawals({
+            client: activityClient,
+            gatewayUrl: config?.gatewayUrl ?? "",
+            recipient: ethereumAccount
+          }).catch(() => [] as TokenWithdrawalProof[])
+        : []
+      const allWithdrawals: Array<WithdrawalProof | TokenWithdrawalProof> = [
+        ...result.withdrawals,
+        ...tokenWithdrawals
+      ]
       if (request !== activityRequest.current) return
       setActivityError("")
       setDeposits(result.deposits)
-      setWithdrawals(result.withdrawals)
+      setWithdrawals(allWithdrawals)
       const discoveredOperations: PendingOperation[] = result.withdrawalRequests.map((request) => ({
         id: `withdrawal:${request.transactionHash}`,
         direction: "withdrawal",
@@ -561,12 +644,12 @@ export default function App() {
         ? result.deposits.find((row) => row.nonce === current.nonce)
         : undefined)
       setSelectedWithdrawal((current) => current
-        ? result.withdrawals.find(
+        ? allWithdrawals.find(
             (row) => row.globalActionIndex === current.globalActionIndex
           )
         : selected?.globalActionIndex === undefined
           ? undefined
-          : result.withdrawals.find(
+          : allWithdrawals.find(
               (row) => row.globalActionIndex === selected.globalActionIndex
             ))
       setSelectedOperation((current) => {
@@ -633,9 +716,25 @@ export default function App() {
     setActionError("")
     try {
       if (direction === "deposit") {
-        const base = await ensureClient()
+        const base = asset.kind === "native" ? await ensureClient() : await ensureFullClient()
         await ensureEthereumNetwork(getEthereumProvider(), config.expectedEthereumChainId)
-        const result = await depositNative({ client: base, recipient, valueWei: amountResult.valueWei })
+        const result = asset.kind === "native"
+          ? await depositNative({
+              client: base,
+              recipient,
+              valueWei: bridgeAmountFromEth(amount).valueWei
+            })
+          : await (async () => {
+              const depositAmount = bridgeAmountFromToken(amount, asset.zekoDecimals).ethereumAmount
+              await ensureTokenAllowance({
+                provider: getEthereumProvider(),
+                account: base.account,
+                token: asset.token,
+                spender: getAddress(base.config.bridgeAddress),
+                amount: depositAmount
+              })
+              return depositToken({ client: base, token: asset.token, recipient, amount: depositAmount })
+            })()
         const operation: PendingOperation = {
           id: `deposit:${result.nonce}`,
           direction: "deposit",
@@ -643,33 +742,49 @@ export default function App() {
           recipient,
           transactionHash: result.hash,
           depositNonce: result.nonce,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          asset: asset.kind === "erc20"
+            ? { kind: "erc20", token: asset.token, assetId: asset.assetId, symbol: asset.symbol, decimals: asset.zekoDecimals }
+            : undefined
         }
         rememberOperation(operation, base.config.bridgeAddress)
         setSelectedOperation(operation)
         setSelectedDeposit(result.deposit)
         setScreen("deposit-progress")
-        setToast(`ETH locked on ${ethereum}. Gateway tracking has started.`)
+        setToast(`${asset.symbol} locked on ${ethereum}. Gateway tracking has started.`)
       } else {
         if (!zekoAccount) throw new Error(missingWalletMessage("auro"))
         const provider = getMinaProvider(minaWallet)
         await ensureAuroPoCNetwork(provider, config)
         const full = await ensureFullClient()
-        const hash = await requestNativeWithdrawal({
-          client: full,
-          sender: zekoAccount,
-          recipient: getAddress(recipient),
-          amount: amountResult.zekoAmount,
-          config,
-          provider
-        })
+        const hash = asset.kind === "native"
+          ? await requestNativeWithdrawal({
+              client: full,
+              sender: zekoAccount,
+              recipient: getAddress(recipient),
+              amount: amountResult.zekoAmount,
+              config,
+              provider
+            })
+          : await requestTokenWithdrawal({
+              client: full,
+              sender: zekoAccount,
+              recipient: getAddress(recipient),
+              token: asset.token,
+              amount: amountResult.zekoAmount,
+              config,
+              provider
+            })
         const operation: PendingOperation = {
           id: `withdrawal:${hash}`,
           direction: "withdrawal",
           amount,
           recipient: getAddress(recipient),
           transactionHash: hash,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          asset: asset.kind === "erc20"
+            ? { kind: "erc20", token: asset.token, assetId: asset.assetId, symbol: asset.symbol, decimals: asset.zekoDecimals }
+            : undefined
         }
         rememberOperation(operation, full.config.bridgeAddress)
         setSelectedOperation(operation)
@@ -695,15 +810,28 @@ export default function App() {
       const depositRecipient = selectedOperation?.direction === "deposit"
         ? selectedOperation.recipient
         : zekoAccount ?? recipient
-      const hash = await finalizeDeposit({
-        client: full,
-        recipient: recipientForDeposit(selectedDeposit, depositRecipient),
-        config,
-        provider: getMinaProvider(minaWallet)
-      })
+      const depositAsset = selectedDeposit.assetId
+        ? assets.find((candidate) => candidate.kind === "erc20" && candidate.token.toLowerCase() === selectedDeposit.token.toLowerCase())
+        : NATIVE_ASSET
+      if (!depositAsset) throw new Error(`Deposit token ${selectedDeposit.token} is not in the authenticated asset registry`)
+      const hash = depositAsset.kind === "native"
+        ? await finalizeDeposit({
+            client: full,
+            recipient: recipientForDeposit(selectedDeposit, depositRecipient),
+            config,
+            provider: getMinaProvider(minaWallet)
+          })
+        : await finalizeTokenDeposit({
+            client: full,
+            token: depositAsset.token,
+            recipient: recipientForDeposit(selectedDeposit, depositRecipient),
+            encodingVersion: selectedDeposit.encodingVersion ?? undefined,
+            config,
+            provider: getMinaProvider(minaWallet)
+          })
       const operation = selectedOperation?.direction === "deposit" ? { ...selectedOperation, zekoTransactionHash: hash } : undefined
       if (operation) rememberOperation(operation)
-      setCompletion({ direction: "deposit", amount: operation?.amount ?? formatUnits(BigInt(selectedDeposit.zekoAmount), 9, 9), hash, url: zekoTransactionUrl(config, hash) })
+      setCompletion({ direction: "deposit", amount: operation?.amount ?? formatUnits(BigInt(selectedDeposit.zekoAmount), depositAsset.zekoDecimals, depositAsset.zekoDecimals), symbol: depositAsset.symbol, hash, url: zekoTransactionUrl(config, hash) })
       setScreen("complete")
     } catch (error) {
       setActionError(formatWalletError(error))
@@ -719,10 +847,17 @@ export default function App() {
     try {
       const base = await ensureClient()
       await ensureEthereumNetwork(getEthereumProvider(), config.expectedEthereumChainId)
-      const hash = await base.claimNativeWithdrawal(selectedWithdrawal)
+      const hash = "token" in selectedWithdrawal
+        ? await base.claimTokenWithdrawal(selectedWithdrawal)
+        : await base.claimNativeWithdrawal(selectedWithdrawal)
       const operation = selectedOperation?.direction === "withdrawal" ? { ...selectedOperation, ethereumClaimHash: hash } : undefined
       if (operation) rememberOperation(operation)
-      setCompletion({ direction: "withdrawal", amount: operation?.amount ?? formatUnits(BigInt(selectedWithdrawal.amount), 9, 9), hash, url: ethereumTransactionUrl(config, hash) })
+      const withdrawalAsset = "token" in selectedWithdrawal
+        ? assets.find((candidate) => candidate.kind === "erc20" && candidate.token.toLowerCase() === selectedWithdrawal.token.toLowerCase())
+        : NATIVE_ASSET
+      const decimals = withdrawalAsset?.zekoDecimals ?? selectedOperation?.asset?.decimals ?? 9
+      const symbol = withdrawalAsset?.symbol ?? selectedOperation?.asset?.symbol ?? "ETH"
+      setCompletion({ direction: "withdrawal", amount: operation?.amount ?? formatUnits(BigInt(selectedWithdrawal.amount), decimals, decimals), symbol, hash, url: ethereumTransactionUrl(config, hash) })
       setScreen("complete")
       void refreshActivity()
     } catch (error) {
@@ -751,13 +886,22 @@ export default function App() {
   }
   if (!config) return <main className="loading-state"><span className="loading-mark">Z</span><p>Loading bridge configuration…</p></main>
 
+  const selectedDepositAsset = selectedDeposit?.assetId
+    ? assets.find((candidate) => candidate.kind === "erc20" && candidate.token.toLowerCase() === selectedDeposit.token.toLowerCase())
+    : NATIVE_ASSET
+  const selectedOperationToken = selectedOperation?.asset?.kind === "erc20"
+    ? selectedOperation.asset.token
+    : undefined
+  const selectedOperationAsset = selectedOperationToken
+    ? assets.find((candidate) => candidate.kind === "erc20" && candidate.token.toLowerCase() === selectedOperationToken.toLowerCase())
+    : NATIVE_ASSET
   let bridgeContent
   if (screen === "review") {
-    bridgeContent = <ReviewView direction={direction} amount={amount} recipient={recipient} config={config} busy={busy} onBack={() => setScreen("form")} onConfirm={submitTransfer} />
+    bridgeContent = <ReviewView direction={direction} amount={amount} recipient={recipient} asset={asset} config={config} busy={busy} onBack={() => setScreen("form")} onConfirm={submitTransfer} />
   } else if (screen === "deposit-progress" && selectedDeposit) {
-    bridgeContent = <DepositProgress deposit={selectedDeposit} ethereumTransactionUrl={ethereumTransactionUrl(config, selectedDeposit.ethereumTransactionHash)} onFinalize={finalizeSelectedDeposit} busy={busy} />
+    bridgeContent = <DepositProgress deposit={selectedDeposit} symbol={selectedDepositAsset?.symbol} decimals={selectedDepositAsset?.zekoDecimals} ethereumTransactionUrl={ethereumTransactionUrl(config, selectedDeposit.ethereumTransactionHash)} onFinalize={finalizeSelectedDeposit} busy={busy} />
   } else if (screen === "withdrawal-progress" && selectedOperation) {
-    bridgeContent = <WithdrawalProgress withdrawal={selectedWithdrawal} amount={selectedOperation.amount} transactionHash={selectedOperation.transactionHash} zekoTransactionUrl={selectedOperation.transactionHash.startsWith("Gateway-") ? undefined : zekoTransactionUrl(config, selectedOperation.transactionHash)} onClaim={claimSelectedWithdrawal} busy={busy} />
+    bridgeContent = <WithdrawalProgress withdrawal={selectedWithdrawal} amount={selectedOperation.amount} symbol={selectedOperationAsset?.symbol ?? selectedOperation.asset?.symbol} transactionHash={selectedOperation.transactionHash} zekoTransactionUrl={selectedOperation.transactionHash.startsWith("Gateway-") ? undefined : zekoTransactionUrl(config, selectedOperation.transactionHash)} onClaim={claimSelectedWithdrawal} busy={busy} />
   } else if (screen === "complete" && completion) {
     bridgeContent = <CompleteView {...completion} onActivity={openActivity} onNewTransfer={() => { setAmount(""); setScreen("form"); setCompletion(undefined) }} />
   } else {
@@ -774,6 +918,16 @@ export default function App() {
         validation={validation}
         canReview={formValid}
         showDetails={showDetails}
+        assets={assets}
+        asset={asset}
+        assetsLoading={assetsLoading}
+        onAssetChange={(id) => {
+          const selected = assets.find((candidate) => candidate.id.toLowerCase() === id.toLowerCase())
+          if (!selected) return
+          setAsset(selected)
+          setAmount("")
+          setValidation("")
+        }}
         onAmountChange={(value) => { setAmount(value); setValidation("") }}
         onRecipientChange={(value) => { setRecipient(value); setValidation("") }}
         onSwap={swapDirection}
@@ -792,12 +946,12 @@ export default function App() {
         <button type="button" className="brand-link" onClick={() => { setTab("bridge"); setScreen("form") }} aria-label="Zeko bridge home"><img src="/assets/zeko-logo.svg" alt="Zeko" /></button>
         <div className="network-health"><span className="health-dot"></span><span>{ethereum} · Experimental</span></div>
         <div className="header-actions">
-          <WalletChip network="ethereum" ethereumNetworkName={ethereum} account={ethereumAccount} balance={ethereumBalance} onClick={() => void connectEthereumWallet()} />
-          <WalletChip network="zeko" minaWallet={minaWallet} account={zekoAccount} balance={zekoBalance} onClick={() => { setActionError(""); setMinaWalletOpen(true) }} />
+          <WalletChip network="ethereum" ethereumNetworkName={ethereum} account={ethereumAccount} balance={ethereumBalance} symbol={asset.symbol} onClick={() => void connectEthereumWallet()} />
+          <WalletChip network="zeko" minaWallet={minaWallet} account={zekoAccount} balance={zekoBalance} symbol={asset.symbol} onClick={() => { setActionError(""); setMinaWalletOpen(true) }} />
         </div>
       </header>
       <main className="main-content">
-        <div className="hero"><p className="eyebrow">Ethereum settlement</p><h1>Ethereum ↔ Zeko Bridge</h1><p className="hero-copy">Move native ETH between Ethereum custody and Zeko execution, with every transition proven through SP1 and anchored to settlement state.</p></div>
+        <div className="hero"><p className="eyebrow">Ethereum settlement</p><h1>Ethereum ↔ Zeko Bridge</h1><p className="hero-copy">Move native ETH and registered ERC-20 assets between Ethereum custody and Zeko execution, with every transition proven through SP1 and anchored to settlement state.</p></div>
         <div className="environment-banner"><strong>Experimental PoC</strong><span>{ethereum}</span><span>·</span><span>No cancellation/refund</span><span>·</span><span>Zeko signs as temporary <code>testnet</code></span></div>
         <div className="bridge-card">
           <div className="card-header">
@@ -806,8 +960,9 @@ export default function App() {
           </div>
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
+            {assetWarning && <Notice kind="warning">{assetWarning}</Notice>}
             {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} assets={assets} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>

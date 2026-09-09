@@ -71,6 +71,7 @@ These routes require `x-api-key: <PROOF_API_KEY>`:
 | `GET /v1/bridge/withdrawal-requests?recipient=0x...&after=N` | Discover withdrawal requests as soon as their canonical inner actions reach the archive, before settlement. |
 | `GET /v1/bridge/withdrawals?recipient=0x...&after=N` | Discover indexed native claims. |
 | `GET /v1/bridge/withdrawals/:sequence/:offset` | Return one fixed-depth Merkle proof and live delay/cursor status. |
+| `GET /v1/bridge/token-withdrawals?recipient=0x...&after=N` | Discover indexed ERC-20 claims for activity recovery. |
 | `GET /v1/bridge/token-withdrawals/:sequence/:offset` | Return registry identity, one fixed-depth ERC-20 Merkle proof, and live delay/cursor status. |
 | `GET /health` | Database and Ethereum connectivity. |
 
