@@ -2,7 +2,16 @@
 
 Standalone React application for the native ETH bridge PoC. It talks directly
 to the public gateway bridge API, gateway/sequencer GraphQL endpoints, injected
-Ethereum wallets, and Auro. It never calls proof-operator routes.
+Ethereum wallets, and either Auro or the Auro-compatible MetaMask Mina Snap. It
+never calls proof-operator routes.
+
+The **Wallet** tab sends native MINA and Mina Fungible Token standard assets.
+Native payments use the provider's `sendPayment` operation. Standard MFT
+transfers are built and proved in the browser with the pinned
+`mina-fungible-token` and `o1js` versions, signed through the same Auro-compatible
+`onlySign` boundary used by bridge zkApps, and submitted to the configured
+sequencer. MFT amounts use exact base units; the first proof can take several
+minutes while the token contract compiles.
 
 ## Run locally
 
@@ -14,6 +23,47 @@ pnpm dev
 The default URL is `http://127.0.0.1:5174`. Edit
 `public/runtime-config.json` before deployment; it contains public endpoints and
 limits only.
+
+Clicking **Connect Mina wallet** opens a dialog that lets each browser choose
+between the MetaMask Snap (shown as MetaMask Flask for a local Snap) and Auro at
+runtime. Clicking the connected Mina wallet chip opens the same account dialog
+with a disconnect action. Snap disconnect attempts to revoke the bridge
+origin's Mina-account permission and still clears the local session if
+revocation fails; Auro disconnect is local because Auro does not expose an
+equivalent dapp method. The choice is stored locally, and the settings dialog
+can still change the preferred provider. Vite only seeds the initial preference
+for browsers without a saved preference:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_MINA_WALLET` | auto | Initial preference: `auro`, `metamask-snap`, or prefer Auro when injected and otherwise the Snap; the connection dialog still requires an explicit wallet click |
+| `VITE_MINA_SNAP_ID` | `npm:@mondejka/mina-snap` | Override with `local:http://127.0.0.1:8080` for MetaMask Flask development |
+
+To test the local Snap, first build and serve it from `../mina-snap`, then start
+this UI with the Snap as the initial preference:
+
+```bash
+cd ../mina-snap
+pnpm build
+pnpm --filter @mondejka/mina-snap start
+```
+
+In another terminal:
+
+```bash
+cd ../bridge-ui
+VITE_MINA_WALLET=metamask-snap \
+VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
+pnpm dev
+```
+
+Click **Connect Mina wallet** to choose between the local Snap and Auro. Auro
+must be installed and configured with the local Zeko endpoint before it can sign
+against this stack.
+
+The npm package is not usable in ordinary MetaMask until it has been published,
+security-reviewed, and allowlisted. See the [Snap workspace
+README](../mina-snap/README.md) for the compatibility matrix and release gate.
 
 The checked-in file is ready for the local PoC. Operators can materialize the
 same schema from environment variables before building:
@@ -59,18 +109,23 @@ Both Zeko bridge SDK packages are vendored from the same pinned source commit.
 Do not replace only one with the same-numbered registry package: the published
 bridge SDK artifact lacks runtime exports required by the Ethereum wrapper.
 
-## Auro signing domain
+## Mina wallet signing domain
 
-Auro currently uses the Mina signing salt `testnet` for Zeko testnet and custom
-testnet networks. The PoC therefore constructs the bridge SDK runtime with both
-circuit networks set to `testnet`. This is separate from Auro's wallet-facing
-chain identifier and is not the intended production network ID.
+Auro and the MetaMask Snap use the Mina signing salt `testnet` for Zeko testnet
+and custom testnet networks. The PoC therefore constructs the bridge SDK runtime
+with both circuit networks set to `testnet`. This is separate from the
+wallet-facing chain identifier and is not the intended production network ID.
 
 Auro 2.5.x only permits public HTTPS URLs through its dapp-facing `addChain`
 method. For a local node, add `http://127.0.0.1:1923/graphql` through Auro's
 Settings > Networks screen and select it manually. Auro reports the selected
 wallet chain as `zeko:testnet`; that identifier is separate from the `testnet`
 transaction-signing salt used by this PoC.
+
+The Snap can add a local HTTP GraphQL endpoint after an explicit MetaMask
+confirmation. It contacts the endpoint only after approval, reads `networkID`,
+shows that reported ID in a second confirmation, stores the URL in Snap state,
+and then applies the same signing-domain mapping.
 
 ## Validation
 

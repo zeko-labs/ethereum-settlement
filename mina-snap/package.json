@@ -1,0 +1,16 @@
+{
+  "name": "@zeko-labs/mina-snap-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@10.19.0",
+  "pnpm": {
+    "overrides": {
+      "uuid": "11.1.1"
+    }
+  }
+}

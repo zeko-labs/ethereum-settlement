@@ -59,7 +59,9 @@ test("two destination wallets complete isolated deposit and withdrawal roundtrip
   try {
     await page.goto("/")
     await expect(page.getByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })).toBeVisible()
-    await page.getByRole("button", { name: /Connect Auro/ }).click()
+    await page.getByRole("button", { name: /Connect (?:Auro|Mina wallet)/ }).click()
+    await page.getByRole("button", { name: /Auro Wallet/ }).click()
+    await expect(page.getByRole("button", { name: /^Mina wallet B62/ })).toBeVisible()
 
     const depositA = await submitDeposit(page, 0, wallets.zekoAccounts[0], "2")
     const depositB = await submitDeposit(page, 1, wallets.zekoAccounts[1], "3")
@@ -167,7 +169,7 @@ async function submitWithdrawal(
   await page.getByLabel("Amount of native ETH to bridge").fill(amount)
   await page.getByLabel("Ethereum recipient").fill(recipient)
   await page.getByRole("button", { name: /Review withdrawal/i }).click()
-  await page.getByRole("button", { name: "Confirm in Auro" }).click()
+  await page.getByRole("button", { name: /Confirm in (?:Auro|Mina wallet)/ }).click()
   await expect(page.getByTestId("withdrawal-progress")).toContainText("Withdrawal request submitted", {
     timeout: 10 * 60_000
   })

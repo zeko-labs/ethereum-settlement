@@ -4,8 +4,10 @@ import {
   ensureAuroPoCNetwork,
   ensureEthereumNetwork,
   formatWalletError,
+  getMinaProvider,
   listenAuroChanges,
   listenEthereumChanges,
+  minaWalletName,
   type AuroProvider,
   type EthereumProvider
 } from "./wallets"
@@ -17,6 +19,40 @@ const config = {
 } as RuntimeConfig
 
 describe("wallet adapters", () => {
+  it("uses the Flask display name for a local Mina Snap", () => {
+    expect(minaWalletName("metamask-snap", "local:http://127.0.0.1:8080"))
+      .toBe("MetaMask Flask")
+    expect(minaWalletName("metamask-snap", "npm:@mondejka/mina-snap"))
+      .toBe("MetaMask Snap")
+    expect(minaWalletName("auro", "local:http://127.0.0.1:8080"))
+      .toBe("Auro Wallet")
+  })
+
+  it("uses the Auro-compatible Mina Snap provider when Auro is absent", () => {
+    delete window.mina
+    window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
+
+    expect(getMinaProvider("metamask-snap")).toMatchObject({
+      isAuro: false,
+      isMinaSnap: true
+    })
+  })
+
+  it("does not send Snap methods to a non-MetaMask Ethereum wallet", () => {
+    delete window.mina
+    window.ethereum = { request: vi.fn() } as unknown as EthereumProvider
+
+    expect(() => getMinaProvider("metamask-snap")).toThrow(/MetaMask is not installed/)
+  })
+
+  it("uses Auro when it is explicitly selected even when MetaMask is present", () => {
+    const auro = { isAuro: true } as AuroProvider
+    window.mina = auro
+    window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
+
+    expect(getMinaProvider("auro")).toBe(auro)
+  })
+
   it("accepts an already selected Auro Zeko testnet network", async () => {
     const provider = {
       addChain: vi.fn(),
@@ -24,6 +60,43 @@ describe("wallet adapters", () => {
       requestNetwork: vi.fn(async () => ({ networkID: "zeko:testnet" }))
     } as unknown as AuroProvider
     await ensureAuroPoCNetwork(provider, config)
+    expect(provider.addChain).not.toHaveBeenCalled()
+    expect(provider.switchChain).not.toHaveBeenCalled()
+  })
+
+  it("registers the configured GraphQL endpoint for the Mina Snap", async () => {
+    const provider = {
+      isMinaSnap: true,
+      addChain: vi.fn(async () => ({ networkID: "testnet" })),
+      switchChain: vi.fn(),
+      requestNetwork: vi.fn()
+        .mockResolvedValueOnce({ networkID: "zeko:testnet" })
+        .mockResolvedValueOnce({ networkID: "testnet" })
+    } as unknown as AuroProvider
+
+    await ensureAuroPoCNetwork(provider, config)
+
+    expect(provider.addChain).toHaveBeenCalledWith({
+      url: config.sequencerGraphqlUrl,
+      name: config.auroNetworkName
+    })
+    expect(provider.switchChain).not.toHaveBeenCalled()
+  })
+
+  it("reuses an already approved Mina Snap endpoint without prompting again", async () => {
+    const provider = {
+      isMinaSnap: true,
+      addChain: vi.fn(),
+      switchChain: vi.fn(),
+      requestNetwork: vi.fn(async () => ({
+        networkID: "zeko:testnet",
+        url: config.sequencerGraphqlUrl,
+        name: config.auroNetworkName
+      }))
+    } as unknown as AuroProvider
+
+    await ensureAuroPoCNetwork(provider, config)
+
     expect(provider.addChain).not.toHaveBeenCalled()
     expect(provider.switchChain).not.toHaveBeenCalled()
   })

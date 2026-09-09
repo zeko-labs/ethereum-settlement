@@ -117,9 +117,10 @@ configuration. Registration rejects an owner equal to the shared vault and any
 record whose MFT or universal VK identifier differs from this configuration.
 
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
-materialize `ZEKO_SIGNATURE_KIND`. Auro currently assigns that built-in signing
-domain to custom endpoints. Do not substitute the display name or
-`zeko-testnet`; signatures and circuit commitments must use the same salt.
+materialize `ZEKO_SIGNATURE_KIND`. Auro assigns that built-in signing domain to
+custom endpoints, and the MetaMask Mina Snap applies the same mapping for Zeko
+testnet. Do not substitute the display name or `zeko-testnet`; signatures and
+circuit commitments must use the same salt.
 
 ## Browser application
 
@@ -166,3 +167,10 @@ The Compose profile expects separate files for:
 Private files must be mode `0600` or `0400`; the public TLS certificate may be
 `0644`. Prefer NixOS/systemd credentials or an external secret manager over
 putting values in the Nix store or image layers.
+
+`tools/init-testnet-secrets.sh` creates the self-signed development signer
+certificate through `tools/generate-local-signer-certificate.sh`. Its default
+lifetime is 30 days; set `ZEKO_SIGNER_CERT_DAYS` to another positive number of
+days when generating a retained environment. Restarting a retained stack does
+not extend an existing certificate, so rotate it before `notAfter` and restart
+the signer clients and servers together.

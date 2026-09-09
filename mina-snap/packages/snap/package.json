@@ -1,0 +1,50 @@
+{
+  "name": "@mondejka/mina-snap",
+  "version": "0.1.0",
+  "description": "Auro-compatible Mina signer for MetaMask Snaps",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/bundle.js",
+  "files": [
+    "dist/",
+    "images/",
+    "LICENSE-MIT",
+    "snap.manifest.json"
+  ],
+  "scripts": {
+    "build": "mm-snap build",
+    "eval": "mm-snap eval",
+    "start": "mm-snap serve --port 8080",
+    "prepack": "pnpm build",
+    "test": "pnpm build && jest --runInBand",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@metamask/key-tree": "10.1.1",
+    "@metamask/snaps-sdk": "11.2.0",
+    "@noble/hashes": "1.7.1",
+    "@scure/base": "2.0.0",
+    "buffer": "6.0.3",
+    "mina-signer": "4.1.0"
+  },
+  "devDependencies": {
+    "@jest/globals": "29.7.0",
+    "@metamask/snaps-cli": "8.4.1",
+    "@metamask/snaps-jest": "10.2.1",
+    "@types/jest": "29.5.14",
+    "jest": "29.7.0",
+    "ts-jest": "29.4.1",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zeko-labs/ethereum-settlement.git",
+    "directory": "mina-snap/packages/snap"
+  }
+}

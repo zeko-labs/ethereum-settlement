@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { MinaSnapProvider } from "@zeko-labs/mina-snap-provider"
 import type { RuntimeConfig } from "./config"
 import type { AuroProvider, EthereumProvider } from "./wallets"
 
@@ -60,6 +61,7 @@ describe("SDK integration", () => {
     ).resolves.toBe(client)
     expect(mocks.init).toHaveBeenCalledWith(
       expect.objectContaining({
+        fetch: expect.any(Function),
         zeko: expect.objectContaining({
           l1Network: "testnet",
           l2Network: "testnet",
@@ -67,6 +69,15 @@ describe("SDK integration", () => {
         })
       })
     )
+    const fetcher = mocks.init.mock.calls[0]?.[0]?.fetch as typeof globalThis.fetch
+    const response = new Response("{}", { headers: { "content-type": "application/json" } })
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(response)
+    await fetcher("http://127.0.0.1:8080/v1/bridge/deposits/1")
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:8080/v1/bridge/deposits/1",
+      { cache: "no-store" }
+    )
+    fetchSpy.mockRestore()
   })
 
   it("converts an Auro onlySign response back into an o1js transaction", async () => {
@@ -87,6 +98,52 @@ describe("SDK integration", () => {
     })
     expect(mocks.fromJSON).toHaveBeenCalledWith({ feePayer: { body: { fee: "1" } } })
     expect(signed).toEqual({ signed: { feePayer: { body: { fee: "1" } } } })
+  })
+
+  it("uses the MetaMask Snap through the same Auro onlySign bridge boundary", async () => {
+    const request = vi.fn(async ({ method, params }: { method: string; params?: unknown }) => {
+      if (method === "wallet_getSnaps") {
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
+      }
+      if (method === "wallet_requestSnaps") {
+        return { "npm:@mondejka/mina-snap": { id: "npm:@mondejka/mina-snap" } }
+      }
+      const minaRequest = (params as {
+        request: { method: string }
+      }).request
+      if (minaRequest.method === "mina_requestNetwork") {
+        return { networkID: "zeko:testnet" }
+      }
+      if (minaRequest.method === "mina_addChain") {
+        return { networkID: "zeko:testnet" }
+      }
+      if (minaRequest.method === "mina_sendTransaction") {
+        return {
+          signedData: JSON.stringify({
+            zkappCommand: { feePayer: { body: { fee: "1" } } }
+          })
+        }
+      }
+      throw new Error(`Unexpected Mina method ${minaRequest.method}`)
+    })
+    const provider = new MinaSnapProvider({ request }) as unknown as AuroProvider
+    const signer = createAuroSigner(provider, config)
+
+    await expect(signer({
+      toJSON: () => "{\"unsigned\":true}"
+    } as Parameters<typeof signer>[0])).resolves.toEqual({
+      signed: { feePayer: { body: { fee: "1" } } }
+    })
+    expect(request).toHaveBeenLastCalledWith({
+      method: "wallet_invokeSnap",
+      params: {
+        snapId: "npm:@mondejka/mina-snap",
+        request: {
+          method: "mina_sendTransaction",
+          params: { onlySign: true, transaction: "{\"unsigned\":true}" }
+        }
+      }
+    })
   })
 
   it("propagates a rejected Auro signature without parsing a transaction", async () => {
@@ -128,7 +185,10 @@ describe("SDK integration", () => {
 
     await expect(result).resolves.toBe("5Jfinalized")
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(2)
-    expect(client.finalizeDeposit).toHaveBeenCalledWith(publicKey, expect.any(Function))
+    expect(client.finalizeDeposit).toHaveBeenCalledWith(publicKey, expect.any(Function), {
+      attempts: 3,
+      feeNanomina: BigInt(config.zekoTransactionFeeNanomina)
+    })
     vi.useRealTimers()
   })
 
@@ -150,6 +210,26 @@ describe("SDK integration", () => {
       provider
     })).rejects.toThrow("No finalizable deposit found")
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(1)
+  })
+
+  it("rebuilds a finalization whose account precondition became stale", async () => {
+    vi.useFakeTimers()
+    const publicKey = { toBase58: () => "B62recipient" }
+    vi.mocked((await import("o1js")).PublicKey.fromBase58).mockReturnValue(publicKey as never)
+    const client = {
+      prepareDepositFinalization: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      finalizeDeposit: vi.fn()
+        .mockRejectedValueOnce(new Error("Account_app_state_precondition_unsatisfied"))
+        .mockResolvedValueOnce("5Jrebuilt")
+    }
+    const provider = { requestNetwork: vi.fn(async () => ({ networkID: "testnet" })) } as unknown as AuroProvider
+
+    const result = finalizeDeposit({ client: client as never, recipient: "B62recipient", config, provider })
+    await vi.advanceTimersByTimeAsync(config.pollIntervalMs)
+
+    await expect(result).resolves.toBe("5Jrebuilt")
+    expect(client.finalizeDeposit).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
   })
 
   it("uses the explorer's canonical transaction detail route", () => {

@@ -7,44 +7,48 @@ wrapper SDK and uses only browser-safe APIs.
 
 ## User flows
 
-The app supports the four user-owned boundaries of the round trip:
+The app supports these user-owned bridge and wallet flows:
 
-1. connect an injected Ethereum wallet and Auro
+1. choose either the MetaMask Snap or Auro, then connect it alongside an
+   injected Ethereum wallet
 2. deposit native ETH to the bridge for a Zeko public key
 3. prepare, sign, and submit deposit finalization through the sequencer
 4. prepare, sign, and submit a native withdrawal request, then claim it on
    Ethereum when the public Merkle proof becomes claimable
+5. send native MINA or a standard MFT token from the connected Zeko account
+
+Native payments use the wallet provider directly. For MFT transfers, the web
+application constructs and proves `FungibleToken.transfer` with the pinned
+`mina-fungible-token@1.1.0` and `o1js@2.8.0`, then asks Auro or the MetaMask Snap
+to sign the completed command through `onlySign`. This keeps the proving runtime
+out of the signing Snap while preserving the wallet approval boundary. MFT
+amounts are exact base units because Mina account data does not provide trusted
+decimal metadata. Because an MFT transfer carries a local proof and is
+materially heavier than an ordinary bridge operation, the form defaults its MFT
+fee to at least one MINA (`1000000000` nanomina). The user can edit that value,
+and a higher deployment-configured operation fee takes precedence.
 
 Deposit batching, SP1 execution/proving, and Ethereum settlement submission
 remain gateway/operator responsibilities. The app polls public deposit and
 withdrawal endpoints; it never calls proof approval routes and never receives
 `PROOF_API_KEY`.
 
-Reloading the page does not reset protocol progress. The app restores an
-authorized Auro session without opening another permission prompt, reloads
-deposit status from both the gateway and Zeko bridge state, and reloads pending
-withdrawal requests from the archive-backed gateway endpoint. A locally
-submitted withdrawal is also shown immediately while archive indexing catches
-up. Zeko transaction links use `/transactions/<hash>`.
+The user-facing wallet chooser, disconnect semantics, provider preference, and
+reload reconnection contract are owned by `bridge-ui/README.md`.
 
-## Auro signing domain
+Protocol progress also survives reload. The app reloads deposit status from
+both the gateway and Zeko bridge state, and reloads pending withdrawal requests
+from the archive-backed gateway endpoint. A locally submitted withdrawal is
+shown immediately while archive indexing catches up. Zeko transaction links
+use `/transactions/<hash>`.
 
-Auro currently assigns the built-in network ID `testnet` when a custom Mina
-endpoint is added. For this PoC, the display name is configurable but the
-signing ID is deliberately fixed:
+## Mina wallet signing domain
 
-```json
-{
-  "minaSigningNetworkId": "testnet",
-  "auroNetworkName": "Zeko Ethereum PoC"
-}
-```
-
-The same exact value must be used by Auro, the live Zeko circuit configuration,
-the sequencer signer, and the deployment preflight. `Zeko Testnet` is a display
-label only. A future Auro release that supports custom signing salts should be
-handled as a versioned network migration rather than silently changing this
-field.
+Both supported Mina wallets must follow the deployment signing-domain contract
+in the [configuration reference](/reference/configuration#sequencer).
+Wallet-facing network names are display values only. Treat any future wallet
+support for custom signing salts as a versioned network migration rather than
+silently changing the deployment field.
 
 ## Runtime configuration
 
@@ -74,7 +78,7 @@ in `bridge-ui/README.md`.
 | `actionsApiUrl` | Public Actions GraphQL endpoint used to prepare inclusion witnesses. |
 | `expectedEthereumChainId` | `11155111` for Sepolia or `31337` for the local Anvil profile. |
 | `minaSigningNetworkId` | Exact value `testnet`. |
-| `auroNetworkName` | Wallet display name for the custom endpoint. |
+| `auroNetworkName` | Mina wallet display name for the custom endpoint. |
 | `zekoTransactionFeeNanomina` | Fee supplied to sequencer bridge operations, as a decimal string. |
 | `ethereumExplorerUrl` / `zekoExplorerUrl` | Public transaction explorer bases. |
 | `pollIntervalMs` | UI status polling period. |

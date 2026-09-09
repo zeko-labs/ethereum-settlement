@@ -209,8 +209,9 @@ const openConnectedApp = async (page: Page, options: { rejectDeposit?: boolean; 
   await expect(page.getByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })).toBeVisible()
   if (!options.rejectSwitch) {
     await expect(page.getByRole("button", { name: "Ethereum wallet 0x0000…0001" })).toBeVisible({ timeout: 20_000 })
-    await page.getByRole("button", { name: /Connect Auro/ }).click()
-    await expect(page.getByRole("button", { name: "Auro wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
+    await page.getByRole("button", { name: /Connect Mina wallet/ }).click()
+    await page.getByRole("button", { name: /Auro Wallet/ }).click()
+    await expect(page.getByRole("button", { name: "Mina wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
   }
 }
 
@@ -225,21 +226,21 @@ test("deposits native ETH through the injected wallet and resumes gateway progre
   await expect(page.getByTestId("deposit-progress")).toContainText("Bridge proof accepted")
 })
 
-test("builds the withdrawal review route with Auro's testnet signing salt", async ({ page }) => {
+test("builds the withdrawal review route with the Mina wallet testnet signing salt", async ({ page }) => {
   await openConnectedApp(page)
   await page.getByRole("button", { name: "Reverse bridge direction" }).click()
   await page.getByLabel("Amount of native ETH to bridge").fill("0.05")
   await expect(page.getByRole("button", { name: /Review withdrawal/i })).toBeEnabled({ timeout: 20_000 })
   await page.getByRole("button", { name: /Review withdrawal/i }).click()
-  await expect(page.getByText("Auro · testnet salt")).toBeVisible()
-  await expect(page.getByRole("button", { name: "Confirm in Auro" })).toBeVisible()
+  await expect(page.getByText("Mina wallet · testnet salt")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Confirm in Mina wallet" })).toBeVisible()
 })
 
 test("recovers indexed deposit activity after reload and wallet reconnection", async ({ page }) => {
   await openConnectedApp(page)
   await page.reload()
   await expect(page.getByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Auro wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByRole("button", { name: "Mina wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
   await page.getByRole("tab", { name: "Activity" }).click()
   await expect(page.getByText("0.1 ETH · Deposit #1")).toBeVisible({ timeout: 20_000 })
   await page.getByRole("button", { name: "Resume" }).click()
@@ -260,6 +261,24 @@ test("surfaces a rejected Sepolia network switch", async ({ page }) => {
   await page.goto("/")
   await page.getByRole("button", { name: /Connect wallet/ }).click()
   await expect(page.getByText("The wallet request was rejected.")).toBeVisible()
+})
+
+test("persists and reconnects the selected Mina wallet provider", async ({ page }) => {
+  await openConnectedApp(page)
+  await page.getByRole("button", { name: "Open bridge settings" }).click()
+  await expect(page.getByRole("radio", { name: /Auro Wallet/i })).toHaveAttribute("aria-checked", "true")
+  await page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i }).click()
+  await expect(page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i })).toHaveAttribute("aria-checked", "true")
+  await expect(page.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+
+  await page.reload()
+  await page.getByRole("button", { name: "Open bridge settings" }).click()
+  await expect(page.getByRole("radio", { name: /MetaMask (?:Snap|Flask)/i })).toHaveAttribute("aria-checked", "true")
+  await page.getByRole("radio", { name: /Auro Wallet/i }).click()
+  await page.getByRole("button", { name: "Close settings" }).click()
+  await page.getByRole("button", { name: /Connect Mina wallet/i }).click()
+  await page.getByRole("button", { name: /Auro Wallet/i }).click()
+  await expect(page.getByRole("button", { name: "Mina wallet B62qpu…aeFF" })).toBeVisible({ timeout: 20_000 })
 })
 
 test("keeps the primary bridge surface inside desktop and mobile viewports", async ({ page }) => {

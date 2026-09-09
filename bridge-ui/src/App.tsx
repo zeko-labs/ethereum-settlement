@@ -6,8 +6,10 @@ import { ActivityView } from "./components/ActivityView"
 import { BackgroundWave, DepositProgress, type Direction, Notice, WalletChip, WithdrawalProgress } from "./components/BridgeUi"
 import { BridgeForm } from "./components/BridgeForm"
 import { CompleteView } from "./components/CompleteView"
+import { MinaWalletModal } from "./components/MinaWalletModal"
 import { ReviewView } from "./components/ReviewView"
 import { SettingsModal } from "./components/SettingsModal"
+import { WalletView } from "./components/WalletView"
 import { bridgeAmountFromEth, formatUnits } from "./lib/amount"
 import {
   createEthereumBridgeClient,
@@ -26,35 +28,44 @@ import { ethereumNetworkName, loadRuntimeConfig, type RuntimeConfig } from "./li
 import {
   operationStorageKey,
   readOperations,
-  rememberAuroConnection,
+  readMinaWallet,
+  rememberMinaWallet,
+  rememberMinaWalletConnection,
+  type MinaWalletKind,
   type PendingOperation,
   upsertOperation,
-  wasAuroConnected
+  wasMinaWalletConnected
 } from "./lib/storage"
 import {
-  connectAuro,
+  connectMina,
   connectEthereum,
+  defaultMinaWallet,
   ensureAuroPoCNetwork,
   ensureEthereumNetwork,
   formatWalletError,
-  getAuroProvider,
   getEthereumProvider,
+  getMinaProvider,
   isAuroPoCNetwork,
+  minaWalletName,
   shortAddress
 } from "./lib/wallets"
 
 type Screen = "form" | "review" | "deposit-progress" | "withdrawal-progress" | "complete"
 type Completion = { direction: Direction; amount: string; hash: string; url: string }
+type MinaSessionPresentation = {
+  kind: "interactive" | "reload"
+  fillRecipient: boolean
+}
+type MinaSessionAttempt = { cancel: () => void }
 
 const missingWalletMessage = (wallet: "ethereum" | "auro", ethereum = "Sepolia") =>
   wallet === "ethereum"
     ? `Connect an Ethereum wallet on ${ethereum} before continuing.`
-    : "Connect Auro to Zeko Testnet before continuing."
+    : "Connect a Mina wallet to Zeko Testnet before continuing."
 
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig>()
   const [configError, setConfigError] = useState("")
-  const [sdkReady, setSdkReady] = useState(false)
   const [ethereumAccount, setEthereumAccount] = useState<Address>()
   const [zekoAccount, setZekoAccount] = useState<string>()
   const [ethereumBalance, setEthereumBalance] = useState<string>()
@@ -63,7 +74,7 @@ export default function App() {
   const [zekoClient, setZekoClient] = useState<EthereumBridgeClient>()
   const [bridgeAddress, setBridgeAddress] = useState("")
   const [direction, setDirection] = useState<Direction>("deposit")
-  const [tab, setTab] = useState<"bridge" | "activity">("bridge")
+  const [tab, setTab] = useState<"bridge" | "wallet" | "activity">("bridge")
   const [screen, setScreen] = useState<Screen>("form")
   const [amount, setAmount] = useState("")
   const [recipient, setRecipient] = useState("")
@@ -71,7 +82,12 @@ export default function App() {
   const [recipientValid, setRecipientValid] = useState(false)
   const [showDetails, setShowDetails] = useState(true)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [minaWalletOpen, setMinaWalletOpen] = useState(false)
+  const [minaWallet, setMinaWallet] = useState<MinaWalletKind>(() =>
+    readMinaWallet(defaultMinaWallet())
+  )
   const [busy, setBusy] = useState(false)
+  const [minaConnectionBusy, setMinaConnectionBusy] = useState(false)
   const [activityLoading, setActivityLoading] = useState(false)
   const [activityError, setActivityError] = useState("")
   const [deposits, setDeposits] = useState<DepositStatus[]>([])
@@ -88,6 +104,10 @@ export default function App() {
   const activityRefreshes = useRef(new Set<string>())
   const selectedOperationRef = useRef<PendingOperation>()
   const ethereumConnectionRequest = useRef(0)
+  const minaConnectionRequest = useRef(0)
+  const minaConnectionPending = useRef(false)
+  const activeMinaSession = useRef<MinaWalletKind>()
+  const minaWalletRef = useRef(minaWallet)
 
   useEffect(() => {
     let active = true
@@ -98,17 +118,6 @@ export default function App() {
       active = false
     }
   }, [])
-
-  useEffect(() => {
-    if (!config) return
-    let active = true
-    void loadBridgeModules()
-      .then(() => active && setSdkReady(true))
-      .catch((error: unknown) => active && setActionError(error instanceof Error ? error.message : String(error)))
-    return () => {
-      active = false
-    }
-  }, [config])
 
   const setEthereumConnection = useCallback(
     async (account: Address) => {
@@ -145,44 +154,94 @@ export default function App() {
     }
   }, [config, direction, ethereum, setEthereumConnection])
 
-  const connectAuroWallet = useCallback(async () => {
-    if (!config) return
-    setBusy(true)
-    setActionError("")
-    try {
-      const account = await connectAuro(config)
-      rememberAuroConnection(true)
-      activityRequest.current += 1
-      setZekoAccount(account)
-      setZekoClient(undefined)
-      setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
-      setRecipient((current) => direction === "deposit" && !current ? account : current)
-      setToast("Auro connected to Zeko Testnet with the temporary testnet signing domain.")
-    } catch (error) {
-      setActionError(formatWalletError(error))
-    } finally {
-      setBusy(false)
-    }
-  }, [config, direction])
+  const establishMinaSession = useCallback((
+    wallet: MinaWalletKind,
+    presentation: MinaSessionPresentation
+  ): MinaSessionAttempt | undefined => {
+    if (!config || minaConnectionPending.current) return
+    const request = ++minaConnectionRequest.current
+    const interactive = presentation.kind === "interactive"
+    minaConnectionPending.current = true
+    activeMinaSession.current = undefined
+    minaWalletRef.current = wallet
+    rememberMinaWallet(wallet)
+    if (interactive) rememberMinaWalletConnection(wallet, false)
+    setMinaWallet(wallet)
+    setMinaConnectionBusy(true)
+    if (interactive) setActionError("")
 
-  useEffect(() => {
-    if (!config || !window.mina || !wasAuroConnected()) return
-    let active = true
-    void connectAuro(config)
-      .then(async (account) => {
-        if (!active) return
+    const releasePendingConnection = () => {
+      if (request === minaConnectionRequest.current && minaConnectionPending.current) {
+        minaConnectionPending.current = false
+        setMinaConnectionBusy(false)
+      }
+    }
+
+    void connectMina(config, wallet)
+      .then((account) => {
+        if (request !== minaConnectionRequest.current || minaWalletRef.current !== wallet) return
+        rememberMinaWallet(wallet)
+        rememberMinaWalletConnection(wallet, true)
+        activeMinaSession.current = wallet
         activityRequest.current += 1
         setZekoAccount(account)
-        setZekoBalance(await fetchZekoBalance(config.sequencerGraphqlUrl, account).catch(() => "0"))
-        setRecipient((current) => current || account)
+        setZekoClient(undefined)
+        setZekoBalance(undefined)
+        setRecipient((current) => presentation.fillRecipient && !current ? account : current)
+        if (interactive) {
+          setMinaWalletOpen(false)
+          setToast(`${minaWalletName(wallet)} connected to Zeko Testnet.`)
+        }
+        releasePendingConnection()
+        void fetchZekoBalance(config.sequencerGraphqlUrl, account)
+          .then((balance) => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === wallet) setZekoBalance(balance)
+          })
+          .catch(() => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === wallet) setZekoBalance("0")
+          })
       })
-      .catch(() => {
-        if (active) rememberAuroConnection(false)
+      .catch((error: unknown) => {
+        if (request === minaConnectionRequest.current) {
+          rememberMinaWalletConnection(wallet, false)
+          if (interactive) setActionError(formatWalletError(error))
+        }
       })
-    return () => {
-      active = false
+      .finally(releasePendingConnection)
+
+    return {
+      cancel: () => {
+        if (request === minaConnectionRequest.current) {
+          minaConnectionRequest.current += 1
+          minaConnectionPending.current = false
+        }
+      }
     }
   }, [config])
+
+  const connectMinaWallet = useCallback((wallet: MinaWalletKind) => {
+    establishMinaSession(wallet, {
+      kind: "interactive",
+      fillRecipient: direction === "deposit"
+    })
+  }, [direction, establishMinaSession])
+
+  useEffect(() => {
+    minaWalletRef.current = minaWallet
+  }, [minaWallet])
+
+  useEffect(() => {
+    if (!config) return
+    const wallet = minaWalletRef.current
+    if (!wasMinaWalletConnected(wallet)) return
+    const attempt = establishMinaSession(wallet, {
+      kind: "reload",
+      fillRecipient: true
+    })
+    return attempt?.cancel
+  }, [config, establishMinaSession])
 
   useEffect(() => {
     if (!config) return
@@ -207,7 +266,12 @@ export default function App() {
   useEffect(() => {
     if (!config) return
     const ethereum = window.ethereum
-    const auro = window.mina
+    let minaProvider
+    try {
+      minaProvider = getMinaProvider(minaWallet)
+    } catch {
+      minaProvider = undefined
+    }
     const onEthereumAccounts = (value: unknown) => {
       const account = Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined
       activityRequest.current += 1
@@ -236,33 +300,112 @@ export default function App() {
       void ethereum?.request({ method: "eth_accounts" }).then(onEthereumAccounts).catch(() => undefined)
     }
     const onAuroAccounts = (accounts: string[]) => {
+      if (activeMinaSession.current !== minaWallet || minaWalletRef.current !== minaWallet) return
+      const request = ++minaConnectionRequest.current
       activityRequest.current += 1
       setZekoClient(undefined)
       setZekoAccount(accounts[0])
       if (accounts[0]) {
-        rememberAuroConnection(true)
-        void fetchZekoBalance(config.sequencerGraphqlUrl, accounts[0]).then(setZekoBalance).catch(() => setZekoBalance("0"))
+        rememberMinaWallet(minaWallet)
+        rememberMinaWalletConnection(minaWallet, true)
+        void fetchZekoBalance(config.sequencerGraphqlUrl, accounts[0])
+          .then((balance) => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === minaWallet) setZekoBalance(balance)
+          })
+          .catch(() => {
+            if (request === minaConnectionRequest.current &&
+                activeMinaSession.current === minaWallet) setZekoBalance("0")
+          })
       } else {
-        rememberAuroConnection(false)
+        activeMinaSession.current = undefined
+        rememberMinaWalletConnection(minaWallet, false)
         setZekoBalance(undefined)
       }
     }
     const onAuroChain = (network: { networkID: string }) => {
+      if (activeMinaSession.current !== minaWallet || minaWalletRef.current !== minaWallet) return
       setZekoClient(undefined)
       if (!isAuroPoCNetwork(network.networkID)) {
-        setActionError("Auro must use Zeko Testnet for this PoC's temporary testnet signing domain.")
+        setActionError("The Mina wallet must use Zeko Testnet for this PoC's temporary testnet signing domain.")
       }
     }
     ethereum?.on?.("accountsChanged", onEthereumAccounts)
     ethereum?.on?.("chainChanged", onEthereumChain)
-    auro?.on?.("accountsChanged", onAuroAccounts)
-    auro?.on?.("chainChanged", onAuroChain)
+    minaProvider?.on?.("accountsChanged", onAuroAccounts)
+    minaProvider?.on?.("chainChanged", onAuroChain)
     return () => {
       ethereum?.removeListener?.("accountsChanged", onEthereumAccounts)
       ethereum?.removeListener?.("chainChanged", onEthereumChain)
-      auro?.removeAllListeners?.()
+      minaProvider?.removeAllListeners?.()
     }
-  }, [config, ethereum, setEthereumConnection])
+  }, [config, ethereum, minaWallet, setEthereumConnection])
+
+  const clearMinaConnection = useCallback(() => {
+    activityRequest.current += 1
+    setZekoAccount(undefined)
+    setZekoBalance(undefined)
+    setZekoClient(undefined)
+    setActivityLoading(false)
+    setScreen("form")
+    setCompletion(undefined)
+    setRecipient((current) => direction === "deposit" && current === zekoAccount ? "" : current)
+  }, [direction, zekoAccount])
+
+  const selectMinaWallet = async (wallet: MinaWalletKind) => {
+    if (minaConnectionPending.current || wallet === minaWallet) return
+    const previousWallet = minaWallet
+    const shouldRevoke = previousWallet === "metamask-snap" &&
+      (activeMinaSession.current === previousWallet ||
+        Boolean(zekoAccount) ||
+        wasMinaWalletConnected(previousWallet))
+    const request = ++minaConnectionRequest.current
+    activeMinaSession.current = undefined
+    rememberMinaWalletConnection(previousWallet, false)
+    setBusy(true)
+    let revokeError = ""
+    if (shouldRevoke) {
+      try {
+        await getMinaProvider(previousWallet).revokePermissions?.()
+      } catch (error) {
+        revokeError = formatWalletError(error)
+      }
+    }
+    if (request !== minaConnectionRequest.current) return
+    minaWalletRef.current = wallet
+    rememberMinaWallet(wallet)
+    setMinaWallet(wallet)
+    clearMinaConnection()
+    setBusy(false)
+    setActionError(revokeError
+      ? `The bridge disconnected locally, but the wallet permission could not be revoked: ${revokeError}`
+      : "")
+    setToast(`${minaWalletName(wallet)} selected. Connect it to continue.`)
+  }
+
+  const disconnectMinaWallet = useCallback(async () => {
+    if (minaConnectionPending.current) return
+    ++minaConnectionRequest.current
+    activeMinaSession.current = undefined
+    rememberMinaWalletConnection(minaWallet, false)
+    setBusy(true)
+    setActionError("")
+    let revokeError = ""
+    try {
+      const provider = getMinaProvider(minaWallet)
+      if (minaWallet === "metamask-snap") await provider.revokePermissions?.()
+    } catch (error) {
+      revokeError = formatWalletError(error)
+    } finally {
+      clearMinaConnection()
+      setMinaWalletOpen(false)
+      setBusy(false)
+      setToast("Mina wallet disconnected from the bridge.")
+      if (revokeError) setActionError(`The bridge disconnected locally, but the wallet permission could not be revoked: ${revokeError}`)
+    }
+  }, [clearMinaConnection, minaWallet])
+
+  const minaWalletBusy = busy || minaConnectionBusy
 
   useEffect(() => {
     if (!recipient) {
@@ -295,8 +438,7 @@ export default function App() {
   const formValid = Boolean(
     amountResult &&
       recipientValid &&
-      (direction === "deposit" ? ethereumAccount : zekoAccount) &&
-      sdkReady
+      (direction === "deposit" ? ethereumAccount : zekoAccount)
   )
 
   const validateForm = async (): Promise<boolean> => {
@@ -346,13 +488,17 @@ export default function App() {
     return full
   }
 
-  const operationKey = (operationRecipient: string) => {
-    if (!config || !bridgeAddress) throw new Error("Bridge configuration is not loaded")
-    return operationStorageKey(config.expectedEthereumChainId, bridgeAddress, operationRecipient)
+  const operationKey = (operationRecipient: string, submittingBridgeAddress?: string) => {
+    const effectiveBridgeAddress = submittingBridgeAddress
+      || bridgeAddress
+      || client?.config.bridgeAddress
+      || zekoClient?.config.bridgeAddress
+    if (!config || !effectiveBridgeAddress) throw new Error("Bridge configuration is not loaded")
+    return operationStorageKey(config.expectedEthereumChainId, effectiveBridgeAddress, operationRecipient)
   }
 
-  const rememberOperation = (operation: PendingOperation) => {
-    const key = operationKey(operation.recipient)
+  const rememberOperation = (operation: PendingOperation, submittingBridgeAddress?: string) => {
+    const key = operationKey(operation.recipient, submittingBridgeAddress)
     upsertOperation(key, operation)
     setOperations((current) => [operation, ...current.filter((row) => row.id !== operation.id)])
   }
@@ -499,21 +645,23 @@ export default function App() {
           depositNonce: result.nonce,
           createdAt: new Date().toISOString()
         }
-        rememberOperation(operation)
+        rememberOperation(operation, base.config.bridgeAddress)
         setSelectedOperation(operation)
         setSelectedDeposit(result.deposit)
         setScreen("deposit-progress")
         setToast(`ETH locked on ${ethereum}. Gateway tracking has started.`)
       } else {
         if (!zekoAccount) throw new Error(missingWalletMessage("auro"))
-        await ensureAuroPoCNetwork(getAuroProvider(), config)
+        const provider = getMinaProvider(minaWallet)
+        await ensureAuroPoCNetwork(provider, config)
         const full = await ensureFullClient()
         const hash = await requestNativeWithdrawal({
           client: full,
           sender: zekoAccount,
           recipient: getAddress(recipient),
           amount: amountResult.zekoAmount,
-          config
+          config,
+          provider
         })
         const operation: PendingOperation = {
           id: `withdrawal:${hash}`,
@@ -523,7 +671,7 @@ export default function App() {
           transactionHash: hash,
           createdAt: new Date().toISOString()
         }
-        rememberOperation(operation)
+        rememberOperation(operation, full.config.bridgeAddress)
         setSelectedOperation(operation)
         setSelectedWithdrawal(undefined)
         setScreen("withdrawal-progress")
@@ -547,7 +695,12 @@ export default function App() {
       const depositRecipient = selectedOperation?.direction === "deposit"
         ? selectedOperation.recipient
         : zekoAccount ?? recipient
-      const hash = await finalizeDeposit({ client: full, recipient: recipientForDeposit(selectedDeposit, depositRecipient), config })
+      const hash = await finalizeDeposit({
+        client: full,
+        recipient: recipientForDeposit(selectedDeposit, depositRecipient),
+        config,
+        provider: getMinaProvider(minaWallet)
+      })
       const operation = selectedOperation?.direction === "deposit" ? { ...selectedOperation, zekoTransactionHash: hash } : undefined
       if (operation) rememberOperation(operation)
       setCompletion({ direction: "deposit", amount: operation?.amount ?? formatUnits(BigInt(selectedDeposit.zekoAmount), 9, 9), hash, url: zekoTransactionUrl(config, hash) })
@@ -640,7 +793,7 @@ export default function App() {
         <div className="network-health"><span className="health-dot"></span><span>{ethereum} · Experimental</span></div>
         <div className="header-actions">
           <WalletChip network="ethereum" ethereumNetworkName={ethereum} account={ethereumAccount} balance={ethereumBalance} onClick={() => void connectEthereumWallet()} />
-          <WalletChip network="zeko" account={zekoAccount} balance={zekoBalance} onClick={() => void connectAuroWallet()} />
+          <WalletChip network="zeko" minaWallet={minaWallet} account={zekoAccount} balance={zekoBalance} onClick={() => { setActionError(""); setMinaWalletOpen(true) }} />
         </div>
       </header>
       <main className="main-content">
@@ -648,19 +801,20 @@ export default function App() {
         <div className="environment-banner"><strong>Experimental PoC</strong><span>{ethereum}</span><span>·</span><span>No cancellation/refund</span><span>·</span><span>Zeko signs as temporary <code>testnet</code></span></div>
         <div className="bridge-card">
           <div className="card-header">
-            <div className="tabs" role="tablist" aria-label="Bridge navigation"><button type="button" className={`tab${tab === "bridge" ? " active" : ""}`} role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>Bridge</button><button type="button" className={`tab${tab === "activity" ? " active" : ""}`} role="tab" aria-selected={tab === "activity"} onClick={openActivity}>Activity</button></div>
+            <div className="tabs" role="tablist" aria-label="Bridge navigation"><button type="button" className={`tab${tab === "bridge" ? " active" : ""}`} role="tab" aria-selected={tab === "bridge"} onClick={() => setTab("bridge")}>Bridge</button><button type="button" className={`tab${tab === "wallet" ? " active" : ""}`} role="tab" aria-selected={tab === "wallet"} onClick={() => setTab("wallet")}>Wallet</button><button type="button" className={`tab${tab === "activity" ? " active" : ""}`} role="tab" aria-selected={tab === "activity"} onClick={openActivity}>Activity</button></div>
             <button type="button" className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Open bridge settings"><span className="settings-glyph">⚙︎</span></button>
           </div>
           <div className="card-body">
             {actionError && <Notice kind="error">{actionError}</Notice>}
             {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); void fetchZekoBalance(config.sequencerGraphqlUrl, zekoAccount ?? "").then(setZekoBalance).catch(() => undefined) }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>
         <footer className="page-footer"><span><span className="health-dot"></span>{client ? "Gateway connected" : "Connect wallet to verify gateway"}</span><span>{bridgeAddress ? `Bridge ${shortAddress(bridgeAddress)}` : "Bridge address from gateway"}</span><span>Proof of concept</span></footer>
       </main>
-      {settingsOpen && <SettingsModal config={config} showDetails={showDetails} onToggleDetails={() => setShowDetails((value) => !value)} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal config={config} minaWallet={minaWallet} minaWalletBusy={minaWalletBusy} showDetails={showDetails} onMinaWalletChange={selectMinaWallet} onToggleDetails={() => setShowDetails((value) => !value)} onClose={() => setSettingsOpen(false)} />}
+      {minaWalletOpen && <MinaWalletModal account={zekoAccount} minaWallet={minaWallet} busy={minaWalletBusy} error={actionError} onConnect={(wallet) => void connectMinaWallet(wallet)} onDisconnect={() => void disconnectMinaWallet()} onClose={() => setMinaWalletOpen(false)} />}
       {toast && <div className="toast" role="status"><span className="toast-dot"></span>{toast}</div>}
     </div>
   )
