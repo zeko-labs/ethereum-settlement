@@ -19,8 +19,8 @@ export const ActivityView = ({ deposits, withdrawals, operations, assets, loadin
 }) => {
   const knownAssets = assets ?? [NATIVE_ASSET]
   const assetForToken = (token?: string, assetId?: string) => activityAsset(knownAssets, token, assetId)
-  const unavailable = (id: string, token: string, amount: string) =>
-    <article className="activity-row" key={id} data-testid={id}><div className="activity-main"><strong>{amount} base units · Token {token}</strong><span>Unavailable: asset is not authenticated and active</span></div><button type="button" disabled>Resume</button></article>
+  const unavailable = (id: string, token: string, amount: string, direction: "deposit" | "withdrawal") =>
+    <article className="activity-row activity-unavailable" key={id} data-testid={id}><span className="activity-route-icon"><NetworkIcon network={direction === "deposit" ? "ethereum" : "zeko"} compact /><NetworkIcon network={direction === "deposit" ? "zeko" : "ethereum"} compact /></span><div className="activity-main"><div className="activity-primary"><strong>{amount} base units · Token {token}</strong></div><span className="activity-secondary">Unavailable: asset is not authenticated and active</span></div><button type="button" className="secondary-button compact-button" disabled>Resume</button></article>
   const matchedIds = new Set<string>()
   const withdrawalRows = withdrawals.map((withdrawal) => {
     const asset = assetForToken("token" in withdrawal ? withdrawal.token : undefined, "assetId" in withdrawal ? withdrawal.assetId : undefined)
@@ -52,13 +52,13 @@ export const ActivityView = ({ deposits, withdrawals, operations, assets, loadin
         {deposits.map((deposit) => {
           const progress = depositProgress(deposit)
           const asset = assetForToken(deposit.assetId ? deposit.token : undefined, deposit.assetId ?? undefined)
-          if (!asset) return unavailable(`activity-deposit-${deposit.nonce}`, deposit.token, deposit.zekoAmount)
+          if (!asset) return unavailable(`activity-deposit-${deposit.nonce}`, deposit.token, deposit.zekoAmount, "deposit")
           return <article className="activity-row" data-testid={`activity-deposit-${deposit.nonce}`} key={`deposit-${deposit.nonce}`}><span className="activity-route-icon"><NetworkIcon network="ethereum" compact /><NetworkIcon network="zeko" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{formatUnits(BigInt(deposit.zekoAmount), asset.zekoDecimals, asset.zekoDecimals)} {asset.symbol} · Deposit #{deposit.nonce}</strong><span className={`status-badge ${progress.tone}`}>{deposit.status}</span></div><span className="activity-secondary">{progress.label}</span></div><button type="button" className="secondary-button compact-button" onClick={() => onDeposit(deposit)}>Resume</button></article>
         })}
         {withdrawalRows.map(({ withdrawal, operation }) => {
           const progress = withdrawalProgress(withdrawal)
           const asset = assetForToken("token" in withdrawal ? withdrawal.token : undefined, "assetId" in withdrawal ? withdrawal.assetId : undefined)
-          if (!asset) return unavailable(`activity-withdrawal-${withdrawal.globalActionIndex}`, "token" in withdrawal ? withdrawal.token : "", withdrawal.amount)
+          if (!asset) return unavailable(`activity-withdrawal-${withdrawal.globalActionIndex}`, "token" in withdrawal ? withdrawal.token : "", withdrawal.amount, "withdrawal")
           const fallback: PendingOperation = operation ?? {
             id: `withdrawal:${withdrawal.settlementSequence}:${withdrawal.offset}`,
             direction: "withdrawal",
@@ -74,7 +74,7 @@ export const ActivityView = ({ deposits, withdrawals, operations, assets, loadin
         })}
         {pendingWithdrawals.map((operation) => {
           const asset = assetForToken(operation.asset?.token, operation.asset?.assetId)
-          if (!asset) return unavailable(operation.id, operation.asset?.token ?? "", "Unknown")
+          if (!asset) return unavailable(operation.id, operation.asset?.token ?? "", "Unknown", "withdrawal")
           return <article className="activity-row" data-testid={operation.globalActionIndex === undefined ? operation.id : `activity-withdrawal-${operation.globalActionIndex}`} key={operation.id}><span className="activity-route-icon"><NetworkIcon network="zeko" compact /><NetworkIcon network="ethereum" compact /></span><div className="activity-main"><div className="activity-primary"><strong>{operation.amount} {asset.symbol} · Withdrawal request</strong><span className="status-badge active">pending</span></div><span className="activity-secondary">Waiting for Zeko settlement</span></div><button type="button" className="secondary-button compact-button" onClick={() => onWithdrawal(undefined, operation)}>Resume</button></article>})}
       </div>}
     </section>

@@ -1,5 +1,7 @@
 import { expect, test as base, type Page } from "@playwright/test"
 import { encodeAbiParameters, parseAbiParameters } from "viem"
+import { mkdir } from "node:fs/promises"
+import { join } from "node:path"
 
 const test = base.extend<{ browserErrors: void }>({
   browserErrors: [async ({ page }, use) => {
@@ -11,6 +13,16 @@ const test = base.extend<{ browserErrors: void }>({
     await use()
     expect(errors, "browser console and page errors").toEqual([])
   }, { auto: true }]
+})
+
+test.afterEach(async ({ page }, testInfo) => {
+  const directory = process.env.BRIDGE_E2E_ARTIFACT_DIR
+  if (!directory) return
+  await mkdir(directory, { recursive: true })
+  await page.screenshot({
+    path: join(directory, `${testInfo.project.name}-${testInfo.title.replace(/[^a-z0-9]+/gi, "-")}.png`),
+    fullPage: true
+  })
 })
 
 const ETH_ACCOUNT = "0x0000000000000000000000000000000000000001"
@@ -92,6 +104,9 @@ const installApiMocks = async (page: Page) => {
     const request = route.request()
     if (request.method() !== "POST") return route.continue()
     const body = request.postDataJSON() as { query?: string }
+    if (body.query?.includes("query EthereumAssetRegistry")) {
+      return route.fulfill({ json: { data: { ethereumAssetRegistry: null } } })
+    }
     if (body.query?.includes("query FetchConfig")) {
       return route.fulfill({ json: { data: { circuitsConfig: CIRCUITS_CONFIG } } })
     }
@@ -291,4 +306,45 @@ test("keeps the primary bridge surface inside desktop and mobile viewports", asy
   expect(viewport).not.toBeNull()
   expect(box!.x).toBeGreaterThanOrEqual(0)
   expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width + 1)
+})
+
+test("rejects an invalid registry root while preserving native ETH", async ({ page }) => {
+  await installApiMocks(page)
+  await installWallets(page)
+  await page.route("**/graphql", async (route) => {
+    const body = route.request().postDataJSON() as { query?: string }
+    if (!body.query?.includes("query EthereumAssetRegistry")) return route.fallback()
+    await route.fulfill({ json: { data: { ethereumAssetRegistry: {
+      schemaVersion: 1, root: `0x${"00".repeat(32)}`, count: 0, depth: 8, records: []
+    } } } })
+  })
+  await page.goto("/")
+  await expect(page.getByText("ERC-20 assets unavailable: Ethereum asset registry records do not match the advertised registry root")).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByLabel("Amount of native ETH to bridge")).toBeVisible()
+  await expect(page.getByLabel("Bridge asset").locator("option")).toHaveCount(1)
+})
+
+test("recovers unavailable token claims after reload without presenting them as ETH", async ({ page }) => {
+  await openConnectedApp(page)
+  await page.route(/.*\/v1\/bridge\/token-withdrawals(?:\?.*)?$/, (route) => route.fulfill({ json: [{
+    settlementSequence: 4, offset: 0, globalActionIndex: 33,
+    recipient: ETH_ACCOUNT, token: "0x00000000000000000000000000000000000000c1",
+    assetId: `0x${"56".repeat(32)}`, amount: "1250000",
+    actionFieldsHash: `0x${"12".repeat(32)}`, siblings: [],
+    innerActionRoot: `0x${"34".repeat(32)}`, commitSlotUpper: 10,
+    claimableSlot: 15, currentVirtualSlot: 11, recipientCursor: 0,
+    status: "waitingForDelay", nextAction: "waitForWithdrawalDelay"
+  }] }))
+  await page.reload()
+  await page.getByRole("tab", { name: "Activity" }).click()
+  const tokenRow = page.getByTestId("activity-withdrawal-33")
+  await expect(tokenRow).toContainText("1250000 base units", { timeout: 20_000 })
+  await expect(tokenRow).not.toContainText("ETH")
+  await expect(tokenRow.getByRole("button")).toBeDisabled()
+  await expect(page.getByText("0.1 ETH · Deposit #1")).toBeVisible()
+  const dimensions = await tokenRow.evaluate((row) => ({
+    content: row.scrollWidth,
+    visible: row.clientWidth
+  }))
+  expect(dimensions.content, "unavailable token activity must fit inside its row").toBeLessThanOrEqual(dimensions.visible + 1)
 })
