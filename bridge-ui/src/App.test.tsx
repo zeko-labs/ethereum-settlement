@@ -177,6 +177,44 @@ describe("bridge application", () => {
     expect(screen.queryByText("Deposit finalized")).not.toBeInTheDocument()
   })
 
+  it("loads only the selected token balance when Mina connects or changes account", async () => {
+    const token = {
+      kind: "erc20" as const,
+      id: "0x00000000000000000000000000000000000000c0" as const,
+      token: "0x00000000000000000000000000000000000000c0" as const,
+      assetId: `0x${"11".repeat(32)}` as const,
+      tokenIdL2: `0x${"22".repeat(32)}` as const,
+      name: "USD Coin",
+      symbol: "USDC",
+      ethereumDecimals: 6,
+      zekoDecimals: 6,
+      inventoryCap: 1_000_000_000n
+    }
+    mocks.fetchAssetRegistrySnapshot.mockResolvedValueOnce({ records: [] })
+    mocks.discoverBridgeAssets.mockResolvedValueOnce({ assets: [token], warnings: [] })
+    const listeners = new Map<string, (accounts: string[]) => void>()
+    mocks.getMinaProvider.mockReturnValue({
+      isMinaSnap: true,
+      revokePermissions: mocks.revokeMinaPermissions,
+      on: (event: string, listener: (accounts: string[]) => void) => listeners.set(event, listener),
+      removeAllListeners: () => listeners.clear()
+    })
+    const { fetchZekoTokenBalance } = await import("./lib/bridge")
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.selectOptions(screen.getByLabelText("Bridge asset"), token.token)
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
+    await waitFor(() => expect(fetchZekoTokenBalance).toHaveBeenCalledWith(
+      validConfig.sequencerGraphqlUrl, zekoAccount, token.tokenIdL2, 6))
+    act(() => listeners.get("accountsChanged")?.([zekoAccountB]))
+    await waitFor(() => expect(fetchZekoTokenBalance).toHaveBeenCalledWith(
+      validConfig.sequencerGraphqlUrl, zekoAccountB, token.tokenIdL2, 6))
+    expect(mocks.fetchZekoBalance).not.toHaveBeenCalled()
+  })
+
   it("discovers a registered ERC20 and submits approval plus exact-unit deposit", async () => {
     const token = {
       kind: "erc20" as const,

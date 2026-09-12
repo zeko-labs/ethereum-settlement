@@ -1457,21 +1457,16 @@ async fn list_pending_withdrawals(
         Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
     };
     let limit = usize::try_from(query.limit.unwrap_or(20).clamp(1, 100)).unwrap_or(20);
-    match withdrawal_activity::pending_withdrawals(&state, query.token).await {
-        Ok(rows) => Json(
-            rows.into_iter()
-                .filter(|row| {
-                    recipient
-                        .map(|recipient| row.recipient.eq_ignore_ascii_case(&recipient.to_string()))
-                        .unwrap_or(true)
-                        && after
-                            .map(|after| row.global_action_index > after)
-                            .unwrap_or(true)
-                })
-                .take(limit)
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
+    match withdrawal_activity::pending_withdrawals(
+        &state,
+        query.token,
+        recipient.map(|address| address.into_array()),
+        after,
+        limit,
+    )
+    .await
+    {
+        Ok(rows) => Json(rows).into_response(),
         Err(error) => {
             tracing::error!(%error, "list pending native withdrawals");
             api_error(
