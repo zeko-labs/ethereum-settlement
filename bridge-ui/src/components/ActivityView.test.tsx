@@ -102,3 +102,15 @@ describe("bridge activity", () => {
     expect(onWithdrawal).toHaveBeenCalledWith(proof, operation)
   })
 })
+
+it("disables unknown token claims without labeling them ETH", () => {
+  render(<ActivityView deposits={[]} operations={[]} withdrawals={[{
+    ...withdrawal(33, 4),
+    token: recipient,
+    assetId: `0x${"56".repeat(32)}`
+  }]} loading={false} onDeposit={vi.fn()} onWithdrawal={vi.fn()} />)
+  const row = screen.getByTestId("activity-withdrawal-33")
+  expect(row).toHaveTextContent("50000000 base units")
+  expect(row).not.toHaveTextContent("ETH")
+  expect(row.querySelector("button")).toBeDisabled()
+})

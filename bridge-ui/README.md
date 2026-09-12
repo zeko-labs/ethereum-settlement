@@ -180,3 +180,13 @@ on both the gateway and sequencer-facing services. It must also serve the UI
 with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`; o1js uses those isolation headers
 for its `SharedArrayBuffer` workers.
+
+Pending ERC-20 withdrawals are recovered from the archive through
+`GET /v1/bridge/withdrawal-requests?token=true&recipient=…`, before settlement
+and without local storage. The default endpoint continues to return only native
+requests. Token responses include the Ethereum-resolved `token` and `assetId`;
+the UI requires a matching authenticated, active asset and uses its registered
+decimals. Unavailable token activity cannot be resumed or displayed as ETH.
+Token recovery failures remain visible while native results are retained and
+are retried on the normal activity polling interval. Settled token list responses
+are parsed directly without fetching each proof again.

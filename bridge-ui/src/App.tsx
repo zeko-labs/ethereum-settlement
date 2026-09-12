@@ -1,3 +1,4 @@
+import { activityAsset, recoverWithdrawalOperation } from "./lib/withdrawalRecovery"
 import type { DepositStatus, EthereumAssetRegistrySnapshot, EthereumBridgeClient, TokenWithdrawalProof, WithdrawalProof } from "@zeko-labs/eth-bridge-sdk"
 import type { Address } from "viem"
 import { getAddress, isAddress } from "viem"
@@ -32,6 +33,7 @@ import {
   isValidZekoAddress,
   listWalletActivity,
   listTokenWithdrawals,
+  listTokenWithdrawalRequests,
   loadBridgeModules,
   requestNativeWithdrawal,
   requestTokenWithdrawal,
@@ -598,38 +600,46 @@ export default function App() {
         zekoRecipient: zekoAccount,
         ethereumRecipient: ethereumAccount
       })
-      const tokenWithdrawals = ethereumAccount
-        ? await listTokenWithdrawals({
-            client: activityClient,
-            gatewayUrl: config?.gatewayUrl ?? "",
-            recipient: ethereumAccount
-          }).catch(() => [] as TokenWithdrawalProof[])
-        : []
+      const recoveryErrors: string[] = []
+      const tokenWithdrawals: TokenWithdrawalProof[] = []
+      const discoveredOperations: PendingOperation[] = result.withdrawalRequests.map((row) =>
+        recoverWithdrawalOperation(row, assets, archiveTimestamp(row.timestamp)))
+      if (ethereumAccount) {
+        const responses = await Promise.allSettled([
+          listTokenWithdrawals({ gatewayUrl: config?.gatewayUrl ?? "", recipient: ethereumAccount }),
+          listTokenWithdrawalRequests({ gatewayUrl: config?.gatewayUrl ?? "", recipient: ethereumAccount })
+        ])
+        const [proofs, requests] = responses
+        if (proofs.status === "fulfilled") tokenWithdrawals.push(...proofs.value)
+        if (requests.status === "fulfilled") {
+          for (const row of requests.value) {
+            try {
+              discoveredOperations.push(recoverWithdrawalOperation(row, assets, archiveTimestamp(row.timestamp)))
+            } catch (error) {
+              recoveryErrors.push(error instanceof Error ? error.message : String(error))
+            }
+          }
+        }
+        for (const response of responses) {
+          if (response.status === "rejected") recoveryErrors.push(`Token activity recovery failed: ${String(response.reason)}`)
+        }
+      }
       const allWithdrawals: Array<WithdrawalProof | TokenWithdrawalProof> = [
         ...result.withdrawals,
         ...tokenWithdrawals
       ]
       if (request !== activityRequest.current) return
-      setActivityError("")
+      setActivityError(recoveryErrors.join("; "))
       setDeposits(result.deposits)
       setWithdrawals(allWithdrawals)
-      const discoveredOperations: PendingOperation[] = result.withdrawalRequests.map((request) => ({
-        id: `withdrawal:${request.transactionHash}`,
-        direction: "withdrawal",
-        amount: formatUnits(BigInt(request.amount), 9, 9),
-        recipient: request.recipient,
-        transactionHash: request.transactionHash,
-        createdAt: archiveTimestamp(request.timestamp),
-        globalActionIndex: request.globalActionIndex
-      }))
       const recovered = currentActivityOperations(config, bridgeAddress, zekoAccount, ethereumAccount)
       const discoveredByTransaction = new Map(
         discoveredOperations.map((operation) => [operation.transactionHash, operation])
       )
       const enrichedRecovered = recovered.map((operation) => {
         const discovered = discoveredByTransaction.get(operation.transactionHash)
-        if (!discovered || operation.globalActionIndex !== undefined) return operation
-        const enriched = { ...operation, globalActionIndex: discovered.globalActionIndex }
+        if (!discovered) return operation
+        const enriched = { ...operation, amount: discovered.amount, asset: discovered.asset, globalActionIndex: discovered.globalActionIndex }
         upsertOperation(operationKey(operation.recipient), enriched)
         return enriched
       })
@@ -672,7 +682,7 @@ export default function App() {
       activityRefreshes.current.delete(refreshKey)
       if (request === activityRequest.current) setActivityLoading(false)
     }
-  }, [bridgeAddress, client, config, ethereumAccount, zekoAccount, zekoClient])
+  }, [assets, bridgeAddress, client, config, ethereumAccount, zekoAccount, zekoClient])
 
   useEffect(() => {
     if (!config || !client) return
@@ -845,6 +855,10 @@ export default function App() {
     setBusy(true)
     setActionError("")
     try {
+      const withdrawalAsset = activityAsset(assets,
+        "token" in selectedWithdrawal ? selectedWithdrawal.token : undefined,
+        "assetId" in selectedWithdrawal ? selectedWithdrawal.assetId : undefined)
+      if (!withdrawalAsset) throw new Error("Withdrawal asset is not authenticated and active")
       const base = await ensureClient()
       await ensureEthereumNetwork(getEthereumProvider(), config.expectedEthereumChainId)
       const hash = "token" in selectedWithdrawal
@@ -852,11 +866,8 @@ export default function App() {
         : await base.claimNativeWithdrawal(selectedWithdrawal)
       const operation = selectedOperation?.direction === "withdrawal" ? { ...selectedOperation, ethereumClaimHash: hash } : undefined
       if (operation) rememberOperation(operation)
-      const withdrawalAsset = "token" in selectedWithdrawal
-        ? assets.find((candidate) => candidate.kind === "erc20" && candidate.token.toLowerCase() === selectedWithdrawal.token.toLowerCase())
-        : NATIVE_ASSET
-      const decimals = withdrawalAsset?.zekoDecimals ?? selectedOperation?.asset?.decimals ?? 9
-      const symbol = withdrawalAsset?.symbol ?? selectedOperation?.asset?.symbol ?? "ETH"
+      const decimals = withdrawalAsset.zekoDecimals
+      const symbol = withdrawalAsset.symbol
       setCompletion({ direction: "withdrawal", amount: operation?.amount ?? formatUnits(BigInt(selectedWithdrawal.amount), decimals, decimals), symbol, hash, url: ethereumTransactionUrl(config, hash) })
       setScreen("complete")
       void refreshActivity()

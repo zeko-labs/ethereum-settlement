@@ -270,3 +270,24 @@ describe("SDK integration", () => {
     )
   })
 })
+
+it("uses complete list proofs without individual network requests", async () => {
+  const { listTokenWithdrawals } = await import("./bridge")
+  const token = "0x0000000000000000000000000000000000000001"
+  const hash = `0x${"12".repeat(32)}`
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify([{
+    token, assetId: hash, recipient: token, amount: "1000000",
+    settlementSequence: 1, offset: 0, globalActionIndex: 2,
+    actionFieldsHash: hash, siblings: [], innerActionRoot: hash,
+    commitSlotUpper: 1, claimableSlot: 2, currentVirtualSlot: 3, recipientCursor: 0,
+    status: "claimable", nextAction: "claim"
+  }])))
+  vi.stubGlobal("fetch", fetcher)
+  try {
+    const rows = await listTokenWithdrawals({ gatewayUrl: "https://gateway.test", recipient: token })
+    expect(rows[0]).toMatchObject({ token, amount: "1000000", globalActionIndex: 2 })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})

@@ -1,3 +1,4 @@
+import { parseTokenWithdrawal, parseTokenWithdrawalRequest } from "./withdrawalRecovery"
 import type {
   BridgeConfig,
   DepositActivity,
@@ -303,51 +304,39 @@ export const requestTokenWithdrawal = async ({
   })
 }
 
-const tokenWithdrawalLocations = async (
-  gatewayUrl: string,
-  recipient: Address,
-  after?: number
-): Promise<Array<{ settlementSequence: number; offset: number; globalActionIndex: number }>> => {
-  const query = new URLSearchParams({ recipient, limit: "100" })
-  if (after !== undefined) query.set("after", String(after))
-  const response = await uncachedFetch(`${gatewayUrl}/v1/bridge/token-withdrawals?${query}`)
-  if (!response.ok) throw new Error(`Gateway token withdrawals returned ${response.status}`)
-  const value: unknown = await response.json()
-  if (!Array.isArray(value)) throw new Error("Gateway token withdrawals must be an array")
-  return value.map((row) => {
-    if (typeof row !== "object" || row === null) throw new Error("Invalid token withdrawal")
-    const value = row as Record<string, unknown>
-    for (const key of ["settlementSequence", "offset", "globalActionIndex"] as const) {
-      if (typeof value[key] !== "number" || !Number.isSafeInteger(value[key]) || value[key] < 0) {
-        throw new Error(`Invalid token withdrawal ${key}`)
-      }
-    }
-    return value as { settlementSequence: number; offset: number; globalActionIndex: number }
-  })
-}
-
-export const listTokenWithdrawals = async ({
-  client,
-  gatewayUrl,
-  recipient
-}: {
-  client: EthereumBridgeClient
-  gatewayUrl: string
-  recipient: Address
-}): Promise<TokenWithdrawalProof[]> => {
-  const rows: TokenWithdrawalProof[] = []
+const listTokenActivity = async <T extends { globalActionIndex: number }>(
+  gatewayUrl: string, recipient: Address, path: string, parse: (value: unknown) => T
+): Promise<T[]> => {
+  const rows: T[] = []
   let after: number | undefined
   for (;;) {
-    const locations = await tokenWithdrawalLocations(gatewayUrl, recipient, after)
-    rows.push(...await Promise.all(locations.map((location) =>
-      client.getTokenWithdrawal(location.settlementSequence, location.offset)
-    )))
-    if (locations.length < 100) return rows
-    const next = locations.at(-1)?.globalActionIndex
-    if (next === undefined || next === after) throw new Error("Token withdrawal pagination did not advance")
-    after = next
+    const query = new URLSearchParams({ recipient, limit: "100", token: "true" })
+    if (after !== undefined) query.set("after", String(after))
+    const response = await uncachedFetch(`${gatewayUrl}/v1/bridge/${path}?${query}`)
+    if (!response.ok) throw new Error(`Gateway token withdrawals returned ${response.status}`)
+    const value: unknown = await response.json()
+    if (!Array.isArray(value)) throw new Error("Gateway token withdrawals must be an array")
+    const page = value.map(parse)
+    for (const row of page) {
+      if (after !== undefined && row.globalActionIndex <= after) throw new Error("Token withdrawal pagination did not advance")
+      after = row.globalActionIndex
+      rows.push(row)
+    }
+    if (page.length < 100) return rows
   }
 }
+
+export const listTokenWithdrawals = ({ gatewayUrl, recipient }: {
+  client?: EthereumBridgeClient
+  gatewayUrl: string
+  recipient: Address
+}): Promise<TokenWithdrawalProof[]> =>
+  listTokenActivity(gatewayUrl, recipient, "token-withdrawals", parseTokenWithdrawal)
+
+export const listTokenWithdrawalRequests = ({ gatewayUrl, recipient }: {
+  gatewayUrl: string
+  recipient: Address
+}) => listTokenActivity(gatewayUrl, recipient, "withdrawal-requests", parseTokenWithdrawalRequest)
 
 export const listWalletActivity = async ({
   client,

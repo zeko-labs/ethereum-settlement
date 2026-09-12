@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   finalizeDeposit: vi.fn(),
   requestWithdrawal: vi.fn(),
   listActivity: vi.fn(),
+  listTokenWithdrawals: vi.fn(),
+  listTokenWithdrawalRequests: vi.fn(),
   fetchZekoBalance: vi.fn()
 }))
 
@@ -55,7 +57,8 @@ vi.mock("./lib/bridge", () => ({
   finalizeDeposit: mocks.finalizeDeposit,
   requestNativeWithdrawal: mocks.requestWithdrawal,
   listWalletActivity: mocks.listActivity,
-  listTokenWithdrawals: vi.fn(async () => []),
+  listTokenWithdrawals: mocks.listTokenWithdrawals,
+  listTokenWithdrawalRequests: mocks.listTokenWithdrawalRequests,
   isValidZekoAddress: vi.fn(async () => true),
   fetchEthereumBalance: vi.fn(async () => "1.25"),
   fetchZekoBalance: mocks.fetchZekoBalance,
@@ -113,6 +116,8 @@ describe("bridge application", () => {
     mocks.ensureTokenAllowance.mockResolvedValue(undefined)
     mocks.finalizeDeposit.mockResolvedValue("5Jfinalized")
     mocks.requestWithdrawal.mockResolvedValue("5Jwithdrawal")
+    mocks.listTokenWithdrawals.mockResolvedValue([])
+    mocks.listTokenWithdrawalRequests.mockResolvedValue([])
     mocks.listActivity.mockResolvedValue({ deposits: [], withdrawals: [], withdrawalRequests: [] })
     mocks.fetchZekoBalance.mockResolvedValue("2.5")
     localStorage.clear()
@@ -488,6 +493,33 @@ describe("bridge application", () => {
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
     await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
+    expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
+  })
+
+  it("preserves native activity while surfacing token recovery failures", async () => {
+    mocks.listTokenWithdrawals.mockRejectedValue(new Error("token gateway unavailable"))
+    mocks.listActivity.mockResolvedValue({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [{
+        globalActionIndex: 0,
+        transactionHash: "5JarchiveWithdrawal",
+        blockHeight: 9,
+        timestamp: "1784159326275",
+        recipient: ethereumAccount,
+        amount: "5000000000",
+        status: "pendingSettlement",
+        nextAction: "waitForSettlement"
+      }]
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText(/Token activity recovery failed/)).toBeVisible()
     expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })

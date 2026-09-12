@@ -205,6 +205,8 @@ struct ListDepositsQuery {
 
 #[derive(Debug, Deserialize)]
 struct ListWithdrawalsQuery {
+    #[serde(default)]
+    token: bool,
     recipient: Option<String>,
     after: Option<u64>,
     limit: Option<i64>,
@@ -1455,7 +1457,7 @@ async fn list_pending_withdrawals(
         Err(_) => return api_error(StatusCode::BAD_REQUEST, "after is too large"),
     };
     let limit = usize::try_from(query.limit.unwrap_or(20).clamp(1, 100)).unwrap_or(20);
-    match withdrawal_activity::pending_withdrawals(&state).await {
+    match withdrawal_activity::pending_withdrawals(&state, query.token).await {
         Ok(rows) => Json(
             rows.into_iter()
                 .filter(|row| {

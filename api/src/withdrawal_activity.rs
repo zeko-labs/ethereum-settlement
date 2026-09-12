@@ -47,6 +47,10 @@ pub(crate) struct ArchiveTokenWithdrawal {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingWithdrawal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
     pub global_action_index: u32,
     pub transaction_hash: String,
     pub block_height: u64,
@@ -288,7 +292,10 @@ pub(crate) async fn load_archive_inner_actions(
         .collect()
 }
 
-pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingWithdrawal>> {
+pub(crate) async fn pending_withdrawals(
+    state: &AppState,
+    tokens: bool,
+) -> Result<Vec<PendingWithdrawal>> {
     let archive = state
         .archive_pool
         .as_ref()
@@ -306,23 +313,58 @@ pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingW
     .into_iter()
     .collect::<std::collections::HashSet<_>>();
 
-    Ok(actions
+    let actions = actions
         .into_iter()
-        .filter(|action| !settled.contains(&i64::from(action.global_action_index)))
-        .filter_map(|action| match action.withdrawal {
-            Some(ArchiveWithdrawal::Native(withdrawal)) => Some(PendingWithdrawal {
+        .filter(|action| {
+            !settled.contains(&i64::from(action.global_action_index))
+                && matches!(&action.withdrawal, Some(ArchiveWithdrawal::Token(_))) == tokens
+        })
+        .collect::<Vec<_>>();
+    let identities = unique_token_withdrawal_identities(actions.iter().filter_map(|action| {
+        match &action.withdrawal {
+            Some(ArchiveWithdrawal::Token(withdrawal)) => Some(withdrawal),
+            _ => None,
+        }
+    }));
+    let resolved = state
+        .ethereum
+        .resolve_token_withdrawal_identities(&identities)
+        .await?;
+    actions
+        .into_iter()
+        .filter_map(|action| {
+            let (recipient, amount, token, asset_id) = match action.withdrawal? {
+                ArchiveWithdrawal::Native(withdrawal) => {
+                    (withdrawal.recipient, withdrawal.amount, None, None)
+                }
+                ArchiveWithdrawal::Token(withdrawal) => {
+                    let Some(token) = resolved.get(&token_withdrawal_identity(&withdrawal)) else {
+                        return Some(Err(anyhow::anyhow!(
+                            "archived ERC20 identity was not resolved"
+                        )));
+                    };
+                    (
+                        withdrawal.recipient,
+                        withdrawal.amount,
+                        Some(token.to_string()),
+                        Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                    )
+                }
+            };
+            Some(Ok(PendingWithdrawal {
+                token,
+                asset_id,
                 global_action_index: action.global_action_index,
                 transaction_hash: action.transaction_hash,
                 block_height: action.block_height,
                 timestamp: action.timestamp,
-                recipient: EthereumAddress::from(withdrawal.recipient).to_string(),
-                amount: withdrawal.amount.to_string(),
+                recipient: EthereumAddress::from(recipient).to_string(),
+                amount: amount.to_string(),
                 status: "pendingSettlement",
                 next_action: "waitForSettlement",
-            }),
-            Some(ArchiveWithdrawal::Token(_)) | None => None,
+            }))
         })
-        .collect())
+        .collect()
 }
 
 pub(crate) async fn recovery_loop(state: AppState, interval: Duration) {
