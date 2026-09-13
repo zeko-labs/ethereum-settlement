@@ -34,13 +34,9 @@ promoted to a persistent live Sepolia deployment.
 - `@zeko-labs/eth-bridge-sdk` owns Ethereum wallet operations and composes the
   existing bridge SDK for sequencer-side deposit finalization and withdrawal
   requests. The Actions services consume the gateway's Mina archive shape.
-- `bridge-ui/` is a standalone React application for the four browser-owned
-  bridge operations—ETH deposit, Zeko deposit finalization, Zeko withdrawal
-  request, and Ethereum claim—plus native MINA and standard MFT payments. It
-  uses injected Ethereum wallets plus either Auro or the Auro-compatible
-  MetaMask Mina Snap. The [bridge application guide](/bridge-ui) owns provider
-  selection and reconnection behavior. The PoC signing domain remains fixed to
-  Mina `testnet`.
+- `bridge-ui/` provides the standalone browser application. Its
+  [README](https://github.com/zeko-labs/ethereum-settlement/blob/main/bridge-ui/README.md) owns supported bridge and wallet flows,
+  asset discovery, provider selection, and recovery behavior.
 - `mina-snap/` contains the `mina-signer` Snap and Mina Provider adapter. Its
   tests lock account derivation and message/field/nullifier/zkApp signatures to
   Auro 2.5.2 reference results, including a bridge-shaped Berkeley transaction;
@@ -120,9 +116,6 @@ The ERC-20 port now has the proof and custody seam needed to turn a canonical
   leaf schema, SP1/OCaml share the exact Poseidon action vector, and the
   mock-verifier contract test exercises the complete custody, checkpoint, and
   delayed-release sequence without requesting an SP1 proof.
-- The standalone bridge UI authenticates the Actions registry snapshot against
-  Zeko, filters it through the Ethereum activation state, and supports approval,
-  deposit finalization, withdrawal, reload recovery, and delayed ERC-20 claims.
 
 The universal registry runtime path is also implemented:
 

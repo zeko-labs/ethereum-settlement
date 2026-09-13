@@ -1,21 +1,11 @@
 # Bridge web application
 
-`bridge-ui/` is a standalone React application for the native ETH bridge PoC.
-It is built and deployed independently from the Vue applications in the
-companion Zeko UI repository. The app composes the pinned Zeko bridge SDK with the Ethereum
-wrapper SDK and uses only browser-safe APIs.
+The [bridge UI README](https://github.com/zeko-labs/ethereum-settlement/blob/main/bridge-ui/README.md) owns supported assets, user
+flows, registry discovery, and activity recovery. The application is built and
+deployed independently from the Vue applications in the companion Zeko UI
+repository and uses only browser-safe APIs.
 
 ## User flows
-
-The app supports these user-owned bridge and wallet flows:
-
-1. choose either the MetaMask Snap or Auro, then connect it alongside an
-   injected Ethereum wallet
-2. deposit native ETH to the bridge for a Zeko public key
-3. prepare, sign, and submit deposit finalization through the sequencer
-4. prepare, sign, and submit a native withdrawal request, then claim it on
-   Ethereum when the public Merkle proof becomes claimable
-5. send native MINA or a standard MFT token from the connected Zeko account
 
 Native payments use the wallet provider directly. For MFT transfers, the web
 application constructs and proves `FungibleToken.transfer` with the pinned
@@ -75,7 +65,7 @@ in `bridge-ui/README.md`.
 | `gatewayUrl` | Public gateway base URL for bridge discovery and status. |
 | `sequencerGraphqlUrl` | Zeko sequencer GraphQL endpoint used for user submissions. |
 | `zekoArchiveGraphqlUrl` | Mina-compatible archive endpoint used by the bridge SDK; the local gateway serves it at `/archive/graphql` from the Zeko archive database. |
-| `actionsApiUrl` | Public Actions GraphQL endpoint used to prepare inclusion witnesses. |
+| `actionsApiUrl` | Public Actions GraphQL endpoint for inclusion witnesses and the canonical asset registry snapshot. |
 | `expectedEthereumChainId` | `11155111` for Sepolia or `31337` for the local Anvil profile. |
 | `minaSigningNetworkId` | Exact value `testnet`. |
 | `auroNetworkName` | Mina wallet display name for the custom endpoint. |
@@ -98,7 +88,6 @@ pnpm build
 pnpm test:e2e
 ```
 
-For local development, `pnpm dev` listens on `127.0.0.1:5174`. The vendored SDK
-archives are tied to the pinned Zeko UI source revision because the
-published bridge SDK version does not expose the runtime entry points required
-by the Ethereum wrapper. Update and test the pair together.
+For local development, `pnpm dev` listens on `127.0.0.1:5174`. See the
+[vendored SDK guide](https://github.com/zeko-labs/ethereum-settlement/blob/main/bridge-ui/vendor/README.md) for dependency provenance
+and update constraints.

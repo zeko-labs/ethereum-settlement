@@ -10,16 +10,17 @@ nix develop -c pnpm --dir packages/bridge-sdk pack
 nix develop -c pnpm --dir packages/eth-bridge-sdk pack
 ```
 
-SHA-256:
+The authoritative SHA-256 pins and installed-package drift checks are in
+[`check-vendored-sdk.mjs`](../scripts/check-vendored-sdk.mjs). To print hashes
+from the artifacts themselves, run from `bridge-ui/`:
 
-```text
-e0aa4a416a2888c11adbc8834d42ef1fb76fecb7bf92c2e338daf56a853e27af  zeko-labs-bridge-sdk-0.3.4.tgz
-1828daa02d4277ccf34589600ce4a0ce65b86f01c451cc3fc0fd69a4a6d9fa67  zeko-labs-eth-bridge-sdk-0.1.0.tgz
-afa0ec54b60b80d78237af35c560448ddbb0b792947976949f68d026a6b535b1  zeko-labs-graphql-0.3.4.tgz
+```bash
+sha256sum vendor/zeko-labs-*.tgz
 ```
 
-The packages must remain paired. The Ethereum SDK and base SDK import the canonical ERC-20
-runtime and registry helpers that are present at the pinned source commit but
-are missing from the previously published `@zeko-labs/bridge-sdk@0.3.4` artifact.
-`scripts/check-vendored-sdk.mjs` verifies the installed package resolves to this
-file tarball and exposes those symbols.
+All three packages must be updated together. The Ethereum SDK and base SDK
+import the canonical ERC-20 runtime and registry helpers that are present at
+the pinned source commit but are missing from the previously published `@zeko-labs/bridge-sdk@0.3.4` artifact.
+The check script verifies archive digests, vendored resolution of the base SDK
+(including through the Ethereum SDK) and GraphQL package, and required base SDK
+runtime exports.

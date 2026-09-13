@@ -1,16 +1,25 @@
 # Ethereum ↔ Zeko bridge UI
 
-Standalone React application for the native ETH and canonical ERC-20 bridge PoC. It talks directly
-to the public gateway bridge API, gateway/sequencer GraphQL endpoints, injected
-Ethereum wallets, and either Auro or the Auro-compatible MetaMask Mina Snap. It
-never calls proof-operator routes.
+Standalone React application for the native ETH and canonical ERC-20 bridge
+PoC. It talks directly to the public gateway bridge API, gateway/sequencer
+GraphQL endpoints, injected Ethereum wallets, and either Auro or the
+Auro-compatible MetaMask Mina Snap. It never calls proof-operator routes.
 
 After an Ethereum wallet connects, the bridge fetches the canonical asset
 snapshot from the configured Actions API, authenticates its root/count/schema
 against the Zeko runtime, and checks each record's active Ethereum registration
 before displaying it. ERC-20 deposits request an exact allowance only when the
 current allowance is insufficient. Token amounts use the registry's precision
-(at most nine decimals) on both chains.
+(at most nine decimals) on both chains. There is no frontend token allowlist;
+registered Sepolia USDC appears when these checks pass. A missing or invalid
+registry leaves native ETH available and displays a warning.
+
+Select an asset in the **Bridge** tab, enter the amount and recipient, and review
+the transfer. For deposits, sign any required ERC-20 approval and then the deposit
+in the Ethereum wallet; once synchronization is ready, finalize with the Mina
+wallet. For withdrawals, sign the request with the Mina wallet, wait for
+settlement and the safety delay, then claim in the Ethereum wallet. ETH retains
+its nine-decimal bridge precision. Deposits have no cancellation/refund path.
 
 The **Wallet** tab sends native MINA and Mina Fungible Token standard assets.
 Native payments use the provider's `sendPayment` operation. Standard MFT
@@ -112,10 +121,8 @@ Supported public variables:
 browser validator always require `testnet`, matching Auro's current signing salt
 for custom networks.
 
-Both Zeko bridge SDK packages and their shared GraphQL package are vendored from
-the same pinned source commit. Do not replace only one with the same-numbered
-registry package: the published artifacts lack runtime exports and registry
-queries required by the Ethereum wrapper.
+See the [vendored SDK guide](vendor/README.md) for the matched dependency bundle
+and its update constraints.
 
 ## Mina wallet signing domain
 
@@ -181,12 +188,11 @@ with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`; o1js uses those isolation headers
 for its `SharedArrayBuffer` workers.
 
-Pending ERC-20 withdrawals are recovered from the archive through
-`GET /v1/bridge/withdrawal-requests?token=true&recipient=…`, before settlement
-and without local storage. The default endpoint continues to return only native
-requests. Token responses include the Ethereum-resolved `token` and `assetId`;
-the UI requires a matching authenticated, active asset and uses its registered
-decimals. Unavailable token activity cannot be resumed or displayed as ETH.
-Token recovery failures remain visible while native results are retained and
-are retried on the normal activity polling interval. Settled token list responses
-are parsed directly without fetching each proof again.
+## Activity recovery
+
+Pending and settled withdrawals can be recovered after reload without local
+storage through the [public bridge API](../docs/content/gateway/api.md#public-bridge-routes).
+The UI requires a matching authenticated, active asset for token activity and
+uses its registered decimals. Unavailable token activity cannot be resumed or
+displayed as ETH. Token recovery failures remain visible while native results
+are retained and are retried on the normal activity polling interval.
