@@ -1,6 +1,6 @@
 import { activityAsset } from "../lib/withdrawalRecovery"
 import type { DepositStatus, TokenWithdrawalProof, WithdrawalProof } from "@zeko-labs/eth-bridge-sdk"
-import { formatUnits, parseDecimalUnits } from "../lib/amount"
+import { formatUnits } from "../lib/amount"
 import { NATIVE_ASSET, type BridgeAsset } from "../lib/assets"
 import { depositProgress, withdrawalProgress } from "../lib/status"
 import type { PendingOperation } from "../lib/storage"
@@ -28,14 +28,7 @@ export const ActivityView = ({ deposits, withdrawals, operations, assets, loadin
       if (!asset || row.direction !== "withdrawal" || matchedIds.has(row.id)) return false
       if ((row.asset?.token.toLowerCase() ?? "") !== ("token" in withdrawal ? withdrawal.token.toLowerCase() : "")) return false
       if (row.asset && row.asset.assetId.toLowerCase() !== ("assetId" in withdrawal ? withdrawal.assetId.toLowerCase() : "")) return false
-      if (row.globalActionIndex !== undefined) return row.globalActionIndex === withdrawal.globalActionIndex
-      if (!("token" in withdrawal) || row.asset?.token.toLowerCase() !== withdrawal.token.toLowerCase()) return false
-      try {
-        return row.recipient.toLowerCase() === withdrawal.recipient.toLowerCase() &&
-          parseDecimalUnits(row.amount, asset.zekoDecimals) === BigInt(withdrawal.amount)
-      } catch {
-        return false
-      }
+      return row.globalActionIndex !== undefined && row.globalActionIndex === withdrawal.globalActionIndex
     })
     if (operation) matchedIds.add(operation.id)
     return { withdrawal, operation }

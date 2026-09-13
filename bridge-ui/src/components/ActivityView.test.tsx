@@ -1,7 +1,9 @@
-import { render, screen } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { ActivityView } from "./ActivityView"
+
+afterEach(cleanup)
 
 const recipient = "0x0000000000000000000000000000000000000001" as const
 
@@ -58,11 +60,12 @@ describe("bridge activity", () => {
     expect(screen.getByTestId("activity-withdrawal-8")).toHaveTextContent("Waiting for Zeko settlement")
   })
 
-  it("matches a settled token claim to its locally persisted request", async () => {
+  it.each([undefined, 10, 9])("reconciles token withdrawals only by recovered action index (%s)", async (globalActionIndex) => {
     const onWithdrawal = vi.fn()
     const token = "0x00000000000000000000000000000000000000c0" as const
     const assetId = `0x${"56".repeat(32)}` as const
     const operation = {
+      globalActionIndex,
       id: "withdrawal:token",
       direction: "withdrawal" as const,
       amount: "50",
@@ -97,9 +100,19 @@ describe("bridge activity", () => {
       />
     )
 
-    expect(screen.getAllByText(/50 USDC/)).toHaveLength(1)
+    expect(screen.getAllByText(/50 USDC/)).toHaveLength(globalActionIndex === 9 ? 1 : 2)
     await userEvent.click(screen.getByTestId("activity-withdrawal-9").querySelector("button")!)
-    expect(onWithdrawal).toHaveBeenCalledWith(proof, operation)
+    if (globalActionIndex === 9) {
+      expect(onWithdrawal).toHaveBeenCalledWith(proof, operation)
+    } else {
+      expect(onWithdrawal).toHaveBeenCalledWith(proof, expect.objectContaining({
+        transactionHash: "Gateway-discovered transaction"
+      }))
+      const pending = screen.getByTestId(globalActionIndex === undefined ? operation.id : `activity-withdrawal-${globalActionIndex}`)
+      expect(pending).toHaveTextContent("Waiting for Zeko settlement")
+      await userEvent.click(pending.querySelector("button")!)
+      expect(onWithdrawal).toHaveBeenLastCalledWith(undefined, operation)
+    }
   })
 })
 
