@@ -15,9 +15,15 @@ const mocks = vi.hoisted(() => ({
   getMinaProvider: vi.fn(),
   createClient: vi.fn(),
   depositNative: vi.fn(),
+  depositToken: vi.fn(),
+  ensureTokenAllowance: vi.fn(),
+  fetchAssetRegistrySnapshot: vi.fn(),
+  discoverBridgeAssets: vi.fn(),
   finalizeDeposit: vi.fn(),
   requestWithdrawal: vi.fn(),
   listActivity: vi.fn(),
+  listTokenWithdrawals: vi.fn(),
+  listTokenWithdrawalRequests: vi.fn(),
   fetchZekoBalance: vi.fn()
 }))
 
@@ -47,14 +53,26 @@ vi.mock("./lib/bridge", () => ({
   loadBridgeModules: vi.fn(async () => ({})),
   createEthereumBridgeClient: mocks.createClient,
   depositNative: mocks.depositNative,
+  depositToken: mocks.depositToken,
   finalizeDeposit: mocks.finalizeDeposit,
   requestNativeWithdrawal: mocks.requestWithdrawal,
   listWalletActivity: mocks.listActivity,
+  listTokenWithdrawals: mocks.listTokenWithdrawals,
+  listTokenWithdrawalRequests: mocks.listTokenWithdrawalRequests,
   isValidZekoAddress: vi.fn(async () => true),
   fetchEthereumBalance: vi.fn(async () => "1.25"),
   fetchZekoBalance: mocks.fetchZekoBalance,
+  fetchZekoTokenBalance: vi.fn(async () => "10"),
   ethereumTransactionUrl: vi.fn((_config, hash) => `https://sepolia.etherscan.io/tx/${hash}`),
   zekoTransactionUrl: vi.fn((_config, hash) => `https://zekoscan.io/testnet/transactions/${hash}`)
+}))
+
+vi.mock("./lib/assets", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/assets")>()),
+  ensureTokenAllowance: mocks.ensureTokenAllowance,
+  fetchAssetRegistrySnapshot: mocks.fetchAssetRegistrySnapshot,
+  discoverBridgeAssets: mocks.discoverBridgeAssets,
+  fetchTokenBalance: vi.fn(async () => "25")
 }))
 
 import App from "./App"
@@ -93,8 +111,13 @@ describe("bridge application", () => {
       nonce: synchronizedDeposit.nonce,
       deposit: synchronizedDeposit
     })
+    mocks.fetchAssetRegistrySnapshot.mockResolvedValue(null)
+    mocks.discoverBridgeAssets.mockResolvedValue({ assets: [], warnings: [] })
+    mocks.ensureTokenAllowance.mockResolvedValue(undefined)
     mocks.finalizeDeposit.mockResolvedValue("5Jfinalized")
     mocks.requestWithdrawal.mockResolvedValue("5Jwithdrawal")
+    mocks.listTokenWithdrawals.mockResolvedValue([])
+    mocks.listTokenWithdrawalRequests.mockResolvedValue([])
     mocks.listActivity.mockResolvedValue({ deposits: [], withdrawals: [], withdrawalRequests: [] })
     mocks.fetchZekoBalance.mockResolvedValue("2.5")
     localStorage.clear()
@@ -152,6 +175,99 @@ describe("bridge application", () => {
     await user.click(screen.getByRole("button", { name: "Confirm in Ethereum wallet" }))
     expect(await screen.findByText("The wallet request was rejected.")).toBeVisible()
     expect(screen.queryByText("Deposit finalized")).not.toBeInTheDocument()
+  })
+
+  it("loads only the selected token balance when Mina connects or changes account", async () => {
+    const token = {
+      kind: "erc20" as const,
+      id: "0x00000000000000000000000000000000000000c0" as const,
+      token: "0x00000000000000000000000000000000000000c0" as const,
+      assetId: `0x${"11".repeat(32)}` as const,
+      tokenIdL2: `0x${"22".repeat(32)}` as const,
+      name: "USD Coin",
+      symbol: "USDC",
+      ethereumDecimals: 6,
+      zekoDecimals: 6,
+      inventoryCap: 1_000_000_000n
+    }
+    mocks.fetchAssetRegistrySnapshot.mockResolvedValueOnce({ records: [] })
+    mocks.discoverBridgeAssets.mockResolvedValueOnce({ assets: [token], warnings: [] })
+    const listeners = new Map<string, (accounts: string[]) => void>()
+    mocks.getMinaProvider.mockReturnValue({
+      isMinaSnap: true,
+      revokePermissions: mocks.revokeMinaPermissions,
+      on: (event: string, listener: (accounts: string[]) => void) => listeners.set(event, listener),
+      removeAllListeners: () => listeners.clear()
+    })
+    const { fetchZekoTokenBalance } = await import("./lib/bridge")
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.selectOptions(screen.getByLabelText("Bridge asset"), token.token)
+    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
+    await waitFor(() => expect(fetchZekoTokenBalance).toHaveBeenCalledWith(
+      validConfig.sequencerGraphqlUrl, zekoAccount, token.tokenIdL2, 6))
+    act(() => listeners.get("accountsChanged")?.([zekoAccountB]))
+    await waitFor(() => expect(fetchZekoTokenBalance).toHaveBeenCalledWith(
+      validConfig.sequencerGraphqlUrl, zekoAccountB, token.tokenIdL2, 6))
+    expect(mocks.fetchZekoBalance).not.toHaveBeenCalled()
+  })
+
+  it("discovers a registered ERC20 and submits approval plus exact-unit deposit", async () => {
+    const token = {
+      kind: "erc20" as const,
+      id: "0x00000000000000000000000000000000000000c0" as const,
+      token: "0x00000000000000000000000000000000000000c0" as const,
+      assetId: `0x${"11".repeat(32)}` as const,
+      tokenIdL2: `0x${"22".repeat(32)}` as const,
+      name: "USD Coin",
+      symbol: "USDC",
+      ethereumDecimals: 6,
+      zekoDecimals: 6,
+      inventoryCap: 1_000_000_000n
+    }
+    const tokenDeposit = {
+      ...synchronizedDeposit,
+      token: token.token,
+      assetId: token.assetId,
+      encodingVersion: 2 as const,
+      ethereumAmount: "1250000",
+      zekoAmount: "1250000"
+    }
+    mocks.fetchAssetRegistrySnapshot.mockResolvedValueOnce({ records: [] })
+    mocks.discoverBridgeAssets.mockResolvedValueOnce({
+      assets: [{ kind: "native", id: "native", name: "Ether", symbol: "ETH", ethereumDecimals: 18, zekoDecimals: 9 }, token],
+      warnings: []
+    })
+    mocks.depositToken.mockResolvedValueOnce({
+      hash: tokenDeposit.ethereumTransactionHash,
+      nonce: tokenDeposit.nonce,
+      deposit: tokenDeposit
+    })
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.selectOptions(screen.getByLabelText("Bridge asset"), token.token)
+    await user.type(screen.getByLabelText("Amount of USDC to bridge"), "1.25")
+    await user.type(screen.getByLabelText("Zeko recipient"), zekoAccount)
+    const review = screen.getByRole("button", { name: /Review deposit/i })
+    await waitFor(() => expect(review).toBeEnabled())
+    await user.click(review)
+    expect(screen.getAllByText("1.25 USDC").length).toBeGreaterThan(0)
+    await user.click(screen.getByRole("button", { name: "Confirm in Ethereum wallet" }))
+    await waitFor(() => expect(mocks.depositToken).toHaveBeenCalled())
+    expect(mocks.ensureTokenAllowance).toHaveBeenCalledWith(expect.objectContaining({
+      token: token.token,
+      amount: 1_250_000n
+    }))
+    expect(mocks.depositToken).toHaveBeenCalledWith(expect.objectContaining({
+      token: token.token,
+      amount: 1_250_000n,
+      recipient: zekoAccount
+    }))
   })
 
   it("submits a native withdrawal with the Mina wallet testnet signing domain", async () => {
@@ -415,6 +531,33 @@ describe("bridge application", () => {
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
     await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
+    expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
+  })
+
+  it("preserves native activity while surfacing token recovery failures", async () => {
+    mocks.listTokenWithdrawals.mockRejectedValue(new Error("token gateway unavailable"))
+    mocks.listActivity.mockResolvedValue({
+      deposits: [],
+      withdrawals: [],
+      withdrawalRequests: [{
+        globalActionIndex: 0,
+        transactionHash: "5JarchiveWithdrawal",
+        blockHeight: 9,
+        timestamp: "1784159326275",
+        recipient: ethereumAccount,
+        amount: "5000000000",
+        status: "pendingSettlement",
+        nextAction: "waitForSettlement"
+      }]
+    })
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
+    await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
+    await user.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(await screen.findByText(/Token activity recovery failed/)).toBeVisible()
     expect(await screen.findByText("5 ETH · Withdrawal request")).toBeVisible()
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })

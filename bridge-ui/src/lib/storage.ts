@@ -9,6 +9,13 @@ export type PendingOperation = {
   globalActionIndex?: number
   zekoTransactionHash?: string
   ethereumClaimHash?: string
+  asset?: {
+    kind: "erc20"
+    symbol: string
+    decimals: number
+    token: string
+    assetId: string
+  }
 }
 
 export type MinaWalletKind = "metamask-snap" | "auro"
@@ -91,6 +98,25 @@ export const readOperations = (key: string, storage: Storage = localStorage): Pe
       const value = row as Record<string, unknown>
       const nonce = value.depositNonce
       const globalActionIndex = value.globalActionIndex
+      const asset = value.asset
+      const assetRow = typeof asset === "object" && asset !== null
+        ? asset as Record<string, unknown>
+        : undefined
+      const validAsset = asset === undefined || (
+        assetRow !== undefined &&
+        assetRow.kind === "erc20" &&
+        typeof assetRow.symbol === "string" &&
+        assetRow.symbol !== "" &&
+        assetRow.symbol.length <= 16 &&
+        typeof assetRow.decimals === "number" &&
+        Number.isInteger(assetRow.decimals) &&
+        assetRow.decimals >= 0 &&
+        assetRow.decimals <= 9 &&
+        typeof assetRow.token === "string" &&
+        /^0x[0-9a-fA-F]{40}$/.test(assetRow.token) &&
+        typeof assetRow.assetId === "string" &&
+        /^0x[0-9a-fA-F]{64}$/.test(assetRow.assetId)
+      )
       return (
         typeof value.id === "string" &&
         (value.direction === "deposit" || value.direction === "withdrawal") &&
@@ -106,7 +132,8 @@ export const readOperations = (key: string, storage: Storage = localStorage): Pe
             Number.isSafeInteger(globalActionIndex) &&
             globalActionIndex >= 0)) &&
         (value.zekoTransactionHash === undefined || typeof value.zekoTransactionHash === "string") &&
-        (value.ethereumClaimHash === undefined || typeof value.ethereumClaimHash === "string")
+        (value.ethereumClaimHash === undefined || typeof value.ethereumClaimHash === "string") &&
+        validAsset
       )
     })
   } catch {

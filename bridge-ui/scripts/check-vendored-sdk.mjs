@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url"
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const expected = new Map([
-  ["zeko-labs-bridge-sdk-0.3.4.tgz", "9d1b1e6b277340d2c3624a26d2b376637ac9c1273b4e98c4df9480961d60b192"],
-  ["zeko-labs-eth-bridge-sdk-0.1.0.tgz", "9e39f67f80cc1d287b63ba6a78bc2b70e62214292c7d69e846b73dce97260225"]
+  ["zeko-labs-bridge-sdk-0.3.4.tgz", "e0aa4a416a2888c11adbc8834d42ef1fb76fecb7bf92c2e338daf56a853e27af"],
+  ["zeko-labs-eth-bridge-sdk-0.1.0.tgz", "1828daa02d4277ccf34589600ce4a0ce65b86f01c451cc3fc0fd69a4a6d9fa67"],
+  ["zeko-labs-graphql-0.3.4.tgz", "afa0ec54b60b80d78237af35c560448ddbb0b792947976949f68d026a6b535b1"]
 ])
 
 for (const [name, digest] of expected) {
@@ -28,9 +29,14 @@ if (!transitiveBridgeEntry.includes("@zeko-labs+bridge-sdk@file+vendor+zeko-labs
   throw new Error(`eth-bridge-sdk resolved a non-vendored bridge-sdk: ${transitiveBridgeEntry}`)
 }
 
+const graphqlEntry = await realpath(require.resolve("@zeko-labs/graphql"))
+if (!graphqlEntry.includes("@zeko-labs+graphql@file+vendor+zeko-labs-graphql-0.3.4.tgz")) {
+  throw new Error(`graphql did not resolve from the vendored tarball: ${graphqlEntry}`)
+}
+
 const bridge = await import("@zeko-labs/bridge-sdk")
-for (const name of ["createBridgeRuntime", "ethereumDepositAux"]) {
+for (const name of ["createBridgeRuntime", "ethereumDepositAux", "buildEthereumAssetRegistryTree"]) {
   if (typeof bridge[name] !== "function") throw new Error(`Vendored bridge-sdk is missing ${name}`)
 }
 
-console.log("Vendored bridge SDK pair verified")
+console.log("Vendored bridge SDK bundle verified")

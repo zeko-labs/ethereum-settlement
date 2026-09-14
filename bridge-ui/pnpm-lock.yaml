@@ -6,6 +6,7 @@ settings:
 
 overrides:
   '@zeko-labs/bridge-sdk': file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz
+  '@zeko-labs/graphql': file:vendor/zeko-labs-graphql-0.3.4.tgz
 
 importers:
 
@@ -17,6 +18,9 @@ importers:
       '@zeko-labs/eth-bridge-sdk':
         specifier: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz
         version: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz(@urql/core@5.2.0)(react@18.3.1)(typescript@5.9.2)
+      '@zeko-labs/graphql':
+        specifier: file:vendor/zeko-labs-graphql-0.3.4.tgz
+        version: file:vendor/zeko-labs-graphql-0.3.4.tgz
       '@zeko-labs/mina-snap-provider':
         specifier: link:../mina-snap/packages/provider
         version: link:../mina-snap/packages/provider
@@ -635,15 +639,16 @@ packages:
     resolution: {integrity: sha512-fB2V0JFrQSMsCo9HiSq3Ezpdv4iYaXRG1Sx8edX3MwxfyNn83mKiGzOcH+Fkxt4MHxr3y42fQi1oeAInqgX2QA==}
 
   '@zeko-labs/bridge-sdk@file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz':
-    resolution: {integrity: sha512-RKbBxMqJ58Mi5gcfIm4PElp5QKPV/8o67Cg4rn7wsElWpCFX4tHujRU1lfzOtAYve+gPM3PlfAM2q/t2S21d1g==, tarball: file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz}
+    resolution: {integrity: sha512-4bADcHjGAr/mJapwFp7uX2G6glEIl+6RQONt6g1yBoooPDkOXq0JmqssQ896SPVsyBrEqO6P+x3eug3PugMKxQ==, tarball: file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz}
     version: 0.3.4
 
   '@zeko-labs/eth-bridge-sdk@file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz':
-    resolution: {integrity: sha512-rEQ94gJa/Kizas6DIWrESzLoBpuoZst32iZRveG4NEieq0r2VsQoRxY2Rrci0Xzyr8d+WABEdLi2q3OxhsGQzw==, tarball: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz}
+    resolution: {integrity: sha512-c//UJosnjDCWJdCsN+W41XjticIJizSdCB1X7hS8pb1xSARDkR1DwpEB84awEmNeEn7gbnbuMoPbDJ+tBQx5Ww==, tarball: file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz}
     version: 0.1.0
 
-  '@zeko-labs/graphql@0.3.4':
-    resolution: {integrity: sha512-mRGYV7t9IaQSAaAItayl3/0zh/rXF3SIBpv2eMwo08q4zUk2bNpOBqFgbdsWS5eK1fc2mSawcJ/iVOMjAKAR8Q==}
+  '@zeko-labs/graphql@file:vendor/zeko-labs-graphql-0.3.4.tgz':
+    resolution: {integrity: sha512-2m9W/4zGHqEEkOWDIDISsBRnnBVRItS5eNLGer7ohZi3GRVvTi9bnDt+HlhUnnZOUOIMXZ0f+aPEHwT3vEbJmA==, tarball: file:vendor/zeko-labs-graphql-0.3.4.tgz}
+    version: 0.3.4
 
   abitype@1.2.3:
     resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
@@ -1764,7 +1769,8 @@ snapshots:
   '@zeko-labs/bridge-sdk@file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz(@urql/core@5.2.0)(react@18.3.1)(typescript@5.9.2)':
     dependencies:
       '@urql/exchange-retry': 1.3.2(@urql/core@5.2.0)
-      '@zeko-labs/graphql': 0.3.4
+      '@zeko-labs/graphql': file:vendor/zeko-labs-graphql-0.3.4.tgz
+      mina-fungible-token: 1.1.0(o1js@2.8.0)
       mina-signer: 4.1.0
       o1js: 2.8.0
       urql: 4.2.2(@urql/core@5.2.0)(react@18.3.1)
@@ -1787,7 +1793,7 @@ snapshots:
       - utf-8-validate
       - zod
 
-  '@zeko-labs/graphql@0.3.4': {}
+  '@zeko-labs/graphql@file:vendor/zeko-labs-graphql-0.3.4.tgz': {}
 
   abitype@1.2.3(typescript@5.9.2):
     optionalDependencies:

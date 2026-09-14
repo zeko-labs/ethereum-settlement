@@ -23,6 +23,7 @@ import {
   createAuroSigner,
   createEthereumBridgeClient,
   finalizeDeposit,
+  finalizeTokenDeposit,
   zekoTransactionUrl
 } from "./bridge"
 
@@ -56,7 +57,8 @@ describe("SDK integration", () => {
         config,
         provider,
         account: "0x0000000000000000000000000000000000000001",
-        withZeko: true
+        withZeko: true,
+        assetSnapshot: { root: "snapshot" } as never
       })
     ).resolves.toBe(client)
     expect(mocks.init).toHaveBeenCalledWith(
@@ -66,7 +68,8 @@ describe("SDK integration", () => {
           l1Network: "testnet",
           l2Network: "testnet",
           v2DepositsStartIndex: 0
-        })
+        }),
+        assets: { snapshot: { root: "snapshot" } }
       })
     )
     const fetcher = mocks.init.mock.calls[0]?.[0]?.fetch as typeof globalThis.fetch
@@ -212,6 +215,35 @@ describe("SDK integration", () => {
     expect(client.prepareDepositFinalization).toHaveBeenCalledTimes(1)
   })
 
+  it("prepares and finalizes an ERC20 deposit through the authenticated SDK path", async () => {
+    const publicKey = { toBase58: () => "B62recipient" }
+    vi.mocked((await import("o1js")).PublicKey.fromBase58).mockReturnValue(publicKey as never)
+    const client = {
+      prepareTokenDepositFinalization: vi.fn().mockResolvedValue({ available: true, reason: null }),
+      finalizeTokenDeposit: vi.fn().mockResolvedValue("5Jtoken-finalized")
+    }
+    const provider = {
+      requestNetwork: vi.fn(async () => ({ networkID: "testnet" }))
+    } as unknown as AuroProvider
+    const token = "0x00000000000000000000000000000000000000c0"
+
+    await expect(finalizeTokenDeposit({
+      client: client as never,
+      token,
+      recipient: "B62recipient",
+      encodingVersion: 2,
+      config,
+      provider
+    })).resolves.toBe("5Jtoken-finalized")
+    expect(client.prepareTokenDepositFinalization).toHaveBeenCalledWith(publicKey, token)
+    expect(client.finalizeTokenDeposit).toHaveBeenCalledWith(expect.objectContaining({
+      recipient: publicKey,
+      token,
+      encodingVersion: 2,
+      options: { attempts: 3, feeNanomina: 2500n }
+    }))
+  })
+
   it("rebuilds a finalization whose account precondition became stale", async () => {
     vi.useFakeTimers()
     const publicKey = { toBase58: () => "B62recipient" }
@@ -237,4 +269,25 @@ describe("SDK integration", () => {
       "https://zekoscan.io/testnet/transactions/5Jtransaction"
     )
   })
+})
+
+it("uses complete list proofs without individual network requests", async () => {
+  const { listTokenWithdrawals } = await import("./bridge")
+  const token = "0x0000000000000000000000000000000000000001"
+  const hash = `0x${"12".repeat(32)}`
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify([{
+    token, assetId: hash, recipient: token, amount: "1000000",
+    settlementSequence: 1, offset: 0, globalActionIndex: 2,
+    actionFieldsHash: hash, siblings: [], innerActionRoot: hash,
+    commitSlotUpper: 1, claimableSlot: 2, currentVirtualSlot: 3, recipientCursor: 0,
+    status: "claimable", nextAction: "claim"
+  }])))
+  vi.stubGlobal("fetch", fetcher)
+  try {
+    const rows = await listTokenWithdrawals({ gatewayUrl: "https://gateway.test", recipient: token })
+    expect(rows[0]).toMatchObject({ token, amount: "1000000", globalActionIndex: 2 })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

@@ -58,7 +58,7 @@ other branches create preview deployments.
 | `contracts/src/ZekoSettlement.sol` | Ethereum verifier wrapper for settlement proofs. |
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side custody contract for canonical deposits and settlement-bound withdrawal claims. |
 | `contracts/src/ZekoAssetRegistry.sol` | Immutable registry module delegated through the bridge proxy for proposal and proof-settled activation. |
-| `bridge-ui` | Standalone React application for native ETH deposit/finalization and withdrawal/claim flows. |
+| `bridge-ui` | Standalone React [bridge and wallet application](bridge-ui/README.md). |
 | `mina-snap` | MetaMask Snap signer and Auro-compatible Mina Provider adapter used by the bridge UI. |
 | `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |

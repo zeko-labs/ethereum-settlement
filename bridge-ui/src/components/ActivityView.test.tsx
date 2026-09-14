@@ -1,7 +1,9 @@
-import { render, screen } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { ActivityView } from "./ActivityView"
+
+afterEach(cleanup)
 
 const recipient = "0x0000000000000000000000000000000000000001" as const
 
@@ -57,4 +59,71 @@ describe("bridge activity", () => {
     expect(onWithdrawal).toHaveBeenCalledWith(expect.objectContaining({ globalActionIndex: 7 }), matching)
     expect(screen.getByTestId("activity-withdrawal-8")).toHaveTextContent("Waiting for Zeko settlement")
   })
+
+  it.each([undefined, 10, 9])("reconciles token withdrawals only by recovered action index (%s)", async (globalActionIndex) => {
+    const onWithdrawal = vi.fn()
+    const token = "0x00000000000000000000000000000000000000c0" as const
+    const assetId = `0x${"56".repeat(32)}` as const
+    const operation = {
+      globalActionIndex,
+      id: "withdrawal:token",
+      direction: "withdrawal" as const,
+      amount: "50",
+      recipient,
+      transactionHash: "5Jtoken",
+      createdAt: "2026-07-16T00:00:00.000Z",
+      asset: { kind: "erc20" as const, token, assetId, symbol: "USDC", decimals: 6 }
+    }
+    const proof = { ...withdrawal(9, 4), amount: "50000000", token, assetId }
+    const asset = {
+      kind: "erc20" as const,
+      id: token,
+      token,
+      assetId,
+      tokenIdL2: `0x${"78".repeat(32)}` as const,
+      name: "USD Coin",
+      symbol: "USDC",
+      ethereumDecimals: 6,
+      zekoDecimals: 6,
+      inventoryCap: 1_000_000_000n
+    }
+
+    render(
+      <ActivityView
+        deposits={[]}
+        withdrawals={[proof]}
+        operations={[operation]}
+        assets={[asset]}
+        loading={false}
+        onDeposit={vi.fn()}
+        onWithdrawal={onWithdrawal}
+      />
+    )
+
+    expect(screen.getAllByText(/50 USDC/)).toHaveLength(globalActionIndex === 9 ? 1 : 2)
+    await userEvent.click(screen.getByTestId("activity-withdrawal-9").querySelector("button")!)
+    if (globalActionIndex === 9) {
+      expect(onWithdrawal).toHaveBeenCalledWith(proof, operation)
+    } else {
+      expect(onWithdrawal).toHaveBeenCalledWith(proof, expect.objectContaining({
+        transactionHash: "Gateway-discovered transaction"
+      }))
+      const pending = screen.getByTestId(globalActionIndex === undefined ? operation.id : `activity-withdrawal-${globalActionIndex}`)
+      expect(pending).toHaveTextContent("Waiting for Zeko settlement")
+      await userEvent.click(pending.querySelector("button")!)
+      expect(onWithdrawal).toHaveBeenLastCalledWith(undefined, operation)
+    }
+  })
+})
+
+it("disables unknown token claims without labeling them ETH", () => {
+  render(<ActivityView deposits={[]} operations={[]} withdrawals={[{
+    ...withdrawal(33, 4),
+    token: recipient,
+    assetId: `0x${"56".repeat(32)}`
+  }]} loading={false} onDeposit={vi.fn()} onWithdrawal={vi.fn()} />)
+  const row = screen.getByTestId("activity-withdrawal-33")
+  expect(row).toHaveTextContent("50000000 base units")
+  expect(row).not.toHaveTextContent("ETH")
+  expect(row.querySelector("button")).toBeDisabled()
 })

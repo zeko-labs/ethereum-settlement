@@ -89,6 +89,9 @@ code { padding: 1px 4px; border-radius: 4px; background: oklch(89% 0 0 / .62); f
 .form-heading h2 { margin: 0; font-size: 18px; line-height: 1.2; letter-spacing: -.025em; }
 .route-kicker { display: flex; align-items: center; gap: 8px; color: var(--gray-500); font-size: 11px; }
 .route-kicker strong { color: var(--gray-800); font-weight: 600; }
+.asset-selector { display: grid; grid-template-columns: auto minmax(180px, 260px) 1fr; align-items: center; gap: 10px; margin: 0 0 14px; color: var(--gray-600); font-size: 11px; }
+.asset-selector select { min-height: 38px; padding: 0 32px 0 12px; border: 1px solid var(--gray-200); border-radius: 10px; background: var(--white); color: var(--ink); font: inherit; font-weight: 600; }
+.asset-selector small { color: var(--gray-500); }
 .transfer-surface { position: relative; border: 1px solid var(--gray-200); border-radius: 18px; background: oklch(99.3% 0 0 / .92); overflow: visible; transition: border-color 180ms ease, box-shadow 180ms ease; }
 .transfer-surface:focus-within { border-color: color-mix(in oklch, var(--gold-100) 58%, var(--gray-200)); box-shadow: 0 0 0 4px color-mix(in oklch, var(--gold-50) 18%, transparent); }
 .transfer-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, auto); gap: 24px; min-height: 138px; padding: 20px; }
@@ -169,6 +172,8 @@ code { padding: 1px 4px; border-radius: 4px; background: oklch(89% 0 0 / .62); f
 .activity-main { min-width: 0; }
 .activity-primary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; }
 .activity-secondary { display: block; margin-top: 5px; overflow: hidden; color: var(--gray-500); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.activity-unavailable .activity-main { overflow-wrap: anywhere; }
+.activity-unavailable .activity-secondary { white-space: normal; }
 .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 1px solid var(--gray-200); border-radius: 999px; font-size: 9px; font-weight: 700; }
 .status-badge.active { color: var(--gold-200); border-color: color-mix(in oklch, var(--gold-100) 42%, var(--gray-200)); background: var(--gold-soft); }
 .status-badge.waiting { color: var(--gray-600); background: var(--gray-50); }
@@ -300,6 +305,8 @@ code { padding: 1px 4px; border-radius: 4px; background: oklch(89% 0 0 / .62); f
   .card-body { padding: 16px 14px 18px; }
   .form-heading { align-items: flex-start; }
   .route-kicker { display: none; }
+  .asset-selector { grid-template-columns: auto 1fr; }
+  .asset-selector small { grid-column: 2; }
   .transfer-panel { grid-template-columns: minmax(0, 1fr); gap: 14px; min-height: 178px; padding: 17px; }
   .network-side { grid-row: 1; justify-items: stretch; }
   .network-pill { width: 100%; min-width: 0; }

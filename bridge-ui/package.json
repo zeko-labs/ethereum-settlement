@@ -23,6 +23,7 @@
   "dependencies": {
     "@zeko-labs/bridge-sdk": "file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz",
     "@zeko-labs/eth-bridge-sdk": "file:vendor/zeko-labs-eth-bridge-sdk-0.1.0.tgz",
+    "@zeko-labs/graphql": "file:vendor/zeko-labs-graphql-0.3.4.tgz",
     "@zeko-labs/mina-snap-provider": "link:../mina-snap/packages/provider",
     "mina-fungible-token": "1.1.0",
     "o1js": "2.8.0",
@@ -46,7 +47,8 @@
   "packageManager": "pnpm@10.19.0",
   "pnpm": {
     "overrides": {
-      "@zeko-labs/bridge-sdk": "file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz"
+      "@zeko-labs/bridge-sdk": "file:vendor/zeko-labs-bridge-sdk-0.3.4.tgz",
+      "@zeko-labs/graphql": "file:vendor/zeko-labs-graphql-0.3.4.tgz"
     }
   }
 }

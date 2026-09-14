@@ -47,6 +47,10 @@ pub(crate) struct ArchiveTokenWithdrawal {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingWithdrawal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id: Option<String>,
     pub global_action_index: u32,
     pub transaction_hash: String,
     pub block_height: u64,
@@ -288,7 +292,40 @@ pub(crate) async fn load_archive_inner_actions(
         .collect()
 }
 
-pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingWithdrawal>> {
+fn pending_action_page(
+    actions: Vec<ArchiveInnerAction>,
+    settled: &HashSet<i64>,
+    tokens: bool,
+    recipient: Option<Address>,
+    after: Option<u32>,
+    limit: usize,
+) -> Vec<ArchiveInnerAction> {
+    actions
+        .into_iter()
+        .filter(|action| {
+            if settled.contains(&i64::from(action.global_action_index))
+                || after.is_some_and(|after| action.global_action_index <= after)
+            {
+                return false;
+            }
+            let address = match &action.withdrawal {
+                Some(ArchiveWithdrawal::Token(withdrawal)) if tokens => withdrawal.recipient,
+                Some(ArchiveWithdrawal::Native(withdrawal)) if !tokens => withdrawal.recipient,
+                _ => return false,
+            };
+            recipient.is_none_or(|recipient| recipient == address)
+        })
+        .take(limit)
+        .collect()
+}
+
+pub(crate) async fn pending_withdrawals(
+    state: &AppState,
+    tokens: bool,
+    recipient: Option<Address>,
+    after: Option<u32>,
+    limit: usize,
+) -> Result<Vec<PendingWithdrawal>> {
     let archive = state
         .archive_pool
         .as_ref()
@@ -306,23 +343,52 @@ pub(crate) async fn pending_withdrawals(state: &AppState) -> Result<Vec<PendingW
     .into_iter()
     .collect::<std::collections::HashSet<_>>();
 
-    Ok(actions
+    let actions = pending_action_page(actions, &settled, tokens, recipient, after, limit);
+    let identities = unique_token_withdrawal_identities(actions.iter().filter_map(|action| {
+        match &action.withdrawal {
+            Some(ArchiveWithdrawal::Token(withdrawal)) => Some(withdrawal),
+            _ => None,
+        }
+    }));
+    let resolved = state
+        .ethereum
+        .resolve_token_withdrawal_identities(&identities)
+        .await?;
+    actions
         .into_iter()
-        .filter(|action| !settled.contains(&i64::from(action.global_action_index)))
-        .filter_map(|action| match action.withdrawal {
-            Some(ArchiveWithdrawal::Native(withdrawal)) => Some(PendingWithdrawal {
+        .filter_map(|action| {
+            let (recipient, amount, token, asset_id) = match action.withdrawal? {
+                ArchiveWithdrawal::Native(withdrawal) => {
+                    (withdrawal.recipient, withdrawal.amount, None, None)
+                }
+                ArchiveWithdrawal::Token(withdrawal) => {
+                    let Some(token) = resolved.get(&token_withdrawal_identity(&withdrawal)) else {
+                        return Some(Err(anyhow::anyhow!(
+                            "archived ERC20 identity was not resolved"
+                        )));
+                    };
+                    (
+                        withdrawal.recipient,
+                        withdrawal.amount,
+                        Some(token.to_string()),
+                        Some(format!("0x{}", hex::encode(withdrawal.asset_id))),
+                    )
+                }
+            };
+            Some(Ok(PendingWithdrawal {
+                token,
+                asset_id,
                 global_action_index: action.global_action_index,
                 transaction_hash: action.transaction_hash,
                 block_height: action.block_height,
                 timestamp: action.timestamp,
-                recipient: EthereumAddress::from(withdrawal.recipient).to_string(),
-                amount: withdrawal.amount.to_string(),
+                recipient: EthereumAddress::from(recipient).to_string(),
+                amount: amount.to_string(),
                 status: "pendingSettlement",
                 next_action: "waitForSettlement",
-            }),
-            Some(ArchiveWithdrawal::Token(_)) | None => None,
+            }))
         })
-        .collect())
+        .collect()
 }
 
 pub(crate) async fn recovery_loop(state: AppState, interval: Duration) {
@@ -744,6 +810,63 @@ fn parse_hex_bytes32(value: String) -> Result<Bytes32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_page_bounds_identity_resolution_and_deduplicates_tokens() {
+        let make = |index, recipient, registry_index| ArchiveInnerAction {
+            global_action_index: index,
+            transaction_hash: format!("tx{index}"),
+            block_height: 1,
+            timestamp: "0".into(),
+            fields: vec![],
+            withdrawal: Some(ArchiveWithdrawal::Token(ArchiveTokenWithdrawal {
+                encoding_version: ERC20_ACTION_ENCODING_V2,
+                registry_index,
+                record_commitment: [registry_index as u8; 32],
+                asset_id: [registry_index as u8; 32],
+                recipient,
+                amount: 1,
+            })),
+        };
+        let mut non_withdrawal = make(3, [1; 20], 3);
+        non_withdrawal.withdrawal = None;
+        let mut native = make(4, [1; 20], 4);
+        native.withdrawal = Some(ArchiveWithdrawal::Native(ArchiveNativeWithdrawal {
+            recipient: [1; 20],
+            amount: 2,
+        }));
+        let actions = vec![
+            make(0, [1; 20], 0),
+            make(1, [2; 20], 1),
+            make(2, [1; 20], 2),
+            non_withdrawal,
+            native,
+            make(5, [1; 20], 5),
+            make(6, [1; 20], 5),
+            make(7, [1; 20], 7),
+        ];
+        let settled = HashSet::from([2]);
+        let page = pending_action_page(actions.clone(), &settled, true, Some([1; 20]), Some(0), 2);
+        assert_eq!(
+            page.iter()
+                .map(|row| row.global_action_index)
+                .collect::<Vec<_>>(),
+            vec![5, 6]
+        );
+        let identities = unique_token_withdrawal_identities(page.iter().filter_map(|action| {
+            match &action.withdrawal {
+                Some(ArchiveWithdrawal::Token(withdrawal)) => Some(withdrawal),
+                _ => None,
+            }
+        }));
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].registry_index, 5);
+        let native = pending_action_page(actions.clone(), &settled, false, Some([1; 20]), None, 1);
+        assert_eq!(native[0].global_action_index, 4);
+        let next = pending_action_page(actions.clone(), &settled, true, Some([1; 20]), Some(6), 2);
+        assert_eq!(next[0].global_action_index, 7);
+        assert!(pending_action_page(actions, &settled, true, None, None, 0).is_empty());
+    }
 
     #[test]
     fn parses_native_withdrawal_sender_action() {

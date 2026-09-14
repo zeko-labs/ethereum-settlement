@@ -5,6 +5,8 @@ import { depositProgress, withdrawalProgress } from "./status"
 const deposit = (status: string): DepositStatus => ({
   nonce: 1,
   token: "0x0000000000000000000000000000000000000000",
+  assetId: null,
+  encodingVersion: null,
   sender: "0x0000000000000000000000000000000000000001",
   zekoRecipient: "0x01",
   ethereumAmount: "1000000000",

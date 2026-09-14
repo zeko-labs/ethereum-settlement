@@ -23,6 +23,12 @@ export const bridgeAmountFromEth = (value: string) => {
   return { valueWei, zekoAmount }
 }
 
+export const bridgeAmountFromToken = (value: string, decimals: number) => {
+  const amount = parseDecimalUnits(value, decimals)
+  if (amount > UINT64_MAX) throw new AmountError("Amount exceeds the bridge limit")
+  return { ethereumAmount: amount, zekoAmount: amount }
+}
+
 export const formatUnits = (units: bigint, decimals: number, maxDecimals = decimals): string => {
   const negative = units < 0n
   const absolute = negative ? -units : units
@@ -33,9 +39,9 @@ export const formatUnits = (units: bigint, decimals: number, maxDecimals = decim
   return `${negative ? "-" : ""}${whole}${trimmed ? `.${trimmed}` : ""}`
 }
 
-export const normalizeAmountInput = (value: string): string => {
+export const normalizeAmountInput = (value: string, decimals = 9): string => {
   const cleaned = value.replace(/[^0-9.]/g, "")
   const [whole = "", ...fractions] = cleaned.split(".")
-  const fraction = fractions.join("").slice(0, 9)
+  const fraction = fractions.join("").slice(0, decimals)
   return fractions.length > 0 ? `${whole}.${fraction}` : whole
 }

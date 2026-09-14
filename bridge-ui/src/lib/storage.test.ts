@@ -64,6 +64,29 @@ describe("operation persistence", () => {
     expect(storage.get("key")).not.toContain("privateKey")
   })
 
+  it("persists validated ERC20 identity with an operation", () => {
+    const asset = {
+      kind: "erc20" as const,
+      token: "0x0000000000000000000000000000000000000001",
+      assetId: `0x${"11".repeat(32)}`,
+      symbol: "USDC",
+      decimals: 6
+    }
+    const operation = {
+      id: "withdrawal:token",
+      direction: "withdrawal" as const,
+      amount: "2.5",
+      recipient: "0x0000000000000000000000000000000000000002",
+      transactionHash: "5Jtoken",
+      createdAt: "2026-07-15T00:00:00.000Z",
+      asset
+    }
+    const storage = { getItem: () => JSON.stringify([operation]) } as unknown as Storage
+    expect(readOperations("key", storage)).toEqual([operation])
+    asset.decimals = 10
+    expect(readOperations("key", storage)).toEqual([])
+  })
+
   it("remembers only whether the selected Mina wallet was previously authorized", () => {
     const storage = new Map<string, string>()
     const adapter = {
