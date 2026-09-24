@@ -5,16 +5,12 @@ use pickles_verifier::verify;
 use pickles_verifier::wire::{
     canonical_wrap_vk_json, parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk, OcamlProof,
 };
-use serde::{Deserialize, Serialize};
 use sp1_core_executor::Program;
 use sp1_core_executor_runner::MinimalExecutorRunner;
 use sp1_sdk::{include_elf, Elf, SP1Stdin};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
-use zeko_sp1_lib::{
-    AssetRegistryBatchCheckpointV4, AssetRegistryCheckpointV3, InnerActionBatchWitnessV2,
-    SettlementBindingV1, SettlementContextV1, SettlementWitnessV1,
-};
+use zeko_sp1_lib::SettlementWitnessV1;
 
 pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
 pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
@@ -57,24 +53,7 @@ pub fn execute_minimal(elf: Elf, stdin: SP1Stdin) -> Result<(Vec<u8>, u64)> {
     Ok((executor.into_public_values_stream(), cycles))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SettlementProofBundle {
-    pub vk_json: String,
-    pub proof_json: String,
-    pub public_input_skeleton_json: String,
-    pub app_statement_json: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding: Option<SettlementBindingV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<SettlementContextV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asset_registry_checkpoint: Option<AssetRegistryCheckpointV3>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub asset_registry_batch: Option<AssetRegistryBatchCheckpointV4>,
-}
+pub use zeko_sp1_lib::SettlementProofBundle;
 
 pub fn settlement_stdin(fixture_dir: &str) -> Result<SP1Stdin> {
     let verifiable = load_verifiable(Path::new(fixture_dir))?;

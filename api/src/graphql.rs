@@ -27,7 +27,8 @@ pub async fn handle(
         Ok(data) => Json(json!({"data": data})),
         Err(error) => {
             tracing::warn!(%error, query = %request.query, "virtual Mina GraphQL query failed");
-            Json(json!({"errors": [{"message": error.to_string()}]}))
+            Json(json!({"errors": [{"message": error.to_string(),
+                "extensions": {"code": crate::outer_writer::error_code(&error)}}]}))
         }
     }
 }
@@ -128,7 +129,9 @@ struct GatewaySettlement {
     fee_payer_public_key: String,
     nonce: u64,
     command_base64: String,
-    proof: zkapp_script::SettlementProofBundle,
+    proof: zeko_sp1_lib::SettlementProofBundle,
+    #[serde(default)]
+    reservation: Option<crate::outer_writer::ReservationToken>,
 }
 
 async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Result<Value> {
@@ -165,6 +168,7 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
         "schemaVersion": settlement.schema_version,
         "minaTransactionHash": settlement.mina_transaction_hash,
         "proof": settlement.proof,
+        "reservation": settlement.reservation,
         "submission": {
             "outerAccountPublicKey": settlement.outer_account_public_key,
             "feePayerPublicKey": settlement.fee_payer_public_key,
@@ -174,6 +178,7 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
     });
     let input_digest = format!("0x{}", hex::encode(sha2::Sha256::digest(input.to_string())));
     let mut tx = state.pool.begin().await?;
+    crate::outer_writer::lock(&mut tx).await?;
     let actual_job_id = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO proof_jobs
             (id, kind, input, idempotency_key, input_digest)
@@ -185,12 +190,22 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
     )
     .bind(job_id)
     .bind(&input)
-    .bind(&settlement.mina_transaction_hash)
+    .bind(crate::outer_writer::settlement_idempotency_key(
+        &settlement.mina_transaction_hash,
+        settlement.reservation.as_ref(),
+    ))
     .bind(input_digest)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| anyhow::anyhow!("transaction hash was reused for different proof input"))?;
     if actual_job_id == job_id {
+        crate::outer_writer::attach_settlement(
+            &mut tx,
+            job_id,
+            settlement.reservation.as_ref(),
+            &input,
+        )
+        .await?;
         let configured_fee_payer = state
             .fee_payer_public_key
             .as_deref()
@@ -224,10 +239,16 @@ async fn send_zkapp(state: &AppState, request: &GraphqlRequest) -> anyhow::Resul
             settlement.nonce
         );
     }
+    // An idempotent replay of a terminal job must not resurrect its pool row.
     sqlx::query(
         "INSERT INTO gateway_pending_commands
             (job_id, public_key, nonce, command_kind, command_base64)
-         VALUES ($1, $2, $3, 'zkapp', $4)
+         SELECT $1, $2, $3, 'zkapp', $4
+         WHERE EXISTS (SELECT 1 FROM proof_jobs WHERE id = $1 AND (
+             status NOT IN ('confirmed', 'executed', 'failed', 'proof_failed',
+                           'ethereum_reverted', 'reorged', 'rejected')
+             OR ((transaction_hash IS NOT NULL OR prepared_transaction IS NOT NULL)
+                 AND status NOT IN ('confirmed', 'ethereum_reverted'))))
          ON CONFLICT (job_id, command_kind) DO NOTHING",
     )
     .bind(actual_job_id)

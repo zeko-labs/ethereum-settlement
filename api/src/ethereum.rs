@@ -1,10 +1,13 @@
 use alloy::{
     consensus::Transaction,
-    eips::BlockNumberOrTag,
+    eips::{BlockId, BlockNumberOrTag, Encodable2718},
     network::EthereumWallet,
     primitives::{Address, Bytes, TxHash, B256, U256},
-    providers::{Provider, ProviderBuilder},
-    rpc::types::{Filter, Log},
+    providers::{Provider, ProviderBuilder, RootProvider},
+    rpc::{
+        client::RpcClient,
+        types::{Filter, Log},
+    },
     signers::local::PrivateKeySigner,
     sol,
     sol_types::{SolCall, SolEvent},
@@ -16,7 +19,10 @@ use std::{
 };
 use zeko_sp1_lib::ERC20_ACTION_ENCODING_V2;
 
-use crate::proof_kind::ProofKind;
+use crate::{
+    proof_kind::ProofKind,
+    rpc::{RpcConfig, RpcTransport},
+};
 
 pub const HISTORICAL_ERC20_ACTION_ENCODING_V1: u32 = 1;
 
@@ -156,7 +162,8 @@ mod legacy_bridge_events {
 
 #[derive(Clone)]
 pub struct Ethereum {
-    rpc_url: String,
+    rpc: RpcClient,
+    provider: RootProvider,
     settlement_address: Address,
     bridge_address: Address,
     settlement_key: String,
@@ -411,6 +418,16 @@ pub struct TransactionReceiptRef {
     pub succeeded: bool,
 }
 
+/// Persist this before broadcasting. Retries must reuse these exact signed bytes,
+/// including the original nonce and fee fields.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PreparedSubmission {
+    pub transaction_hash: String,
+    pub raw_transaction: String,
+    pub sender: String,
+    pub nonce: u64,
+}
+
 impl Ethereum {
     pub fn new(
         rpc_url: String,
@@ -424,8 +441,11 @@ impl Ethereum {
             "SETTLEMENT_PRIVATE_KEY is required"
         );
         anyhow::ensure!(!bridge_key.is_empty(), "BRIDGE_PRIVATE_KEY is required");
+        let rpc = RpcTransport::new(&rpc_url, RpcConfig::from_env()?)?.into_client();
+        let provider = ProviderBuilder::default().connect_client(rpc.clone());
         Ok(Self {
-            rpc_url,
+            rpc,
+            provider,
             settlement_address: settlement_address
                 .parse()
                 .context("invalid settlement address")?,
@@ -436,10 +456,7 @@ impl Ethereum {
     }
 
     pub async fn chain_id(&self) -> Result<u64> {
-        Ok(ProviderBuilder::new()
-            .connect_http(self.rpc_url.parse()?)
-            .get_chain_id()
-            .await?)
+        Ok(self.provider.get_chain_id().await?)
     }
 
     pub async fn ensure_local_mock_verifiers(
@@ -452,7 +469,7 @@ impl Ethereum {
             "API_LOCAL_MOCK_SUBMIT is restricted to chain ID 31337 unless \
              API_UNSAFE_ALLOW_MOCK_ON_SEPOLIA=true is explicitly set on Sepolia"
         );
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let settlement_verifier = IZekoSettlement::new(self.settlement_address, &provider)
             .verifier()
             .call()
@@ -473,13 +490,18 @@ impl Ethereum {
     }
 
     pub async fn configured_program_vkeys(&self) -> Result<[B256; 2]> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let block = BlockId::hash_canonical(self.latest_block().await?.hash);
+        let provider = self.provider.clone();
         let settlement = IZekoSettlement::new(self.settlement_address, &provider)
             .programVKey()
+            .block(block)
             .call()
             .await?;
         let bridge = IEthereumZekoBridge::new(self.bridge_address, provider);
-        Ok([settlement, bridge.bridgeProgramVKey().call().await?])
+        Ok([
+            settlement,
+            bridge.bridgeProgramVKey().block(block).call().await?,
+        ])
     }
 
     pub fn settlement_address(&self) -> Address {
@@ -487,14 +509,11 @@ impl Ethereum {
     }
 
     pub async fn block_number(&self) -> Result<u64> {
-        Ok(ProviderBuilder::new()
-            .connect_http(self.rpc_url.parse()?)
-            .get_block_number()
-            .await?)
+        Ok(self.provider.get_block_number().await?)
     }
 
     pub async fn block(&self, number: u64) -> Result<BlockRef> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let block = provider
             .get_block_by_number(BlockNumberOrTag::Number(number))
             .await?
@@ -507,11 +526,19 @@ impl Ethereum {
     }
 
     pub async fn finalized_block(&self) -> Result<BlockRef> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        self.block_at_tag(BlockNumberOrTag::Finalized).await
+    }
+
+    pub async fn latest_block(&self) -> Result<BlockRef> {
+        self.block_at_tag(BlockNumberOrTag::Latest).await
+    }
+
+    async fn block_at_tag(&self, tag: BlockNumberOrTag) -> Result<BlockRef> {
+        let provider = self.provider.clone();
         let block = provider
-            .get_block_by_number(BlockNumberOrTag::Finalized)
+            .get_block_by_number(tag)
             .await?
-            .context("Ethereum RPC did not return a consensus-finalized block")?;
+            .with_context(|| format!("Ethereum RPC did not return the {tag} block"))?;
         Ok(BlockRef {
             number: block.header.number,
             hash: block.header.hash,
@@ -526,7 +553,7 @@ impl Ethereum {
         let hash: TxHash = transaction_hash
             .parse()
             .context("invalid Ethereum transaction hash")?;
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let Some(receipt) = provider.get_transaction_receipt(hash).await? else {
             return Ok(None);
         };
@@ -545,16 +572,39 @@ impl Ethereum {
     }
 
     pub async fn settlement_state(&self) -> Result<SettlementState> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        Ok(self.settlement_state_at_latest().await?.1)
+    }
+
+    pub async fn settlement_state_at_latest(&self) -> Result<(BlockRef, SettlementState)> {
+        let block = self.latest_block().await?;
+        let state = self.settlement_state_at(&block).await?;
+        Ok((block, state))
+    }
+
+    pub async fn settlement_state_at_finalized(&self) -> Result<(BlockRef, SettlementState)> {
+        let block = self.finalized_block().await?;
+        let state = self.settlement_state_at(&block).await?;
+        Ok((block, state))
+    }
+
+    pub async fn settlement_state_at(&self, block: &BlockRef) -> Result<SettlementState> {
+        let provider = self.provider.clone();
         let contract = IZekoSettlement::new(self.settlement_address, provider);
+        // EIP-1898 binds every getter to the same canonical block. Never silently
+        // fall back to latest when a node cannot serve the requested snapshot.
+        let block = BlockId::hash_canonical(block.hash);
         Ok(SettlementState {
-            program_vkey: contract.programVKey().call().await?,
-            vk_hash: contract.vkHash().call().await?,
-            action_state: contract.actionState().call().await?,
-            current_root: contract.currentRoot().call().await?,
-            outer_state: contract.outerState().call().await?,
-            outer_action_state_length: contract.outerActionStateLength().call().await?,
-            batch_sequence: contract.batchSequence().call().await?,
+            program_vkey: contract.programVKey().block(block).call().await?,
+            vk_hash: contract.vkHash().block(block).call().await?,
+            action_state: contract.actionState().block(block).call().await?,
+            current_root: contract.currentRoot().block(block).call().await?,
+            outer_state: contract.outerState().block(block).call().await?,
+            outer_action_state_length: contract
+                .outerActionStateLength()
+                .block(block)
+                .call()
+                .await?,
+            batch_sequence: contract.batchSequence().block(block).call().await?,
         })
     }
 
@@ -563,38 +613,59 @@ impl Ethereum {
         nonce: Option<u64>,
         action_state_after: Option<B256>,
     ) -> Result<(BridgeState, Option<B256>)> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let block = self.latest_block().await?;
+        self.bridge_state_at(&block, nonce, action_state_after)
+            .await
+    }
+
+    pub async fn bridge_state_at(
+        &self,
+        block: &BlockRef,
+        nonce: Option<u64>,
+        action_state_after: Option<B256>,
+    ) -> Result<(BridgeState, Option<B256>)> {
+        let provider = self.provider.clone();
         let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-        let program_vkey = contract.bridgeProgramVKey().call().await?;
+        let block = BlockId::hash_canonical(block.hash);
+        let program_vkey = contract.bridgeProgramVKey().block(block).call().await?;
         let historical = match nonce {
-            Some(nonce) => Some(contract.depositStateByNonce(nonce).call().await?),
+            Some(nonce) => Some(
+                contract
+                    .depositStateByNonce(nonce)
+                    .block(block)
+                    .call()
+                    .await?,
+            ),
             None => None,
         };
         Ok((
             BridgeState {
                 program_vkey,
-                deposit_nonce: contract.depositNonce().call().await?,
-                current_deposit_state: contract.currentDepositState().call().await?,
-                bridged_deposit_nonce: contract.bridgedDepositNonce().call().await?,
+                deposit_nonce: contract.depositNonce().block(block).call().await?,
+                current_deposit_state: contract.currentDepositState().block(block).call().await?,
+                bridged_deposit_nonce: contract.bridgedDepositNonce().block(block).call().await?,
                 action_state_processed: match action_state_after {
-                    Some(action_state) => {
-                        Some(contract.processedActionState(action_state).call().await?)
-                    }
+                    Some(action_state) => Some(
+                        contract
+                            .processedActionState(action_state)
+                            .block(block)
+                            .call()
+                            .await?,
+                    ),
                     None => None,
                 },
-                paused: contract.paused().call().await?,
+                paused: contract.paused().block(block).call().await?,
             },
             historical,
         ))
     }
 
-    pub async fn bridge_deposit_logs(
-        &self,
-        from_block: u64,
-        to_block: u64,
-    ) -> Result<Vec<BridgeDepositLog>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
-        let filter = bridge_deposit_filter(self.bridge_address, from_block, to_block);
+    pub async fn bridge_deposit_logs(&self, block: &BlockRef) -> Result<Vec<BridgeDepositLog>> {
+        let provider = self.provider.clone();
+        // Bind logs to the header being persisted, including an empty result.
+        // A number-based query could silently read a replacement block.
+        let filter = bridge_deposit_filter(self.bridge_address, block.number, block.number)
+            .at_block_hash(block.hash);
         let mut bridge_logs = Vec::new();
         let mut erc20_logs = Vec::new();
         let mut erc20_v2_logs = Vec::new();
@@ -762,7 +833,7 @@ impl Ethereum {
         from_block: u64,
         to_block: u64,
     ) -> Result<Vec<SettlementAcceptedLog>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let filter = Filter::new()
             .address(self.settlement_address)
             .event_signature(IZekoSettlement::SettlementAccepted::SIGNATURE_HASH)
@@ -809,7 +880,7 @@ impl Ethereum {
         from_block: u64,
         to_block: u64,
     ) -> Result<Vec<InnerActionBatchAcceptedLog>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let filter = Filter::new()
             .address(self.settlement_address)
             .event_signature(IZekoSettlement::InnerActionBatchAccepted::SIGNATURE_HASH)
@@ -844,7 +915,7 @@ impl Ethereum {
         from_block: u64,
         to_block: u64,
     ) -> Result<Vec<NativeWithdrawalClaimedLog>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let filter = Filter::new()
             .address(self.bridge_address)
             .event_signature(IEthereumZekoBridge::NativeWithdrawalClaimed::SIGNATURE_HASH)
@@ -888,7 +959,7 @@ impl Ethereum {
         from_block: u64,
         to_block: u64,
     ) -> Result<Vec<BridgeTransitionAcceptedLog>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let filter = bridge_transition_filter(self.bridge_address, from_block, to_block);
         provider
             .get_logs(&filter)
@@ -947,7 +1018,7 @@ impl Ethereum {
         let hash: TxHash = transaction_hash
             .parse()
             .context("invalid Ethereum transaction hash")?;
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         let transaction = provider
             .get_transaction_by_hash(hash)
             .await?
@@ -969,7 +1040,7 @@ impl Ethereum {
     }
 
     pub async fn withdrawal_delay_slots(&self) -> Result<u32> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
             .withdrawalDelaySlots()
             .call()
@@ -977,7 +1048,7 @@ impl Ethereum {
     }
 
     pub async fn current_virtual_slot(&self) -> Result<u64> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         Ok(IZekoSettlement::new(self.settlement_address, provider)
             .currentVirtualSlot()
             .call()
@@ -985,7 +1056,7 @@ impl Ethereum {
     }
 
     pub async fn next_withdrawal_index(&self, recipient: Address) -> Result<u32> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
             .nextWithdrawalIndex(recipient)
             .call()
@@ -997,7 +1068,7 @@ impl Ethereum {
         token: Address,
         recipient: Address,
     ) -> Result<u32> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider.clone();
         Ok(IEthereumZekoBridge::new(self.bridge_address, provider)
             .nextTokenWithdrawalIndex(token, recipient)
             .call()
@@ -1009,7 +1080,11 @@ impl Ethereum {
         identities: &[TokenWithdrawalIdentity],
     ) -> Result<HashMap<TokenWithdrawalIdentity, Address>> {
         let identities = identities.iter().copied().collect::<HashSet<_>>();
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        if identities.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let block = BlockId::hash_canonical(self.latest_block().await?.hash);
+        let provider = self.provider.clone();
         let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
         let mut resolved = HashMap::with_capacity(identities.len());
         for identity in identities {
@@ -1024,20 +1099,34 @@ impl Ethereum {
             );
             let token = contract
                 .assetTokenByRegistryIndex(identity.registry_index)
+                .block(block)
                 .call()
                 .await?;
             anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
             anyhow::ensure!(
-                contract.canonicalTokenRegistered(token).call().await?,
+                contract
+                    .canonicalTokenRegistered(token)
+                    .block(block)
+                    .call()
+                    .await?,
                 "archived ERC20 token is not canonically registered"
             );
             anyhow::ensure!(
-                contract.assetIdByToken(token).call().await? == identity.asset_id,
+                contract.assetIdByToken(token).block(block).call().await? == identity.asset_id,
                 "archived ERC20 asset id does not match Ethereum"
             );
             anyhow::ensure!(
-                contract.registryIndexByToken(token).call().await? == identity.registry_index
-                    && contract.recordCommitmentByToken(token).call().await?
+                contract
+                    .registryIndexByToken(token)
+                    .block(block)
+                    .call()
+                    .await?
+                    == identity.registry_index
+                    && contract
+                        .recordCommitmentByToken(token)
+                        .block(block)
+                        .call()
+                        .await?
                         == identity.record_commitment,
                 "archived ERC20 registry identity does not match Ethereum"
             );
@@ -1050,25 +1139,26 @@ impl Ethereum {
         self.bridge_address
     }
 
-    pub async fn submit(
+    pub async fn prepare_submission(
         &self,
         kind: ProofKind,
         public_values: Vec<u8>,
         proof: Vec<u8>,
-    ) -> Result<TxHash> {
+    ) -> Result<PreparedSubmission> {
         let key = match kind {
             ProofKind::Settlement => &self.settlement_key,
             ProofKind::Bridge => &self.bridge_key,
         };
         let signer = PrivateKeySigner::from_str(key).context("invalid Ethereum private key")?;
+        let sender = signer.address();
         let wallet = EthereumWallet::from(signer);
         let provider = ProviderBuilder::new()
             .wallet(wallet)
-            .connect_http(self.rpc_url.parse()?);
+            .connect_client(self.rpc.clone());
         let public_values = Bytes::from(public_values);
         let proof = Bytes::from(proof);
 
-        let transaction_hash = match kind {
+        let request = match kind {
             ProofKind::Settlement => {
                 let contract = IZekoSettlement::new(self.settlement_address, provider.clone());
                 contract
@@ -1076,11 +1166,9 @@ impl Ethereum {
                     .call()
                     .await
                     .context("simulate settlement submission")?;
-                let pending = contract
+                contract
                     .verifyAndUpdateRoot(public_values, proof)
-                    .send()
-                    .await?;
-                *pending.tx_hash()
+                    .into_transaction_request()
             }
             ProofKind::Bridge => {
                 let contract = IEthereumZekoBridge::new(self.bridge_address, provider.clone());
@@ -1089,14 +1177,74 @@ impl Ethereum {
                     .call()
                     .await
                     .context("simulate bridge submission")?;
-                let pending = contract
+                contract
                     .submitBridgeTransition(public_values, proof)
-                    .send()
-                    .await?;
-                *pending.tx_hash()
+                    .into_transaction_request()
             }
         };
-        Ok(transaction_hash)
+        let envelope = provider
+            .fill(request)
+            .await?
+            .try_into_envelope()
+            .map_err(|_| anyhow::anyhow!("Ethereum wallet did not produce a signed transaction"))?;
+        Ok(PreparedSubmission {
+            transaction_hash: envelope.tx_hash().to_string(),
+            raw_transaction: format!("0x{}", hex::encode(envelope.encoded_2718())),
+            sender: sender.to_string(),
+            nonce: envelope.nonce(),
+        })
+    }
+
+    pub async fn transaction_seen(&self, transaction_hash: &str) -> Result<bool> {
+        let hash: TxHash = transaction_hash
+            .parse()
+            .context("invalid Ethereum transaction hash")?;
+        if self.provider.get_transaction_by_hash(hash).await?.is_some() {
+            return Ok(true);
+        }
+        Ok(self.provider.get_transaction_receipt(hash).await?.is_some())
+    }
+
+    pub async fn broadcast_submission(&self, prepared: &PreparedSubmission) -> Result<TxHash> {
+        let hash: TxHash = prepared
+            .transaction_hash
+            .parse()
+            .context("invalid prepared transaction hash")?;
+        let raw = hex::decode(
+            prepared
+                .raw_transaction
+                .strip_prefix("0x")
+                .unwrap_or(&prepared.raw_transaction),
+        )?;
+        anyhow::ensure!(
+            alloy::primitives::keccak256(&raw) == hash,
+            "prepared Ethereum transaction hash does not match signed bytes"
+        );
+        if self.transaction_seen(&prepared.transaction_hash).await? {
+            return Ok(hash);
+        }
+        match self.provider.send_raw_transaction(&raw).await {
+            Ok(pending) => {
+                anyhow::ensure!(
+                    *pending.tx_hash() == hash,
+                    "RPC returned an unexpected transaction hash"
+                );
+                Ok(hash)
+            }
+            Err(error) => {
+                // A timeout, connection reset, or "already known" response can
+                // follow successful propagation. Never refill or resign here.
+                if self
+                    .transaction_seen(&prepared.transaction_hash)
+                    .await
+                    .unwrap_or(false)
+                {
+                    Ok(hash)
+                } else {
+                    Err(error.into())
+                }
+            }
+        }
     }
 }
 
@@ -1107,6 +1255,162 @@ fn local_mock_chain_allowed(chain_id: u64, unsafe_allow_mock_on_sepolia: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    use serde_json::{json, Value};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    fn test_ethereum(url: &str) -> Ethereum {
+        Ethereum::new(
+            url.into(),
+            format!("0x{}", "11".repeat(20)),
+            format!("0x{}", "22".repeat(20)),
+            "01".repeat(32),
+            "02".repeat(32),
+        )
+        .unwrap()
+    }
+
+    fn mock_block(hash: B256) -> Value {
+        let empty: alloy::rpc::types::Block = Default::default();
+        let mut block = serde_json::to_value(empty).unwrap();
+        block["hash"] = json!(hash.to_string());
+        block["number"] = json!("0x64");
+        block
+    }
+
+    #[tokio::test]
+    async fn contract_snapshots_pin_every_getter_to_one_canonical_hash() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = requests.clone();
+        let hash = B256::repeat_byte(7);
+        let server = crate::rpc::test_support::serve(move |request| {
+            observed.lock().unwrap().push(request.clone());
+            async move {
+                let result = if request["method"] == "eth_getBlockByNumber" {
+                    mock_block(hash)
+                } else {
+                    assert_eq!(request["method"], "eth_call");
+                    assert_eq!(
+                        request["params"][1],
+                        json!({"blockHash":hash.to_string(),"requireCanonical":true})
+                    );
+                    let input = request["params"][0]["input"]
+                        .as_str()
+                        .or_else(|| request["params"][0]["data"].as_str())
+                        .unwrap();
+                    let words = if input
+                        == format!(
+                            "0x{}",
+                            hex::encode(IZekoSettlement::outerStateCall::SELECTOR)
+                        ) {
+                        8
+                    } else {
+                        1
+                    };
+                    json!(format!("0x{}", "00".repeat(32 * words)))
+                };
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result})).into_response()
+            }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let (block, _) = ethereum.settlement_state_at_finalized().await.unwrap();
+        ethereum
+            .bridge_state_at(&block, Some(0), Some(B256::ZERO))
+            .await
+            .unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0]["params"][0], "finalized");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "eth_getBlockByNumber")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "eth_call")
+                .count(),
+            14
+        );
+    }
+
+    #[tokio::test]
+    async fn preparation_retries_filler_reads_without_broadcast_and_ambiguous_send_reconciles() {
+        let gas_calls = Arc::new(AtomicUsize::new(0));
+        let send_calls = Arc::new(AtomicUsize::new(0));
+        let sent = Arc::new(AtomicBool::new(false));
+        let submitted_bytes = Arc::new(Mutex::new(None));
+        let gas_counter = gas_calls.clone();
+        let send_counter = send_calls.clone();
+        let sent_state = sent.clone();
+        let submitted = submitted_bytes.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let gas_counter = gas_counter.clone();
+            let send_counter = send_counter.clone();
+            let sent = sent_state.clone();
+            let submitted = submitted.clone();
+            async move {
+                let result = match request["method"].as_str().unwrap() {
+                    "eth_call" => json!("0x"),
+                    "eth_estimateGas" => {
+                        if gas_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return StatusCode::TOO_MANY_REQUESTS.into_response();
+                        }
+                        json!("0x5208")
+                    }
+                    "eth_feeHistory" => json!({"oldestBlock":"0x0","baseFeePerGas":["0x1","0x1"],"gasUsedRatio":[0.5],"reward":[["0x1"]]}),
+                    "eth_chainId" => json!("0x7a69"),
+                    "eth_getTransactionCount" => json!("0x2"),
+                    "eth_getTransactionByHash" => Value::Null,
+                    "eth_getTransactionReceipt" if sent.load(Ordering::SeqCst) => json!({
+                        "transactionHash":request["params"][0],"transactionIndex":"0x0", "blockHash":B256::repeat_byte(1).to_string(),"blockNumber":"0x64",
+                        "from":format!("0x{}", "11".repeat(20)),"to":format!("0x{}", "22".repeat(20)),"cumulativeGasUsed":"0x5208","gasUsed":"0x5208","contractAddress":null,
+                        "logs":[],"logsBloom":format!("0x{}", "00".repeat(256)),"status":"0x1","effectiveGasPrice":"0x1","type":"0x2"
+                    }),
+                    "eth_getTransactionReceipt" => Value::Null,
+                    "eth_sendRawTransaction" => {
+                        send_counter.fetch_add(1, Ordering::SeqCst);
+                        *submitted.lock().unwrap() = Some(request["params"][0].as_str().unwrap().to_owned());
+                        sent.store(true, Ordering::SeqCst);
+                        // The upstream accepted the bytes before the proxy failed.
+                        return StatusCode::BAD_GATEWAY.into_response();
+                    }
+                    method => panic!("unexpected RPC method {method}"),
+                };
+                Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response()
+            }
+        }).await;
+        let ethereum = test_ethereum(&server.url);
+        let prepared = ethereum
+            .prepare_submission(ProofKind::Settlement, vec![1], vec![2])
+            .await
+            .unwrap();
+        assert_eq!(prepared.nonce, 2);
+        assert_eq!(gas_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(send_calls.load(Ordering::SeqCst), 0);
+        let persisted = serde_json::to_string(&prepared).unwrap();
+        let restored: PreparedSubmission = serde_json::from_str(&persisted).unwrap();
+        assert_eq!(
+            ethereum
+                .broadcast_submission(&restored)
+                .await
+                .unwrap()
+                .to_string(),
+            prepared.transaction_hash
+        );
+        assert_eq!(
+            submitted_bytes.lock().unwrap().as_ref(),
+            Some(&prepared.raw_transaction)
+        );
+        ethereum.broadcast_submission(&restored).await.unwrap();
+        assert_eq!(send_calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn local_mock_chain_policy_requires_an_explicit_sepolia_opt_in() {
