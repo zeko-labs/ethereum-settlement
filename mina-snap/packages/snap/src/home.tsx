@@ -38,11 +38,14 @@ export type WalletAccounts = {
   tokens: TokenAccount[]
 }
 
+export type NativeCurrency = { symbol: "ETH" | "MINA"; decimals: 9 }
+
 export type WalletHomeSnapshot = {
   publicKey: string
   networkId: string
   networkName: string
   endpoint?: string
+  nativeCurrency?: NativeCurrency
   native?: NativeAccount | null
   tokens: TokenAccount[]
   error?: string
@@ -139,17 +142,28 @@ const endpointLabel = (endpoint: string | undefined): string | undefined => {
 export const missingEndpointMessage = (networkId: string): string =>
   `No GraphQL endpoint is configured for ${networkId}. Connect a Zeko dapp and add or switch to a configured network.`
 
-// Ethereum deployments currently use zeko:testnet; zeko:mainnet is the legacy network.
-export const nativeTokenSymbol = (networkId: string): "ETH" | "MINA" =>
-  networkId === "zeko:testnet" ? "ETH" : "MINA"
+// Testnet identifiers are shared with legacy deployments. Use the currency
+// approved with the endpoint instead of inferring it from an ID, name, or URL.
+export const nativeTokenSymbol = (
+  networkId: string,
+  nativeCurrency?: NativeCurrency
+): "ETH" | "MINA" | "native units" => {
+  if (["mina:mainnet", "mina:devnet", "zeko:mainnet"].includes(networkId)) return "MINA"
+  return nativeCurrency?.decimals === 9 ? nativeCurrency.symbol : "native units"
+}
 
-export const formatNativeReview = (value: string, networkId: string): string =>
-  nativeTokenSymbol(networkId) === "ETH"
-    ? `${formatNanomina(value)} ETH (${value} base units)`
-    : `${value} nanomina`
+export const formatNativeReview = (
+  value: string,
+  networkId: string,
+  nativeCurrency?: NativeCurrency
+): string => {
+  const symbol = nativeTokenSymbol(networkId, nativeCurrency)
+  if (symbol === "ETH") return `${formatNanomina(value)} ETH (${value} base units)`
+  return `${value} ${symbol === "MINA" ? "nanomina" : "native base units"}`
+}
 
 export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
-  const symbol = nativeTokenSymbol(snapshot.networkId)
+  const symbol = nativeTokenSymbol(snapshot.networkId, snapshot.nativeCurrency)
   const nativeBalance = snapshot.native === undefined
     ? "Unavailable"
     : `${formatNanomina(snapshot.native?.total ?? "0")} ${symbol}`
@@ -187,9 +201,13 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
         <Text>This B62 address receives ETH on Zeko. Use your Ethereum account for Ethereum transfers.</Text>
       ) : null}
 
+      {symbol === "native units" ? (
+        <Text>Native asset label is not configured. Reconnect through the bridge to approve its currency display.</Text>
+      ) : null}
+
       <Heading>Balance</Heading>
       <Section>
-        <Row label={symbol}>
+        <Row label={symbol === "native units" ? "Native balance" : symbol}>
           <Text><Bold>{nativeBalance}</Bold></Text>
         </Row>
         <Row label="Available">
@@ -238,7 +256,7 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
       )}
 
       <Divider />
-      <Heading>Send {symbol}</Heading>
+      <Heading>Send {symbol === "native units" ? "native token" : symbol}</Heading>
       {snapshot.endpoint ? (
         <Form name="send-mina">
           <Field label="Recipient">

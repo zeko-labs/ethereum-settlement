@@ -8,10 +8,16 @@ account receives and sends assets on Zeko.
 
 Zeko retains Mina-compatible account derivation and transaction signatures.
 The adapter therefore keeps Auro's `window.mina` method names and result shapes,
-and the bridge uses the existing `onlySign` boundary. The ETH display targets
-the current Ethereum-backed `zeko:testnet` deployment. Mina mainnet/devnet and
-legacy `zeko:mainnet` support retain their network names and MINA currency labels;
-those networks have not been migrated by this wallet update.
+and the bridge uses the existing `onlySign` boundary. The Ethereum bridge
+supplies an ETH display label and nine-decimal precision when requesting its
+network. The Snap shows that metadata in the existing network approval and
+uses it only for display. Both supported testnet IDs (`zeko:testnet` and
+`testnet`) can therefore display ETH without guessing from their names or URLs.
+
+Saved testnet endpoints without approved currency metadata show neutral native
+units until reconnected through the bridge. Mina mainnet/devnet and legacy
+`zeko:mainnet` retain their network names and MINA currency labels; those
+networks have not been migrated by this wallet update.
 
 The implementation is based on Auro extension 2.5.2 and its provider package,
 not on the abandoned MinaPortal Snap. The detailed source review and design
@@ -114,7 +120,9 @@ connects Zeko account 0, selects `zeko:testnet`, and uses the Snap for the same
 After connecting once, open MetaMask, select **Snaps**, then select **Zeko
 Wallet** to view its wallet home page. New installations start on Zeko testnet;
 existing installations keep their selected network. Connect through the bridge
-to approve the deployment's GraphQL endpoint before reading balances or sending.
+to approve the deployment's GraphQL endpoint and native currency display.
+Previously approved endpoints need one additional network approval to adopt
+the ETH label; subsequent connections reuse it.
 The page shows the copyable `B62…` address, exact ETH balance breakdown on Zeko,
 nonce, and custom token accounts. Custom-token amounts use exact base units
 because account responses do not include trusted token-decimal metadata.

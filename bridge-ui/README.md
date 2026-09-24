@@ -32,6 +32,12 @@ transfers are built and proved in the browser with the pinned
 sequencer. MFT amounts use exact base units; the first proof can take several
 minutes while the token contract compiles.
 
+The Zeko Wallet Snap receives an explicit ETH display label with nine-decimal
+precision in its network approval. Saved endpoints without that display
+metadata request approval once on reconnection. Network identifiers, signing
+domains, and transaction amounts are unchanged; ambiguous older Snap networks
+show neutral native units until the label is approved.
+
 ## Run locally
 
 ```bash

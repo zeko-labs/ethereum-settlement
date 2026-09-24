@@ -33,6 +33,7 @@ import {
   parseWalletAccounts,
   renderWalletHome,
   renderWalletLoading,
+  type NativeCurrency,
   type WalletHomeSnapshot
 } from "./home"
 
@@ -62,7 +63,7 @@ type MinaSnapState = {
   version: 2
   origins: Record<string, { account: number }>
   selectedNetwork: string
-  chains: Record<string, { url: string; name: string }>
+  chains: Record<string, { url: string; name: string; nativeCurrency?: NativeCurrency }>
   credentials: Record<string, string[]>
 }
 
@@ -494,6 +495,7 @@ const approveZkappSigning = async ({
   origin,
   onlySign,
   networkId,
+  nativeCurrency,
   signingPublicKey,
   feePayerPublicKey,
   fee,
@@ -506,6 +508,7 @@ const approveZkappSigning = async ({
   origin: string
   onlySign: boolean
   networkId: string
+  nativeCurrency?: NativeCurrency
   signingPublicKey: string
   feePayerPublicKey: string
   fee: string
@@ -530,7 +533,7 @@ const approveZkappSigning = async ({
             <Row label="Signature domain"><Text>{signingDomain(networkId)}</Text></Row>
             <Row label="Signing account"><Copyable value={signingPublicKey} /></Row>
             <Row label="Fee payer"><Copyable value={feePayerPublicKey} /></Row>
-            <Row label="Fee"><Text>{formatNativeReview(fee, networkId)}</Text></Row>
+            <Row label="Fee"><Text>{formatNativeReview(fee, networkId, nativeCurrency)}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
             <Row label="Valid until"><Text>{validUntil ?? "No limit"}</Text></Row>
             <Row label="Memo">{renderMemoReview(memo)}</Row>
@@ -595,6 +598,7 @@ const approveTransactionSigning = async ({
   title,
   operation,
   networkId,
+  nativeCurrency,
   signingPublicKey,
   recipientLabel,
   recipient,
@@ -607,6 +611,7 @@ const approveTransactionSigning = async ({
   title: string
   operation: string
   networkId: string
+  nativeCurrency?: NativeCurrency
   signingPublicKey: string
   recipientLabel: "Recipient" | "Delegate"
   recipient: string
@@ -632,8 +637,8 @@ const approveTransactionSigning = async ({
             <Row label={recipientLabel}><Copyable value={recipient} /></Row>
             {amount === undefined
               ? null
-              : <Row label="Amount"><Text>{formatNativeReview(amount, networkId)}</Text></Row>}
-            <Row label="Fee"><Text>{formatNativeReview(fee, networkId)}</Text></Row>
+              : <Row label="Amount"><Text>{formatNativeReview(amount, networkId, nativeCurrency)}</Text></Row>}
+            <Row label="Fee"><Text>{formatNativeReview(fee, networkId, nativeCurrency)}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
             <Row label="Memo">{renderMemoReview(memo)}</Row>
           </Section>
@@ -792,7 +797,7 @@ const walletAccountsQuery = `
 
 type WalletIdentity = Pick<
   WalletHomeSnapshot,
-  "publicKey" | "networkId" | "networkName" | "endpoint"
+  "publicKey" | "networkId" | "networkName" | "endpoint" | "nativeCurrency"
 >
 
 const loadWalletIdentity = async (): Promise<WalletIdentity> => {
@@ -804,6 +809,7 @@ const loadWalletIdentity = async (): Promise<WalletIdentity> => {
     publicKey,
     networkId: state.selectedNetwork,
     networkName,
+    nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
     ...(endpoint ? { endpoint } : {})
   }
 }
@@ -855,9 +861,10 @@ const sendMinaPayment = async (
   const memo = typeof params.memo === "string" ? params.memo : ""
   await approveTransactionSigning({
     origin: requester,
-    title: `Send ${nativeTokenSymbol(state.selectedNetwork)}`,
+    title: `Send ${nativeTokenSymbol(state.selectedNetwork, state.chains[state.selectedNetwork]?.nativeCurrency)}`,
     operation: "Payment (sign and submit)",
     networkId: state.selectedNetwork,
+    nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
     signingPublicKey: publicKey,
     recipientLabel: "Recipient",
     recipient: to,
@@ -1029,9 +1036,19 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     if (typeof request.params !== "object" || request.params === null) {
       throw new InvalidParamsError("mina_addChain requires a URL and name")
     }
-    const { url, name } = request.params as Record<string, unknown>
+    const { url, name, nativeCurrency: requestedCurrency } = request.params as Record<string, unknown>
     if (typeof url !== "string" || typeof name !== "string" || !name.trim()) {
       throw new InvalidParamsError("mina_addChain requires a URL and name")
+    }
+    let nativeCurrency: NativeCurrency | undefined
+    if (requestedCurrency !== undefined) {
+      if (typeof requestedCurrency !== "object" || requestedCurrency === null ||
+          !("symbol" in requestedCurrency) ||
+          (requestedCurrency.symbol !== "ETH" && requestedCurrency.symbol !== "MINA") ||
+          !("decimals" in requestedCurrency) || requestedCurrency.decimals !== 9) {
+        throw new InvalidParamsError("Native currency display requires ETH or MINA with nine decimals")
+      }
+      nativeCurrency = { symbol: requestedCurrency.symbol, decimals: 9 }
     }
     let parsedUrl: URL
     try {
@@ -1051,12 +1068,21 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     if (typeof data.networkID !== "string" || !data.networkID) {
       throw new Error("The GraphQL endpoint returned no networkID")
     }
+    const knownSymbol = nativeTokenSymbol(data.networkID)
+    if (nativeCurrency && knownSymbol !== "native units" && nativeCurrency.symbol !== knownSymbol) {
+      throw new InvalidParamsError(`This network uses ${knownSymbol}`)
+    }
     await approveSigning(
       origin,
       "Add network",
-      `${name.trim()} reports network ID ${data.networkID}`
+      `${name.trim()} reports network ID ${data.networkID}` +
+        (nativeCurrency ? `\nNative asset display supplied by this site: ${nativeCurrency.symbol} (${nativeCurrency.decimals} decimals)` : "")
     )
-    state.chains[data.networkID] = { url: parsedUrl.href, name: name.trim() }
+    state.chains[data.networkID] = {
+      url: parsedUrl.href,
+      name: name.trim(),
+      ...(nativeCurrency ? { nativeCurrency } : {})
+    }
     state.selectedNetwork = data.networkID
     await setState(state)
     return { networkID: data.networkID }
@@ -1143,6 +1169,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       title: "Delegate stake",
       operation: "Stake delegation (sign and submit)",
       networkId: state.selectedNetwork,
+      nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
       signingPublicKey: publicKey,
       recipientLabel: "Delegate",
       recipient: to,
@@ -1266,6 +1293,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       origin,
       onlySign,
       networkId: state.selectedNetwork,
+      nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
       signingPublicKey: connectedPublicKey,
       feePayerPublicKey: publicKey,
       fee,

@@ -3,7 +3,8 @@ export const DEFAULT_MINA_SNAP_VERSION = "0.1.0"
 
 export type ProviderError = Error & { code: number; data?: unknown }
 export type RequestArguments = { method: string; params?: unknown[] | object }
-export type ChainInfo = { networkID: string; url?: string; name?: string }
+export type NativeCurrency = { symbol: "ETH" | "MINA"; decimals: 9 }
+export type ChainInfo = { networkID: string; url?: string; name?: string; nativeCurrency?: NativeCurrency }
 export type SignedData = {
   publicKey: string
   data: string
@@ -103,7 +104,7 @@ export interface IMinaProvider {
   storePrivateCredential(args: { credential: unknown }): Promise<{ credential: string } | ProviderError>
   requestPresentation(args: { presentation: unknown }): Promise<{ presentation: string } | ProviderError>
   revokePermissions(): Promise<string[]>
-  addChain(args: { url: string; name: string }): Promise<ChainInfo | ProviderError>
+  addChain(args: { url: string; name: string; nativeCurrency?: NativeCurrency }): Promise<ChainInfo | ProviderError>
   switchChain(args: { networkID: string }): Promise<ChainInfo | ProviderError>
   getWalletInfo(): Promise<{ version: string; init: boolean }>
   on(event: "accountsChanged", listener: (accounts: string[]) => void): this
@@ -248,7 +249,7 @@ export class MinaSnapProvider implements IMinaProvider {
     return result
   }
 
-  async addChain(args: { url: string; name: string }) {
+  async addChain(args: { url: string; name: string; nativeCurrency?: NativeCurrency }) {
     const chain = await this.request({ method: "mina_addChain", params: args }) as ChainInfo
     this.#emit("chainChanged", chain)
     this.#emit("networkChanged", chain.networkID)

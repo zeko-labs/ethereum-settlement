@@ -1,3 +1,5 @@
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "@jest/globals"
 import {
   assertIsConfirmationDialog,
@@ -98,6 +100,74 @@ describe("Zeko Wallet Snap RPC", () => {
       origin: "https://bridge.zeko.io",
       method: "mina_accounts"
     })).toRespondWith(["B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA"])
+  })
+
+  it.each(["zeko:testnet", "testnet"])("approves and preserves ETH display metadata for %s", async (networkID) => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json")
+      response.end(JSON.stringify({ data: { networkID, accounts: [] } }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/graphql`
+    try {
+      const { request, onHomePage } = await installSnap()
+      await connect(request)
+      const pending = request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_addChain",
+        params: { url, name: "Zeko Ethereum", nativeCurrency: { symbol: "ETH", decimals: 9 } }
+      })
+      const contact = await pending.getInterface()
+      assertIsConfirmationDialog(contact)
+      await contact.ok()
+      const approval = await pending.getInterface()
+      assertIsConfirmationDialog(approval)
+      expect(interfaceValues(approval.content).join(" ")).toContain("ETH (9 decimals)")
+      await approval.ok()
+      expect(await pending).toRespondWith({ networkID })
+      expect(await request({ method: "mina_requestNetwork" })).toRespondWith({
+        networkID, url, name: "Zeko Ethereum", nativeCurrency: { symbol: "ETH", decimals: 9 }
+      })
+      expect((await onHomePage()).getInterface()).toRender(renderWalletHome({
+        publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+        networkId: networkID,
+        networkName: "Zeko Ethereum",
+        endpoint: url,
+        nativeCurrency: { symbol: "ETH", decimals: 9 },
+        native: null,
+        tokens: []
+      }))
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it("keeps a saved legacy testnet endpoint neutral without changing its selection", async () => {
+    const { request } = await installSnap({
+      options: {
+        state: {
+          version: 2,
+          origins: { "https://bridge.zeko.io": { account: 0 } },
+          selectedNetwork: "zeko:testnet",
+          chains: { "zeko:testnet": { url: "https://testnet.zeko.io/graphql", name: "Zeko Testnet" } },
+          credentials: {}
+        }
+      }
+    })
+    expect(await request({ method: "mina_requestNetwork" })).toRespondWith({
+      networkID: "zeko:testnet", url: "https://testnet.zeko.io/graphql", name: "Zeko Testnet"
+    })
+    const pending = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: { onlySign: true, transaction: JSON.stringify(auroBerkeleyFixture.transaction) }
+    })
+    const dialog = await pending.getInterface()
+    assertIsConfirmationDialog(dialog)
+    const values = interfaceValues(dialog.content)
+    expect(values.some((value) => value.endsWith(" native base units"))).toBe(true)
+    expect(values.some((value) => value.includes(" ETH"))).toBe(false)
+    await dialog.cancel()
   })
 
   it("recovers Auro account zero from MetaMask's recovery phrase", async () => {
@@ -207,7 +277,7 @@ describe("Zeko Wallet Snap RPC", () => {
     })
     const dialog = await pending.getInterface()
     assertIsConfirmationDialog(dialog)
-    expect(interfaceValues(dialog.content)).toContain("0.1 ETH (100000000 base units)")
+    expect(interfaceValues(dialog.content)).toContain("100000000 native base units")
     await dialog.ok()
     const result = await pending
     if (!("result" in result.response)) {
@@ -443,15 +513,24 @@ describe("Zeko Wallet Snap RPC", () => {
     ["zeko:testnet", "Zeko Testnet", "testnet", "1.25 ETH (1250000000 base units)", "0.02 ETH (20000000 base units)"],
     ["mina:mainnet", "Mina Mainnet", "mainnet", "1250000000 nanomina", "20000000 nanomina"]
   ])("shows the exact normalized payment payload for %s before signing", async (networkId, networkName, domain, amount, fee) => {
-    const { request } = await installSnap()
+    const { request } = await installSnap({
+      options: {
+        state: {
+          version: 2,
+          origins: {},
+          selectedNetwork: networkId,
+          chains: {
+            [networkId]: {
+              url: "http://127.0.0.1:1/graphql",
+              name: networkName,
+              ...(networkId === "zeko:testnet" ? { nativeCurrency: { symbol: "ETH", decimals: 9 } } : {})
+            }
+          },
+          credentials: {}
+        }
+      }
+    })
     await connect(request)
-    if (networkId !== "zeko:testnet") {
-      await approve(request({
-        origin: "https://bridge.zeko.io",
-        method: "mina_switchChain",
-        params: { networkID: networkId }
-      }))
-    }
     const recipient = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
     const pending = request({
       origin: "https://bridge.zeko.io",

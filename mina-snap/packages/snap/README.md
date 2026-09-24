@@ -9,7 +9,9 @@ The Snap retains Auro-compatible account derivation at
 `m/44'/12586'/0'/0/0` and signs through `mina-signer@4.1.0` without exporting or
 persisting the private key. New installations select Zeko testnet; existing
 installations preserve their selected network. Approve the deployment's
-GraphQL endpoint through the bridge before querying or sending.
+GraphQL endpoint and ETH display metadata through the bridge before querying
+or sending. Saved testnet endpoints without currency metadata show neutral
+native units until the metadata is approved; signing and balances are unchanged.
 
 On the Ethereum-backed Zeko testnet, native amounts use ETH with nine decimal
 places. Custom-token balances remain in exact base units when no trusted decimal

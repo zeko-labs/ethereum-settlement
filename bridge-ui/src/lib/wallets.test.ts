@@ -78,7 +78,8 @@ describe("wallet adapters", () => {
 
     expect(provider.addChain).toHaveBeenCalledWith({
       url: config.sequencerGraphqlUrl,
-      name: config.auroNetworkName
+      name: config.auroNetworkName,
+      nativeCurrency: { symbol: "ETH", decimals: 9 }
     })
     expect(provider.switchChain).not.toHaveBeenCalled()
   })
@@ -91,13 +92,43 @@ describe("wallet adapters", () => {
       requestNetwork: vi.fn(async () => ({
         networkID: "zeko:testnet",
         url: config.sequencerGraphqlUrl,
-        name: config.auroNetworkName
+        name: config.auroNetworkName,
+        nativeCurrency: { symbol: "ETH", decimals: 9 }
       }))
     } as unknown as AuroProvider
 
     await ensureAuroPoCNetwork(provider, config)
 
     expect(provider.addChain).not.toHaveBeenCalled()
+    expect(provider.switchChain).not.toHaveBeenCalled()
+  })
+
+  it.each(["zeko:testnet", "testnet"])("upgrades an approved %s Snap endpoint's currency display once", async (networkID) => {
+    let network = {
+      networkID,
+      url: config.sequencerGraphqlUrl,
+      name: config.auroNetworkName
+    } as { networkID: string; url: string; name: string; nativeCurrency?: { symbol: "ETH"; decimals: 9 } }
+    const addChain = vi.fn(async () => {
+      network = { ...network, nativeCurrency: { symbol: "ETH", decimals: 9 } }
+      return { networkID }
+    })
+    const provider = {
+      isMinaSnap: true,
+      addChain,
+      switchChain: vi.fn(),
+      requestNetwork: vi.fn(async () => network)
+    } as unknown as AuroProvider
+
+    await ensureAuroPoCNetwork(provider, config)
+    await ensureAuroPoCNetwork(provider, config)
+
+    expect(addChain).toHaveBeenCalledTimes(1)
+    expect(addChain).toHaveBeenCalledWith({
+      url: config.sequencerGraphqlUrl,
+      name: config.auroNetworkName,
+      nativeCurrency: { symbol: "ETH", decimals: 9 }
+    })
     expect(provider.switchChain).not.toHaveBeenCalled()
   })
 

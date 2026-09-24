@@ -18,7 +18,10 @@ The bridge connects two accounts with different roles:
   accounts and transaction approvals remain separate.
 
 The bridge configures the Zeko endpoint after connection. MetaMask Snap users
-must approve the requested network endpoint and account access. For local Snap
+must approve the requested network endpoint, ETH display label (nine decimals),
+and account access. Existing Snap endpoints without currency metadata prompt
+once to add that display information; later connections reuse the approval.
+For local Snap
 builds, follow the [MetaMask Flask setup](https://github.com/zeko-labs/ethereum-settlement/blob/main/mina-snap/README.md#try-it-locally).
 
 ## Bridge ETH and tokens
