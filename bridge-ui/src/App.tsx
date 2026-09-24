@@ -77,7 +77,7 @@ type MinaSessionAttempt = { cancel: () => void }
 const missingWalletMessage = (wallet: "ethereum" | "auro", ethereum = "Sepolia") =>
   wallet === "ethereum"
     ? `Connect an Ethereum wallet on ${ethereum} before continuing.`
-    : "Connect a Mina wallet to Zeko Testnet before continuing."
+    : "Connect a Zeko wallet to Zeko Testnet before continuing."
 
 export default function App() {
   const [config, setConfig] = useState<RuntimeConfig>()
@@ -381,7 +381,7 @@ export default function App() {
       if (activeMinaSession.current !== minaWallet || minaWalletRef.current !== minaWallet) return
       setZekoClient(undefined)
       if (!isAuroPoCNetwork(network.networkID)) {
-        setActionError("The Mina wallet must use Zeko Testnet for this PoC's temporary testnet signing domain.")
+        setActionError("Switch your Zeko wallet to Zeko Testnet before continuing.")
       }
     }
     ethereum?.on?.("accountsChanged", onEthereumAccounts)
@@ -453,7 +453,7 @@ export default function App() {
       clearMinaConnection()
       setMinaWalletOpen(false)
       setBusy(false)
-      setToast("Mina wallet disconnected from the bridge.")
+      setToast("Zeko wallet disconnected from the bridge.")
       if (revokeError) setActionError(`The bridge disconnected locally, but the wallet permission could not be revoked: ${revokeError}`)
     }
   }, [clearMinaConnection, minaWallet])
@@ -955,7 +955,7 @@ export default function App() {
             {actionError && <Notice kind="error">{actionError}</Notice>}
             {assetWarning && <Notice kind="warning">{assetWarning}</Notice>}
             {tab === "activity" && activityError && <Notice kind="error">{activityError}</Notice>}
-            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} assets={assets} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind} payment submitted: ${hash}`); setBalanceRefresh((current) => current + 1) }} /> : bridgeContent}
+            {tab === "activity" ? <ActivityView deposits={deposits} withdrawals={withdrawals} operations={operations} assets={assets} loading={activityLoading} onDeposit={(deposit) => { setSelectedDeposit(deposit); setSelectedOperation(operations.find((row) => row.direction === "deposit" && row.depositNonce === deposit.nonce)); setScreen("deposit-progress"); setTab("bridge") }} onWithdrawal={(withdrawal, operation) => { setSelectedWithdrawal(withdrawal); setSelectedOperation(operation); setScreen("withdrawal-progress"); setTab("bridge") }} /> : tab === "wallet" ? <WalletView config={config} getProvider={() => getMinaProvider(minaWallet)} account={zekoAccount} onConnect={() => { setActionError(""); setMinaWalletOpen(true) }} onSubmitted={(hash, kind) => { setToast(`${kind === "MINA" ? "ETH" : kind} payment submitted: ${hash}`); setBalanceRefresh((current) => current + 1) }} /> : bridgeContent}
           </div>
           <div className="card-footnote"><span className="footnote-proof">SP1</span><span>verifies the Zeko state transition</span><span>·</span><span>Ethereum verifies settlement</span></div>
         </div>

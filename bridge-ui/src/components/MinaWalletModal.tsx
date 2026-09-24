@@ -11,7 +11,7 @@ export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, o
   onDisconnect: () => void
   onClose: () => void
 }) => {
-  const title = account ? "Mina wallet" : "Connect Mina wallet"
+  const title = account ? "Zeko wallet" : "Connect Zeko wallet"
   const snapName = minaWalletName("metamask-snap")
 
   useEffect(() => {
@@ -25,7 +25,7 @@ export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, o
       <div className="settings-modal mina-wallet-modal" role="dialog" aria-modal="true" aria-labelledby="mina-wallet-title">
         <div className="modal-header">
           <h2 id="mina-wallet-title">{title}</h2>
-          <button type="button" className="close-button" disabled={busy} onClick={onClose} aria-label="Close Mina wallet">×</button>
+          <button type="button" className="close-button" disabled={busy} onClick={onClose} aria-label="Close Zeko wallet">×</button>
         </div>
         <div className="modal-body">
           {account ? (
@@ -35,21 +35,21 @@ export const MinaWalletModal = ({ account, minaWallet, busy, error, onConnect, o
                 <strong title={account}>{shortAddress(account, 12, 10)}</strong>
               </div>
               <button type="button" className="disconnect-button" disabled={busy} onClick={onDisconnect}>
-                {busy ? "Disconnecting…" : "Disconnect Mina wallet"}
+                {busy ? "Disconnecting…" : "Disconnect Zeko wallet"}
               </button>
               <p className="setting-help">
                 {minaWallet === "metamask-snap"
-                  ? `This also revokes this site's permission to use the Mina account in ${snapName}.`
+                  ? `This also revokes this site's permission to use the Zeko account in ${snapName}.`
                   : "Auro does not expose a dapp permission-revocation method, so this disconnects it from the bridge UI."}
               </p>
             </>
           ) : (
             <>
-              <p className="wallet-choice-copy">Choose the Mina wallet you want to use with Zeko.</p>
+              <p className="wallet-choice-copy">Choose the Zeko wallet you want to use with Zeko.</p>
               <div className="wallet-options wallet-connect-options">
                 <button type="button" className="wallet-option" disabled={busy} onClick={() => onConnect("metamask-snap")}>
                   <strong>{snapName}</strong>
-                  <span>{snapName === "MetaMask Flask" ? "Install and connect the locally served Mina Snap." : "Install or connect the published Mina Snap in MetaMask."}</span>
+                  <span>{snapName === "MetaMask Flask" ? "Install and connect the locally served Zeko Snap." : "Install or connect the published Zeko Snap in MetaMask."}</span>
                 </button>
                 <button type="button" className="wallet-option" disabled={busy} onClick={() => onConnect("auro")}>
                   <strong>Auro Wallet</strong>
