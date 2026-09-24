@@ -1,6 +1,7 @@
 import {
   discoverMetaMaskProvider,
   MinaSnapProvider,
+  type NativeCurrency,
   type MetaMaskProvider
 } from "@zeko-labs/mina-snap-provider"
 import type { Address, EIP1193Provider, Hex } from "viem"
@@ -26,8 +27,8 @@ export type AuroProvider = {
   readonly isAuro?: boolean
   readonly isMinaSnap?: boolean
   requestAccounts: () => Promise<string[] | ProviderError>
-  requestNetwork: () => Promise<{ networkID: string; url?: string; name?: string } | ProviderError>
-  addChain: (input: { url: string; name: string }) => Promise<{ networkID: string } | ProviderError>
+  requestNetwork: () => Promise<{ networkID: string; url?: string; name?: string; nativeCurrency?: NativeCurrency } | ProviderError>
+  addChain: (input: { url: string; name: string; nativeCurrency?: NativeCurrency }) => Promise<{ networkID: string } | ProviderError>
   switchChain: (input: { networkID: string }) => Promise<{ networkID: string } | ProviderError>
   sendTransaction: (input: { onlySign: true; transaction: string }) => Promise<AuroSignedResult>
   sendPayment?: (input: { to: string; amount: number; fee?: number; memo?: string; nonce?: number }) => Promise<{ hash: string; paymentId?: string } | ProviderError | Error>
@@ -164,10 +165,14 @@ export const ensureAuroPoCNetwork = async (
       if (!isAuroPoCNetwork(current.networkID)) {
         throw new Error("The configured Zeko endpoint reports an unsupported network ID")
       }
-      return
+      if (current.nativeCurrency?.symbol === "ETH" && current.nativeCurrency.decimals === 9) return
     }
     const added = await provider
-      .addChain({ url: config.sequencerGraphqlUrl, name: config.auroNetworkName })
+      .addChain({
+        url: config.sequencerGraphqlUrl,
+        name: config.auroNetworkName,
+        nativeCurrency: { symbol: "ETH", decimals: 9 }
+      })
       .catch((error: unknown) => error)
     if (added instanceof Error) throw added
     if (isProviderError(added)) {

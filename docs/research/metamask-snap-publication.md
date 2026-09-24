@@ -117,7 +117,7 @@ versions. See [Get allowlisted] and the [audit policy and approved-auditor
 list]. npm likewise refuses reuse of an already published name/version; see
 [`npm publish`].
 
-## Application to Zeko Mina Wallet
+## Application to Zeko Wallet
 
 The Snap at [`mina-snap/packages/snap`] is structurally aligned with public npm:
 
@@ -125,7 +125,7 @@ The Snap at [`mina-snap/packages/snap`] is structurally aligned with public npm:
 - `@mondejka/mina-snap` matches the manifest package name;
 - the repository URL/directory agree;
 - the scope is configured with `publishConfig.access: "public"`;
-- `Zeko Mina Wallet` avoids the prohibited name terms; and
+- `Zeko Wallet` avoids the prohibited name terms; and
 - the package `files` list includes the bundle, icon, license, and manifest.
 
 It is nevertheless a protected-permission Snap. In particular it requests

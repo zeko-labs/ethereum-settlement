@@ -1,3 +1,5 @@
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "@jest/globals"
 import {
   assertIsConfirmationDialog,
@@ -10,7 +12,7 @@ import {
   renderWalletLoading
 } from "./home"
 
-describe("Auro-compatible Mina Snap RPC", () => {
+describe("Zeko Wallet Snap RPC", () => {
   const connect = async (
     request: Awaited<ReturnType<typeof installSnap>>["request"],
     origin = "https://bridge.zeko.io"
@@ -36,16 +38,16 @@ describe("Auro-compatible Mina Snap RPC", () => {
     return Object.values(value).flatMap(interfaceValues)
   }
 
-  it("renders a wallet home page and refreshes it interactively", async () => {
+  it("opens new installs on Zeko testnet and refreshes the wallet home", async () => {
     const { onHomePage } = await installSnap()
     const response = await onHomePage()
     const page = response.getInterface()
     const expected = renderWalletHome({
       publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
-      networkId: "mina:mainnet",
-      networkName: "Mina Mainnet",
+      networkId: "zeko:testnet",
+      networkName: "Zeko Testnet",
       tokens: [],
-      error: missingEndpointMessage("mina:mainnet")
+      error: missingEndpointMessage("zeko:testnet")
     })
 
     expect(page).toRender(expected)
@@ -54,18 +56,13 @@ describe("Auro-compatible Mina Snap RPC", () => {
     await page.clickElement("refresh-balances")
     expect(await updated).toRender(renderWalletLoading({
       publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
-      networkName: "Mina Mainnet"
+      networkName: "Zeko Testnet"
     }))
   })
 
   it("does not trust a hard-coded Zeko testnet data source", async () => {
     const { request, onHomePage } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
 
     expect((await onHomePage()).getInterface()).toRender(renderWalletHome({
       publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
@@ -74,6 +71,103 @@ describe("Auro-compatible Mina Snap RPC", () => {
       tokens: [],
       error: missingEndpointMessage("zeko:testnet")
     }))
+  })
+
+  it.each([1, 2])("preserves a stored Mina network when upgrading state version %i", async (version) => {
+    const { request, onHomePage } = await installSnap({
+      options: {
+        state: {
+          version,
+          origins: { "https://bridge.zeko.io": { account: 0 } },
+          selectedNetwork: "mina:mainnet",
+          chains: {},
+          credentials: {}
+        }
+      }
+    })
+    expect(await request({ method: "mina_requestNetwork" })).toRespondWith({
+      networkID: "mina:mainnet"
+    })
+    const page = (await onHomePage()).getInterface()
+    expect(page).toRender(renderWalletHome({
+      publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+      networkId: "mina:mainnet",
+      networkName: "Mina Mainnet",
+      tokens: [],
+      error: missingEndpointMessage("mina:mainnet")
+    }))
+    expect(await request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_accounts"
+    })).toRespondWith(["B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA"])
+  })
+
+  it.each(["zeko:testnet", "testnet"])("approves and preserves ETH display metadata for %s", async (networkID) => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json")
+      response.end(JSON.stringify({ data: { networkID, accounts: [] } }))
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/graphql`
+    try {
+      const { request, onHomePage } = await installSnap()
+      await connect(request)
+      const pending = request({
+        origin: "https://bridge.zeko.io",
+        method: "mina_addChain",
+        params: { url, name: "Zeko Ethereum", nativeCurrency: { symbol: "ETH", decimals: 9 } }
+      })
+      const contact = await pending.getInterface()
+      assertIsConfirmationDialog(contact)
+      await contact.ok()
+      const approval = await pending.getInterface()
+      assertIsConfirmationDialog(approval)
+      expect(interfaceValues(approval.content).join(" ")).toContain("ETH (9 decimals)")
+      await approval.ok()
+      expect(await pending).toRespondWith({ networkID })
+      expect(await request({ method: "mina_requestNetwork" })).toRespondWith({
+        networkID, url, name: "Zeko Ethereum", nativeCurrency: { symbol: "ETH", decimals: 9 }
+      })
+      expect((await onHomePage()).getInterface()).toRender(renderWalletHome({
+        publicKey: "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
+        networkId: networkID,
+        networkName: "Zeko Ethereum",
+        endpoint: url,
+        nativeCurrency: { symbol: "ETH", decimals: 9 },
+        native: null,
+        tokens: []
+      }))
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
+  it("keeps a saved legacy testnet endpoint neutral without changing its selection", async () => {
+    const { request } = await installSnap({
+      options: {
+        state: {
+          version: 2,
+          origins: { "https://bridge.zeko.io": { account: 0 } },
+          selectedNetwork: "zeko:testnet",
+          chains: { "zeko:testnet": { url: "https://testnet.zeko.io/graphql", name: "Zeko Testnet" } },
+          credentials: {}
+        }
+      }
+    })
+    expect(await request({ method: "mina_requestNetwork" })).toRespondWith({
+      networkID: "zeko:testnet", url: "https://testnet.zeko.io/graphql", name: "Zeko Testnet"
+    })
+    const pending = request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_sendTransaction",
+      params: { onlySign: true, transaction: JSON.stringify(auroBerkeleyFixture.transaction) }
+    })
+    const dialog = await pending.getInterface()
+    assertIsConfirmationDialog(dialog)
+    const values = interfaceValues(dialog.content)
+    expect(values.some((value) => value.endsWith(" native base units"))).toBe(true)
+    expect(values.some((value) => value.includes(" ETH"))).toBe(false)
+    await dialog.cancel()
   })
 
   it("recovers Auro account zero from MetaMask's recovery phrase", async () => {
@@ -107,11 +201,10 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("signs a message exactly like Auro after user approval", async () => {
     const { request } = await installSnap()
     await connect(request)
-    expect(await approve(request({
+    expect(await request({
       origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))).toRespondWith({ networkID: "zeko:testnet" })
+      method: "mina_requestNetwork"
+    })).toRespondWith({ networkID: "zeko:testnet" })
     const pending = request({
       origin: "https://bridge.zeko.io",
       method: "mina_signMessage",
@@ -135,6 +228,11 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("signs and verifies fields in Auro's provider format", async () => {
     const { request } = await installSnap()
     await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "mina:mainnet" }
+    }))
     const pending = request({
       origin: "https://bridge.zeko.io",
       method: "mina_signFields",
@@ -159,11 +257,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("returns Auro's signedData envelope for onlySign zkApp transactions", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = {
       feePayer: {
         body: {
@@ -182,7 +275,10 @@ describe("Auro-compatible Mina Snap RPC", () => {
       method: "mina_sendTransaction",
       params: { onlySign: true, transaction: JSON.stringify(transaction) }
     })
-    await approve(pending)
+    const dialog = await pending.getInterface()
+    assertIsConfirmationDialog(dialog)
+    expect(interfaceValues(dialog.content)).toContain("100000000 native base units")
+    await dialog.ok()
     const result = await pending
     if (!("result" in result.response)) {
       throw new Error(`Snap returned ${JSON.stringify(result.response.error)}`)
@@ -198,11 +294,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("applies Auro's fee, nonce, and memo overrides before signing a zkApp", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = {
       feePayer: {
         body: {
@@ -245,11 +336,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("matches Auro's Berkeley-era signature for a bridge-shaped zkApp", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const pending = request({
       origin: "https://bridge.zeko.io",
       method: "mina_sendTransaction",
@@ -274,11 +360,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("preserves a non-empty command memo when no override is supplied", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = JSON.parse(JSON.stringify(auroBerkeleyFixture.transaction)) as {
       feePayer: { body: { validUntil: string | null } }
       memo: string
@@ -328,11 +409,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("shows every signed zkApp update and a canonical payload hash", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = JSON.parse(JSON.stringify(auroBerkeleyFixture.transaction)) as {
       accountUpdates: Array<{ body: { actions: string[][]; events: string[][]; callData: string } }>
     }
@@ -433,8 +509,27 @@ describe("Auro-compatible Mina Snap RPC", () => {
     expect(hashes[1]).not.toBe(hashes[0])
   })
 
-  it("shows the exact normalized payment payload before signing", async () => {
-    const { request } = await installSnap()
+  it.each([
+    ["zeko:testnet", "Zeko Testnet", "testnet", "1.25 ETH (1250000000 base units)", "0.02 ETH (20000000 base units)"],
+    ["mina:mainnet", "Mina Mainnet", "mainnet", "1250000000 nanomina", "20000000 nanomina"]
+  ])("shows the exact normalized payment payload for %s before signing", async (networkId, networkName, domain, amount, fee) => {
+    const { request } = await installSnap({
+      options: {
+        state: {
+          version: 2,
+          origins: {},
+          selectedNetwork: networkId,
+          chains: {
+            [networkId]: {
+              url: "http://127.0.0.1:1/graphql",
+              name: networkName,
+              ...(networkId === "zeko:testnet" ? { nativeCurrency: { symbol: "ETH", decimals: 9 } } : {})
+            }
+          },
+          credentials: {}
+        }
+      }
+    })
     await connect(request)
     const recipient = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
     const pending = request({
@@ -454,13 +549,13 @@ describe("Auro-compatible Mina Snap RPC", () => {
 
     expect(values).toEqual(expect.arrayContaining([
       "Payment (sign and submit)",
-      "Mina Mainnet (mina:mainnet)",
-      "mainnet",
+      `${networkName} (${networkId})`,
+      domain,
       "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA",
       "Recipient",
       recipient,
-      "1250000000 nanomina",
-      "20000000 nanomina",
+      amount,
+      fee,
       "7",
       "Bridge payment"
     ]))
@@ -494,6 +589,11 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("shows the exact normalized delegation payload before signing", async () => {
     const { request } = await installSnap()
     await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "mina:mainnet" }
+    }))
     const delegate = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
     const pending = request({
       origin: "https://bridge.zeko.io",
@@ -526,6 +626,11 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("distinguishes no delegation memo from a literal empty marker", async () => {
     const { request } = await installSnap()
     await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "mina:mainnet" }
+    }))
     const delegate = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
 
     for (const [memo, expected, absent] of [
@@ -559,7 +664,7 @@ describe("Auro-compatible Mina Snap RPC", () => {
         params: { to: recipient, amount, fee: "0.1", nonce: 0 }
       })
       expect(response.response).toMatchObject({
-        error: { code: -32602, message: "Amount exceeds Mina UInt64" }
+        error: { code: -32602, message: "Amount exceeds the UInt64 limit" }
       })
     }
   })
@@ -567,11 +672,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("partially signs a bridge zkApp whose fee payer is the sequencer", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = JSON.parse(JSON.stringify(
       auroBerkeleyFixture.transaction
     )) as {
@@ -617,11 +717,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("rejects partial signing when the connected account is not a signer", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const transaction = JSON.parse(JSON.stringify(
       auroBerkeleyFixture.transaction
     )) as {
@@ -656,11 +751,6 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("signs and verifies Auro JSON messages", async () => {
     const { request } = await installSnap()
     await connect(request)
-    await approve(request({
-      origin: "https://bridge.zeko.io",
-      method: "mina_switchChain",
-      params: { networkID: "zeko:testnet" }
-    }))
     const pending = request({
       origin: "https://bridge.zeko.io",
       method: "mina_sign_JsonMessage",
@@ -685,6 +775,11 @@ describe("Auro-compatible Mina Snap RPC", () => {
   it("creates Auro-compatible nullifiers without leaking non-JSON bigints", async () => {
     const { request } = await installSnap()
     await connect(request)
+    await approve(request({
+      origin: "https://bridge.zeko.io",
+      method: "mina_switchChain",
+      params: { networkID: "mina:mainnet" }
+    }))
     const pending = request({
       origin: "https://bridge.zeko.io",
       method: "mina_createNullifier",
@@ -705,7 +800,7 @@ describe("Auro-compatible Mina Snap RPC", () => {
     }))
   })
 
-  it("asks before contacting a dapp-supplied Mina GraphQL endpoint", async () => {
+  it("asks before contacting a dapp-supplied GraphQL endpoint", async () => {
     const { request } = await installSnap()
     await connect(request)
     const pending = request({
@@ -736,7 +831,7 @@ describe("Auro-compatible Mina Snap RPC", () => {
     expect(unauthorized.response).toMatchObject({
       error: {
         code: 4100,
-        message: "Connect the Mina account before signing"
+        message: "Connect the wallet account before signing"
       }
     })
 

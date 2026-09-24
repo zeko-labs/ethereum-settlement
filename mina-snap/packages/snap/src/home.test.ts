@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@jest/globals"
 import {
   formatNanomina,
-  parseWalletAccounts
+  parseWalletAccounts,
+  renderWalletHome
 } from "./home"
 
-describe("Mina Snap wallet home data", () => {
+describe("Zeko Wallet home data", () => {
   it("formats native balances exactly without floating-point rounding", () => {
     expect(formatNanomina("0")).toBe("0")
     expect(formatNanomina("998900000000")).toBe("998.9")
@@ -14,7 +15,7 @@ describe("Mina Snap wallet home data", () => {
     )
   })
 
-  it("separates MINA from custom token accounts and preserves exact token units", () => {
+  it("separates native balances from custom token accounts and preserves exact token units", () => {
     const accounts = parseWalletAccounts([
       {
         publicKey: "B62qwallet",
@@ -53,6 +54,45 @@ describe("Mina Snap wallet home data", () => {
       liquid: "1200000",
       locked: "34567"
     }])
+  })
+
+  it.each([
+    ["zeko:testnet", "ETH"],
+    ["testnet", "ETH"],
+    ["zeko:mainnet", "MINA"],
+    ["mina:devnet", "MINA"],
+    ["mina:mainnet", "MINA"]
+  ])("labels balances and payment fields correctly on %s without rescaling", (networkId, symbol) => {
+    const page = JSON.stringify(renderWalletHome({
+      publicKey: "B62qwallet",
+      networkId,
+      networkName: "Selected network",
+      ...(symbol === "ETH" ? { nativeCurrency: { symbol: "ETH" as const, decimals: 9 as const } } : {}),
+      endpoint: "https://node.example/graphql",
+      native: { total: "1234567891", liquid: "1234567890", locked: "1", nonce: "2" },
+      tokens: []
+    }))
+    expect(page).toContain("Zeko Wallet")
+    expect(page).toContain(`1.234567891 ${symbol}`)
+    expect(page).toContain(`1.23456789 ${symbol}`)
+    expect(page).toContain(`Amount (${symbol})`)
+    expect(page).toContain(`Fee (${symbol})`)
+    expect(page).not.toContain(symbol === "ETH" ? "MINA" : "ETH")
+  })
+
+  it.each(["zeko:testnet", "testnet"])("keeps ambiguous %s balances neutral without approved currency metadata", (networkId) => {
+    const page = JSON.stringify(renderWalletHome({
+      publicKey: "B62qwallet",
+      networkId,
+      networkName: "Zeko Ethereum name alone is not currency metadata",
+      endpoint: "https://testnet.zeko.io/graphql",
+      native: { total: "1234567891", liquid: "1234567890", locked: "1", nonce: "2" },
+      tokens: []
+    }))
+    expect(page).toContain("1.234567891 native units")
+    expect(page).toContain("Amount (native units)")
+    expect(page).not.toContain("MINA")
+    expect(page).not.toContain(" ETH")
   })
 
   it("rejects malformed balances instead of displaying an incorrect value", () => {

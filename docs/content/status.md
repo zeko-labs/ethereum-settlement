@@ -37,12 +37,13 @@ promoted to a persistent live Sepolia deployment.
 - `bridge-ui/` provides the standalone browser application. Its
   [README](https://github.com/zeko-labs/ethereum-settlement/blob/main/bridge-ui/README.md) owns supported bridge and wallet flows,
   asset discovery, provider selection, and recovery behavior.
-- `mina-snap/` contains the `mina-signer` Snap and Mina Provider adapter. Its
+- `mina-snap/` contains the Zeko Wallet MetaMask Snap and Auro-compatible provider
+  adapter, using `mina-signer` for Zeko signatures. Its
   tests lock account derivation and message/field/nullifier/zkApp signatures to
   Auro 2.5.2 reference results, including a bridge-shaped Berkeley transaction;
   the bridge integration test exercises the same `onlySign` boundary through
   the Snap adapter. Its Snap home page displays the selected network, copyable
-  Mina address, native balance breakdown, nonce, and custom token accounts.
+  Zeko address, native ETH balance breakdown, nonce, and custom token accounts.
   Publishing, MetaMask allowlisting, and a funded browser deployment remain
   external release steps.
 - `explorer-ui/` is a standalone React explorer for L2 blocks, transactions,

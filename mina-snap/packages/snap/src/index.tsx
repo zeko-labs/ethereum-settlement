@@ -27,10 +27,13 @@ import { sha256 } from "@noble/hashes/sha256"
 import { base58check } from "@scure/base"
 import Client from "mina-signer"
 import {
+  formatNativeReview,
   missingEndpointMessage,
+  nativeTokenSymbol,
   parseWalletAccounts,
   renderWalletHome,
   renderWalletLoading,
+  type NativeCurrency,
   type WalletHomeSnapshot
 } from "./home"
 
@@ -60,14 +63,14 @@ type MinaSnapState = {
   version: 2
   origins: Record<string, { account: number }>
   selectedNetwork: string
-  chains: Record<string, { url: string; name: string }>
+  chains: Record<string, { url: string; name: string; nativeCurrency?: NativeCurrency }>
   credentials: Record<string, string[]>
 }
 
 const initialState = (): MinaSnapState => ({
   version: 2,
   origins: {},
-  selectedNetwork: "mina:mainnet",
+  selectedNetwork: "zeko:testnet",
   chains: {},
   credentials: {}
 })
@@ -125,7 +128,7 @@ const deriveAccount = async (account = 0): Promise<{
     }
   })
   if (entropy.depth !== 2) {
-    throw new Error("MetaMask returned Mina entropy at an unexpected depth")
+    throw new Error("MetaMask returned account entropy at an unexpected depth")
   }
   const coinTypeNode = await BIP44CoinTypeNode.fromJSON({
     depth: 2,
@@ -143,7 +146,7 @@ const deriveAccount = async (account = 0): Promise<{
     address_index: 0
   })
   if (!addressNode.privateKeyBytes) {
-    throw new Error("MetaMask did not provide private Mina entropy")
+    throw new Error("MetaMask did not provide private account entropy")
   }
 
   // Auro converts the BIP-44 secp256k1 scalar into Mina's little-endian
@@ -185,17 +188,17 @@ const readSignedMessage = (params: unknown): {
   signature: { field: string; scalar: string }
 } => {
   if (typeof params !== "object" || params === null) {
-    throw new InvalidParamsError("Expected a signed Mina message")
+    throw new InvalidParamsError("Expected a signed message")
   }
   const { data, publicKey, signature } = params as Record<string, unknown>
   if (typeof data !== "string" || typeof publicKey !== "string" ||
       typeof signature !== "object" || signature === null) {
-    throw new InvalidParamsError("The signed Mina message is invalid")
+    throw new InvalidParamsError("The signed message is invalid")
   }
   const field = (signature as Record<string, unknown>).field
   const scalar = (signature as Record<string, unknown>).scalar
   if (typeof field !== "string" || typeof scalar !== "string") {
-    throw new InvalidParamsError("The Mina signature is invalid")
+    throw new InvalidParamsError("The signature is invalid")
   }
   return { data, publicKey, signature: { field, scalar } }
 }
@@ -237,7 +240,7 @@ const validatePublicKey = (client: Client, publicKey: string): void => {
   try {
     client.publicKeyToRaw(publicKey)
   } catch {
-    throw new InvalidParamsError("The recipient is not a valid Mina public key")
+    throw new InvalidParamsError("The recipient is not a valid B62 public key")
   }
 }
 
@@ -265,7 +268,7 @@ const getZkappEra = (command: Record<string, unknown>): "berkeley" | undefined =
   }
   if (lengths.some((length) => length !== 8 && length !== 32) ||
       (lengths.includes(8) && lengths.includes(32))) {
-    throw new InvalidParamsError("The zkApp command mixes unsupported Mina protocol eras")
+    throw new InvalidParamsError("The zkApp command mixes unsupported protocol eras")
   }
   return lengths.includes(8) ? "berkeley" : undefined
 }
@@ -357,7 +360,7 @@ const readUnsigned = (
   }
   const normalized = input.replace(/^0+(?=\d)/u, "")
   if (normalized.length > maximum.toString().length || BigInt(normalized) > maximum) {
-    throw new InvalidParamsError(`${label} exceeds Mina ${typeName}`)
+    throw new InvalidParamsError(`${label} exceeds the ${typeName} limit`)
   }
   return normalized
 }
@@ -492,6 +495,7 @@ const approveZkappSigning = async ({
   origin,
   onlySign,
   networkId,
+  nativeCurrency,
   signingPublicKey,
   feePayerPublicKey,
   fee,
@@ -504,6 +508,7 @@ const approveZkappSigning = async ({
   origin: string
   onlySign: boolean
   networkId: string
+  nativeCurrency?: NativeCurrency
   signingPublicKey: string
   feePayerPublicKey: string
   fee: string
@@ -520,7 +525,7 @@ const approveZkappSigning = async ({
       type: "confirmation",
       content: (
         <Box>
-          <Heading>Sign Mina zkApp transaction</Heading>
+          <Heading>Sign transaction</Heading>
           <Text>Requesting site: <Bold>{origin}</Bold></Text>
           <Section>
             <Row label="Operation"><Text>{onlySign ? "Sign only" : "Sign and submit"}</Text></Row>
@@ -528,7 +533,7 @@ const approveZkappSigning = async ({
             <Row label="Signature domain"><Text>{signingDomain(networkId)}</Text></Row>
             <Row label="Signing account"><Copyable value={signingPublicKey} /></Row>
             <Row label="Fee payer"><Copyable value={feePayerPublicKey} /></Row>
-            <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
+            <Row label="Fee"><Text>{formatNativeReview(fee, networkId, nativeCurrency)}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
             <Row label="Valid until"><Text>{validUntil ?? "No limit"}</Text></Row>
             <Row label="Memo">{renderMemoReview(memo)}</Row>
@@ -555,14 +560,14 @@ const approveZkappSigning = async ({
     }
   })
   if (!approved) {
-    throw new UserRejectedRequestError("Sign Mina zkApp transaction was rejected")
+    throw new UserRejectedRequestError("Sign transaction was rejected")
   }
 }
 
 const requireConnection = async (origin: string): Promise<MinaSnapState> => {
   const state = await getState()
   if (!state.origins[origin]) {
-    throw new UnauthorizedError("Connect the Mina account before signing")
+    throw new UnauthorizedError("Connect the wallet account before signing")
   }
   return state
 }
@@ -593,6 +598,7 @@ const approveTransactionSigning = async ({
   title,
   operation,
   networkId,
+  nativeCurrency,
   signingPublicKey,
   recipientLabel,
   recipient,
@@ -605,6 +611,7 @@ const approveTransactionSigning = async ({
   title: string
   operation: string
   networkId: string
+  nativeCurrency?: NativeCurrency
   signingPublicKey: string
   recipientLabel: "Recipient" | "Delegate"
   recipient: string
@@ -630,8 +637,8 @@ const approveTransactionSigning = async ({
             <Row label={recipientLabel}><Copyable value={recipient} /></Row>
             {amount === undefined
               ? null
-              : <Row label="Amount"><Text>{`${amount} nanomina`}</Text></Row>}
-            <Row label="Fee"><Text>{`${fee} nanomina`}</Text></Row>
+              : <Row label="Amount"><Text>{formatNativeReview(amount, networkId, nativeCurrency)}</Text></Row>}
+            <Row label="Fee"><Text>{formatNativeReview(fee, networkId, nativeCurrency)}</Text></Row>
             <Row label="Nonce"><Text>{nonce}</Text></Row>
             <Row label="Memo">{renderMemoReview(memo)}</Row>
           </Section>
@@ -652,7 +659,7 @@ const toJson = (value: unknown): Json => {
       Object.entries(value).map(([key, item]) => [key, toJson(item)])
     )
   }
-  throw new Error("Mina signer returned a non-JSON value")
+  throw new Error("Wallet signer returned a non-JSON value")
 }
 
 const graphql = async (
@@ -665,15 +672,15 @@ const graphql = async (
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ query, variables })
   })
-  if (!response.ok) throw new Error(`Mina node returned HTTP ${response.status}`)
+  if (!response.ok) throw new Error(`The node returned HTTP ${response.status}`)
   const result = await response.json() as {
     data?: Record<string, unknown>
     errors?: Array<{ message?: string }>
   }
   if (result.errors?.length) {
-    throw new Error(result.errors[0]?.message ?? "Mina node rejected the request")
+    throw new Error(result.errors[0]?.message ?? "The node rejected the request")
   }
-  if (!result.data) throw new Error("Mina node returned no GraphQL data")
+  if (!result.data) throw new Error("The node returned no GraphQL data")
   return result.data
 }
 
@@ -683,7 +690,7 @@ const minaToNanomina = (value: unknown, label: string): string => {
     throw new InvalidParamsError(`${label} must be a non-negative decimal number`)
   }
   const input = typeof value === "string" ? value.trim() : value.toString()
-  if (input.length > 128) throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
+  if (input.length > 128) throw new InvalidParamsError(`${label} exceeds the UInt64 limit`)
   const match = input.match(/^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu)
   if (!match) throw new InvalidParamsError(`${label} is invalid`)
   const whole = match[1] ?? "0"
@@ -707,12 +714,12 @@ const minaToNanomina = (value: unknown, label: string): string => {
   } else {
     const zeroes = -nanoPlaces
     if (BigInt(digits.length) + zeroes > BigInt(MAX_UINT64.toString().length)) {
-      throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
+      throw new InvalidParamsError(`${label} exceeds the UInt64 limit`)
     }
     nanomina = `${digits}${"0".repeat(Number(zeroes))}`.replace(/^0+(?=\d)/u, "")
   }
   if (BigInt(nanomina) > MAX_UINT64) {
-    throw new InvalidParamsError(`${label} exceeds Mina UInt64`)
+    throw new InvalidParamsError(`${label} exceeds the UInt64 limit`)
   }
   return nanomina
 }
@@ -748,7 +755,7 @@ const getNonce = async (
     ? (account as { nonce?: unknown }).nonce
     : undefined
   if (typeof nonce !== "string" && typeof nonce !== "number") {
-    throw new Error("The Mina node returned no account nonce")
+    throw new Error("The node returned no account nonce")
   }
   return String(nonce)
 }
@@ -790,7 +797,7 @@ const walletAccountsQuery = `
 
 type WalletIdentity = Pick<
   WalletHomeSnapshot,
-  "publicKey" | "networkId" | "networkName" | "endpoint"
+  "publicKey" | "networkId" | "networkName" | "endpoint" | "nativeCurrency"
 >
 
 const loadWalletIdentity = async (): Promise<WalletIdentity> => {
@@ -802,6 +809,7 @@ const loadWalletIdentity = async (): Promise<WalletIdentity> => {
     publicKey,
     networkId: state.selectedNetwork,
     networkName,
+    nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
     ...(endpoint ? { endpoint } : {})
   }
 }
@@ -853,9 +861,10 @@ const sendMinaPayment = async (
   const memo = typeof params.memo === "string" ? params.memo : ""
   await approveTransactionSigning({
     origin: requester,
-    title: "Send Mina payment",
+    title: `Send ${nativeTokenSymbol(state.selectedNetwork, state.chains[state.selectedNetwork]?.nativeCurrency)}`,
     operation: "Payment (sign and submit)",
     networkId: state.selectedNetwork,
+    nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
     signingPublicKey: publicKey,
     recipientLabel: "Recipient",
     recipient: to,
@@ -866,7 +875,7 @@ const sendMinaPayment = async (
   })
   const account = await deriveAccount()
   if (account.publicKey !== publicKey) {
-    throw new Error("The derived Mina account changed during approval")
+    throw new Error("The derived account changed during approval")
   }
   const signed = client.signPayment({
     to,
@@ -877,7 +886,7 @@ const sendMinaPayment = async (
     memo
   }, account.privateKey)
   if (!client.verifyTransaction(signed)) {
-    throw new Error("Mina signer failed to verify its payment signature")
+    throw new Error("Wallet signer failed to verify its payment signature")
   }
   const data = await graphql(getNetworkUrl(state), sendPaymentMutation, {
     ...(signed.data as unknown as Record<string, Json>),
@@ -890,7 +899,7 @@ const sendMinaPayment = async (
   const result = typeof payment === "object" && payment !== null
     ? payment as Record<string, unknown>
     : {}
-  if (typeof result.hash !== "string") throw new Error("Mina node returned no payment hash")
+  if (typeof result.hash !== "string") throw new Error("The node returned no payment hash")
   return {
     hash: result.hash,
     ...(typeof result.id === "string" ? { paymentId: result.id } : {})
@@ -969,15 +978,15 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
           type: "confirmation",
           content: (
             <Box>
-              <Heading>Connect Mina account</Heading>
-              <Text>Allow <Bold>{origin}</Bold> to view this Mina address?</Text>
+              <Heading>Connect wallet account</Heading>
+              <Text>Allow <Bold>{origin}</Bold> to view this wallet address?</Text>
               <Text>{publicKey}</Text>
             </Box>
           )
         }
       })
       if (!approved) {
-        throw new UserRejectedRequestError("Mina account connection was rejected")
+        throw new UserRejectedRequestError("Wallet account connection was rejected")
       }
       state.origins[origin] = { account: 0 }
       await setState(state)
@@ -1013,10 +1022,10 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       ? request.params.networkID
       : ""
     if (!BUILT_IN_NETWORKS.has(networkID) && !state.chains[networkID]) {
-      throw new Error(`Unsupported Mina chain: ${networkID}`)
+      throw new Error(`Unsupported chain: ${networkID}`)
     }
     if (state.selectedNetwork !== networkID) {
-      await approveSigning(origin, "Switch Mina network", networkID)
+      await approveSigning(origin, "Switch network", networkID)
       state.selectedNetwork = networkID
       await setState(state)
     }
@@ -1027,34 +1036,53 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     if (typeof request.params !== "object" || request.params === null) {
       throw new InvalidParamsError("mina_addChain requires a URL and name")
     }
-    const { url, name } = request.params as Record<string, unknown>
+    const { url, name, nativeCurrency: requestedCurrency } = request.params as Record<string, unknown>
     if (typeof url !== "string" || typeof name !== "string" || !name.trim()) {
       throw new InvalidParamsError("mina_addChain requires a URL and name")
+    }
+    let nativeCurrency: NativeCurrency | undefined
+    if (requestedCurrency !== undefined) {
+      if (typeof requestedCurrency !== "object" || requestedCurrency === null ||
+          !("symbol" in requestedCurrency) ||
+          (requestedCurrency.symbol !== "ETH" && requestedCurrency.symbol !== "MINA") ||
+          !("decimals" in requestedCurrency) || requestedCurrency.decimals !== 9) {
+        throw new InvalidParamsError("Native currency display requires ETH or MINA with nine decimals")
+      }
+      nativeCurrency = { symbol: requestedCurrency.symbol, decimals: 9 }
     }
     let parsedUrl: URL
     try {
       parsedUrl = new URL(decodeURIComponent(url))
     } catch {
-      throw new InvalidParamsError("The Mina GraphQL URL is invalid")
+      throw new InvalidParamsError("The GraphQL URL is invalid")
     }
     if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-      throw new InvalidParamsError("Mina GraphQL URLs must use HTTP or HTTPS")
+      throw new InvalidParamsError("GraphQL URLs must use HTTP or HTTPS")
     }
     await approveSigning(
       origin,
-      "Contact Mina network",
+      "Contact network",
       `${name.trim()} at ${parsedUrl.href}`
     )
     const data = await graphql(parsedUrl.href, "query MinaNetworkId { networkID }")
     if (typeof data.networkID !== "string" || !data.networkID) {
-      throw new Error("The GraphQL endpoint returned no Mina networkID")
+      throw new Error("The GraphQL endpoint returned no networkID")
+    }
+    const knownSymbol = nativeTokenSymbol(data.networkID)
+    if (nativeCurrency && knownSymbol !== "native units" && nativeCurrency.symbol !== knownSymbol) {
+      throw new InvalidParamsError(`This network uses ${knownSymbol}`)
     }
     await approveSigning(
       origin,
-      "Add Mina network",
-      `${name.trim()} reports network ID ${data.networkID}`
+      "Add network",
+      `${name.trim()} reports network ID ${data.networkID}` +
+        (nativeCurrency ? `\nNative asset display supplied by this site: ${nativeCurrency.symbol} (${nativeCurrency.decimals} decimals)` : "")
     )
-    state.chains[data.networkID] = { url: parsedUrl.href, name: name.trim() }
+    state.chains[data.networkID] = {
+      url: parsedUrl.href,
+      name: name.trim(),
+      ...(nativeCurrency ? { nativeCurrency } : {})
+    }
     state.selectedNetwork = data.networkID
     await setState(state)
     return { networkID: data.networkID }
@@ -1062,7 +1090,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
   if (request.method === "mina_signMessage") {
     const state = await requireConnection(origin)
     const message = readMessage(request.params)
-    await approveSigning(origin, "Sign Mina message", message)
+    await approveSigning(origin, "Sign message", message)
     const account = await deriveAccount()
     const client = getClient(state.selectedNetwork)
     const signed = client.signMessage(
@@ -1070,7 +1098,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       account.privateKey
     )
     if (!client.verifyMessage(signed)) {
-      throw new Error("Mina signer failed to verify its message signature")
+      throw new Error("Wallet signer failed to verify its message signature")
     }
     return signed
   }
@@ -1087,26 +1115,26 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       throw new InvalidParamsError("mina_sign_JsonMessage requires a message array")
     }
     const message = JSON.stringify(request.params.message)
-    await approveSigning(origin, "Sign Mina JSON message", message)
+    await approveSigning(origin, "Sign JSON message", message)
     const account = await deriveAccount()
     const client = getClient(state.selectedNetwork)
     const signed = client.signMessage(message, account.privateKey)
     if (!client.verifyMessage(signed)) {
-      throw new Error("Mina signer failed to verify its JSON-message signature")
+      throw new Error("Wallet signer failed to verify its JSON-message signature")
     }
     return signed
   }
   if (request.method === "mina_signFields") {
     const state = await requireConnection(origin)
     const fields = readFields(request.params, "message")
-    await approveSigning(origin, "Sign Mina fields", fields.join(", "))
+    await approveSigning(origin, "Sign fields", fields.join(", "))
     const account = await deriveAccount()
     const signed = getClient(state.selectedNetwork).signFields(
       fields.map(BigInt),
       account.privateKey
     )
     if (!getClient(state.selectedNetwork).verifyFields(signed)) {
-      throw new Error("Mina signer failed to verify its field signature")
+      throw new Error("Wallet signer failed to verify its field signature")
     }
     return {
       data: fields,
@@ -1138,9 +1166,10 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const memo = typeof params.memo === "string" ? params.memo : ""
     await approveTransactionSigning({
       origin,
-      title: "Send Mina delegation",
+      title: "Delegate stake",
       operation: "Stake delegation (sign and submit)",
       networkId: state.selectedNetwork,
+      nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
       signingPublicKey: publicKey,
       recipientLabel: "Delegate",
       recipient: to,
@@ -1150,7 +1179,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     })
     const account = await deriveAccount()
     if (account.publicKey !== publicKey) {
-      throw new Error("The derived Mina account changed during approval")
+      throw new Error("The derived account changed during approval")
     }
     const signed = client.signStakeDelegation({
       to,
@@ -1160,7 +1189,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       memo
     }, account.privateKey)
     if (!client.verifyTransaction(signed)) {
-      throw new Error("Mina signer failed to verify its delegation signature")
+      throw new Error("Wallet signer failed to verify its delegation signature")
     }
     const data = await graphql(getNetworkUrl(state), sendDelegationMutation, {
       ...(signed.data as unknown as Record<string, Json>),
@@ -1173,7 +1202,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const result = typeof delegation === "object" && delegation !== null
       ? delegation as Record<string, unknown>
       : {}
-    if (typeof result.hash !== "string") throw new Error("Mina node returned no delegation hash")
+    if (typeof result.hash !== "string") throw new Error("The node returned no delegation hash")
     return {
       hash: result.hash,
       ...(typeof result.id === "string" ? { paymentId: result.id } : {})
@@ -1264,6 +1293,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
       origin,
       onlySign,
       networkId: state.selectedNetwork,
+      nativeCurrency: state.chains[state.selectedNetwork]?.nativeCurrency,
       signingPublicKey: connectedPublicKey,
       feePayerPublicKey: publicKey,
       fee,
@@ -1275,14 +1305,14 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     })
     const account = await deriveAccount()
     if (account.publicKey !== connectedPublicKey) {
-      throw new Error("The derived Mina account changed during approval")
+      throw new Error("The derived account changed during approval")
     }
     const client = getClient(state.selectedNetwork, getZkappEra(command))
     const signed = client.signTransaction(signingPayload as never, account.privateKey) as unknown as {
       data: { zkappCommand?: unknown }
     }
     if (signsFeePayer && !client.verifyTransaction(signed as never)) {
-      throw new Error("Mina signer failed to verify its zkApp signature")
+      throw new Error("Wallet signer failed to verify its zkApp signature")
     }
     if (!signsFeePayer) {
       const signedCommand = signed.data.zkappCommand
@@ -1290,7 +1320,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         ? (signedCommand as { feePayer?: unknown }).feePayer
         : undefined
       if (typeof signedFeePayer !== "object" || signedFeePayer === null) {
-        throw new Error("Mina signer returned no fee payer")
+        throw new Error("Wallet signer returned no fee payer")
       }
       const mutableFeePayer = signedFeePayer as { authorization: string }
       mutableFeePayer.authorization = feePayerAuthorization
@@ -1309,7 +1339,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
         return typeof signature !== "string" || signature.length === 0
       })
       if (missingSignature) {
-        throw new Error("Mina signer did not sign every matching zkApp account update")
+        throw new Error("Wallet signer did not sign every matching zkApp account update")
       }
     }
     if (onlySign) return { signedData: JSON.stringify(signed.data) }
@@ -1327,7 +1357,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
     const result = typeof zkapp === "object" && zkapp !== null
       ? zkapp as Record<string, unknown>
       : {}
-    if (typeof result.hash !== "string") throw new Error("Mina node returned no zkApp hash")
+    if (typeof result.hash !== "string") throw new Error("The node returned no zkApp hash")
     return {
       hash: result.hash,
       ...(typeof result.id === "string" ? { paymentId: result.id } : {})
@@ -1351,7 +1381,7 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ origin, request }) => 
   if (request.method === "mina_createNullifier") {
     const state = await requireConnection(origin)
     const fields = readFields(request.params, "message")
-    await approveSigning(origin, "Create Mina nullifier", fields.join(", "))
+    await approveSigning(origin, "Create nullifier", fields.join(", "))
     const account = await deriveAccount()
     return toJson(getClient(state.selectedNetwork).createNullifier(
       fields.map(BigInt),
