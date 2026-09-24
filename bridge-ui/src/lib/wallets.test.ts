@@ -19,7 +19,7 @@ const config = {
 } as RuntimeConfig
 
 describe("wallet adapters", () => {
-  it("uses the Flask display name for a local Mina Snap", () => {
+  it("uses the Flask display name for a local Zeko Snap", () => {
     expect(minaWalletName("metamask-snap", "local:http://127.0.0.1:8080"))
       .toBe("MetaMask Flask")
     expect(minaWalletName("metamask-snap", "npm:@mondejka/mina-snap"))
@@ -28,7 +28,7 @@ describe("wallet adapters", () => {
       .toBe("Auro Wallet")
   })
 
-  it("uses the Auro-compatible Mina Snap provider when Auro is absent", () => {
+  it("uses the Auro-compatible Zeko Snap provider when Auro is absent", () => {
     delete window.mina
     window.ethereum = { request: vi.fn(), isMetaMask: true } as unknown as EthereumProvider
 
@@ -64,7 +64,7 @@ describe("wallet adapters", () => {
     expect(provider.switchChain).not.toHaveBeenCalled()
   })
 
-  it("registers the configured GraphQL endpoint for the Mina Snap", async () => {
+  it("registers the configured GraphQL endpoint for the Zeko Snap", async () => {
     const provider = {
       isMinaSnap: true,
       addChain: vi.fn(async () => ({ networkID: "testnet" })),
@@ -83,7 +83,7 @@ describe("wallet adapters", () => {
     expect(provider.switchChain).not.toHaveBeenCalled()
   })
 
-  it("reuses an already approved Mina Snap endpoint without prompting again", async () => {
+  it("reuses an already approved Zeko Snap endpoint without prompting again", async () => {
     const provider = {
       isMinaSnap: true,
       addChain: vi.fn(),

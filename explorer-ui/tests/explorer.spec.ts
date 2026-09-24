@@ -226,6 +226,8 @@ test("overview joins execution, settlement, and both bridge directions", async (
   await expect(page.getByText("Every 15m")).toBeVisible();
   await expect(page.getByText("Deposit #147")).toBeVisible();
   await expect(page.getByText("Withdrawal 284:3")).toBeVisible();
+  await expect(page.getByText("0.012 ETH")).toBeVisible();
+  await expect(page.getByText(/Zeko .* · Ethereum rollup/)).toBeVisible();
   await expect(page.getByText("Settlement #284")).toBeVisible();
   expect(
     await page.evaluate(
@@ -279,6 +281,7 @@ test("bridge list opens deposit, withdrawal, and explorer links", async ({
     page.getByRole("heading", { name: "Withdrawal 284:3" }),
   ).toBeVisible();
   await expect(page.getByText("Claimable slot")).toBeVisible();
+  await expect(page.getByText("0.012 ETH")).toBeVisible();
 });
 
 test("responsive navigation and data surfaces fit mobile", async ({

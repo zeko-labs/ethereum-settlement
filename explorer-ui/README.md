@@ -44,3 +44,7 @@ gateway summary timestamp; it does not add requests between normal polls.
 
 All archive quantities and identifiers that may exceed JavaScript's safe
 integer range remain decimal strings from API to rendering.
+
+Native Zeko balances, fees, and credited bridge amounts are displayed as ETH
+using the ledger's nine-decimal scale (1 ETH = 1,000,000,000 Zeko base units).
+Ethereum escrow amounts use their separate 18-decimal wei scale.

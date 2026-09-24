@@ -12,7 +12,7 @@ import {
 } from "./storage"
 
 describe("operation persistence", () => {
-  it("persists a valid Mina wallet preference and ignores invalid state", () => {
+  it("persists a valid Zeko wallet preference and ignores invalid state", () => {
     const storage = new Map<string, string>()
     const adapter = {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -87,7 +87,7 @@ describe("operation persistence", () => {
     expect(readOperations("key", storage)).toEqual([])
   })
 
-  it("remembers only whether the selected Mina wallet was previously authorized", () => {
+  it("remembers only whether the selected Zeko wallet was previously authorized", () => {
     const storage = new Map<string, string>()
     const adapter = {
       getItem: (key: string) => storage.get(key) ?? null,

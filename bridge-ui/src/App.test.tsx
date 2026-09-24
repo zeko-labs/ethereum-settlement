@@ -130,7 +130,7 @@ describe("bridge application", () => {
     vi.clearAllMocks()
   })
 
-  it("runs the deposit review, gateway progress, and Mina-wallet finalization states", async () => {
+  it("runs the deposit review, gateway progress, and Zeko-wallet finalization states", async () => {
     const user = userEvent.setup()
     render(<App />)
 
@@ -138,7 +138,7 @@ describe("bridge application", () => {
     expect(screen.getAllByText(/No cancellation\/refund/i).length).toBeGreaterThan(0)
 
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.1")
     expect(screen.getByLabelText("Zeko recipient")).toHaveValue(zekoAccount)
@@ -177,7 +177,7 @@ describe("bridge application", () => {
     expect(screen.queryByText("Deposit finalized")).not.toBeInTheDocument()
   })
 
-  it("loads only the selected token balance when Mina connects or changes account", async () => {
+  it("loads only the selected token balance when Zeko connects or changes account", async () => {
     const token = {
       kind: "erc20" as const,
       id: "0x00000000000000000000000000000000000000c0" as const,
@@ -205,7 +205,7 @@ describe("bridge application", () => {
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
     await user.selectOptions(screen.getByLabelText("Bridge asset"), token.token)
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     await waitFor(() => expect(fetchZekoTokenBalance).toHaveBeenCalledWith(
       validConfig.sequencerGraphqlUrl, zekoAccount, token.tokenIdL2, 6))
@@ -270,13 +270,13 @@ describe("bridge application", () => {
     }))
   })
 
-  it("submits a native withdrawal with the Mina wallet testnet signing domain", async () => {
+  it("submits a native withdrawal with the Zeko wallet testnet signing domain", async () => {
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
     await user.click(screen.getByRole("button", { name: /Connect wallet/i }))
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     await user.click(screen.getByRole("button", { name: "Reverse bridge direction" }))
     await user.type(screen.getByLabelText("Amount of native ETH to bridge"), "0.05")
@@ -285,8 +285,8 @@ describe("bridge application", () => {
     const review = screen.getByRole("button", { name: /Review withdrawal/i })
     await waitFor(() => expect(review).toBeEnabled())
     await user.click(review)
-    expect(screen.getByText("Mina wallet · testnet salt")).toBeVisible()
-    await user.click(screen.getByRole("button", { name: "Confirm in Mina wallet" }))
+    expect(screen.getByText("Zeko wallet · Zeko Testnet")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Confirm in Zeko wallet" }))
 
     expect(await screen.findByRole("heading", { name: "Withdrawal in progress" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Waiting for settlement" })).toBeDisabled()
@@ -304,12 +304,12 @@ describe("bridge application", () => {
     expect(screen.getByText("Waiting for Zeko settlement")).toBeVisible()
   })
 
-  it("restores an already-authorized Mina wallet connection after reload", async () => {
+  it("restores an already-authorized Zeko wallet connection after reload", async () => {
     localStorage.setItem("zeko-eth-bridge:v1:auro-connected", "true")
     window.mina = {} as typeof window.mina
     render(<App />)
 
-    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })).toBeVisible()
     expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "auro")
   })
 
@@ -333,19 +333,19 @@ describe("bridge application", () => {
     expect(mocks.connectMina).toHaveBeenCalledTimes(1)
 
     await act(async () => resolveReload(zekoAccount))
-    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })).toBeVisible()
     expect(auro).toBeEnabled()
 
     await user.click(auro)
     await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
     await user.click(screen.getByRole("button", { name: "Close settings" }))
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
-    expect(await screen.findByRole("button", { name: /Mina wallet B62qjH…APq8/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Zeko wallet B62qjH…APq8/ })).toBeVisible()
     expect(mocks.connectMina).toHaveBeenCalledTimes(2)
   })
 
-  it("commits an authorized Mina session before balance loading finishes", async () => {
+  it("commits an authorized Zeko session before balance loading finishes", async () => {
     let resolveBalance!: (balance: string) => void
     mocks.fetchZekoBalance.mockReturnValueOnce(new Promise((resolve) => {
       resolveBalance = resolve
@@ -354,17 +354,17 @@ describe("bridge application", () => {
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
 
-    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBe("metamask-snap")
 
     await act(async () => resolveBalance("2.5"))
     expect(await screen.findByText("2.5 ETH")).toBeVisible()
   })
 
-  it("commits a reloaded Mina session before balance loading finishes", async () => {
+  it("commits a reloaded Zeko session before balance loading finishes", async () => {
     let resolveReload!: (account: string) => void
     let resolveBalance!: (balance: string) => void
     mocks.connectMina.mockReturnValueOnce(new Promise((resolve) => {
@@ -381,7 +381,7 @@ describe("bridge application", () => {
     localStorage.removeItem("zeko-eth-bridge:v1:mina-connected")
     await act(async () => resolveReload(zekoAccount))
 
-    expect(await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })).toBeVisible()
+    expect(await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBe("metamask-snap")
 
     await act(async () => resolveBalance("2.5"))
@@ -393,7 +393,7 @@ describe("bridge application", () => {
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(await screen.findByRole("button", { name: /MetaMask (Snap|Flask)/i }))
     expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "metamask-snap")
     expect(screen.getByText("Zeko Testnet · Snap")).toBeVisible()
@@ -407,24 +407,24 @@ describe("bridge application", () => {
     await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
     expect(auro).toHaveAttribute("aria-checked", "true")
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-wallet")).toBe("auro")
-    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Connect Zeko wallet/i })).toBeVisible()
 
     await user.click(screen.getByRole("button", { name: "Close settings" }))
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(await screen.findByRole("button", { name: /Auro Wallet/i }))
     expect(mocks.connectMina).toHaveBeenLastCalledWith(validConfig, "auro")
     expect(mocks.getMinaProvider).toHaveBeenCalledWith("auro")
     expect(screen.getByText("Zeko Testnet · Auro")).toBeVisible()
   })
 
-  it("asks which Mina wallet to use before connecting", async () => {
+  it("asks which Zeko wallet to use before connecting", async () => {
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
 
-    expect(screen.getByRole("dialog", { name: "Connect Mina wallet" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Connect Zeko wallet" })).toBeVisible()
     expect(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i })).toBeVisible()
     expect(screen.getByRole("button", { name: /Auro Wallet/i })).toBeVisible()
     expect(mocks.connectMina).not.toHaveBeenCalled()
@@ -432,25 +432,25 @@ describe("bridge application", () => {
     await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
     await waitFor(() => expect(mocks.connectMina).toHaveBeenCalledWith(validConfig, "auro"))
     expect(mocks.connectMina).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole("dialog", { name: "Connect Mina wallet" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("dialog", { name: "Connect Zeko wallet" })).not.toBeInTheDocument()
     expect(screen.getByText("Zeko Testnet · Auro")).toBeVisible()
   })
 
-  it("disconnects the connected Mina wallet", async () => {
+  it("disconnects the connected Zeko wallet", async () => {
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
-    const connected = await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })
+    const connected = await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })
     await user.click(connected)
 
-    expect(screen.getByRole("dialog", { name: "Mina wallet" })).toBeVisible()
-    await user.click(screen.getByRole("button", { name: "Disconnect Mina wallet" }))
+    expect(screen.getByRole("dialog", { name: "Zeko wallet" })).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Disconnect Zeko wallet" }))
 
     await waitFor(() => expect(mocks.revokeMinaPermissions).toHaveBeenCalledOnce())
-    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Connect Zeko wallet/i })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
   })
@@ -469,22 +469,22 @@ describe("bridge application", () => {
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /Auro Wallet/i }))
-    const connected = await screen.findByRole("button", { name: /Mina wallet B62qke…ABn2/ })
+    const connected = await screen.findByRole("button", { name: /Zeko wallet B62qke…ABn2/ })
     await user.click(connected)
-    await user.click(screen.getByRole("button", { name: "Disconnect Mina wallet" }))
+    await user.click(screen.getByRole("button", { name: "Disconnect Zeko wallet" }))
 
     expect(mocks.revokeMinaPermissions).not.toHaveBeenCalled()
-    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Connect Zeko wallet/i })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
 
     await act(async () => onAccountsChanged?.([zekoAccount]))
-    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Connect Zeko wallet/i })).toBeVisible()
   })
 
-  it("ignores account events until Mina network setup succeeds", async () => {
+  it("ignores account events until Zeko network setup succeeds", async () => {
     let onAccountsChanged: ((accounts: string[]) => void) | undefined
     mocks.getMinaProvider.mockReturnValue({
       isMinaSnap: true,
@@ -495,17 +495,17 @@ describe("bridge application", () => {
     })
     mocks.connectMina.mockImplementationOnce(async () => {
       onAccountsChanged?.([zekoAccount])
-      throw new Error("Mina network setup failed")
+      throw new Error("Zeko network setup failed")
     })
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole("heading", { name: "Ethereum ↔ Zeko Bridge" })
-    await user.click(screen.getByRole("button", { name: /Connect Mina wallet/i }))
+    await user.click(screen.getByRole("button", { name: /Connect Zeko wallet/i }))
     await user.click(screen.getByRole("button", { name: /MetaMask (Snap|Flask)/i }))
 
-    expect(await screen.findAllByText("Mina network setup failed")).not.toHaveLength(0)
-    expect(screen.getByRole("button", { name: /Connect Mina wallet/i })).toBeVisible()
+    expect(await screen.findAllByText("Zeko network setup failed")).not.toHaveLength(0)
+    expect(screen.getByRole("button", { name: /Connect Zeko wallet/i })).toBeVisible()
     expect(localStorage.getItem("zeko-eth-bridge:v1:auro-connected")).toBeNull()
     expect(localStorage.getItem("zeko-eth-bridge:v1:mina-connected")).toBeNull()
   })

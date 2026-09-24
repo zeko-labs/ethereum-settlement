@@ -28,6 +28,8 @@ describe("Zeko explorer", () => {
     expect(screen.getByText("Settlement #284")).toBeInTheDocument();
     expect(screen.getByText("Deposit #147")).toBeInTheDocument();
     expect(screen.getByText("Withdrawal 284:3")).toBeInTheDocument();
+    expect(screen.getByText("0.012 ETH")).toBeInTheDocument();
+    expect(screen.getByText("Zeko Testnet · Ethereum rollup")).toBeInTheDocument();
   });
 
   it("opens a transaction detail route through visible navigation", async () => {
@@ -50,7 +52,8 @@ describe("Zeko explorer", () => {
     expect(await screen.findByText("Transaction hash")).toBeInTheDocument();
     expect(screen.getByText("18446744073709551615")).toBeInTheDocument();
     expect(screen.getByText("Native withdrawal request")).toBeInTheDocument();
-    expect(screen.getByText("5 ZEKO")).toBeInTheDocument();
+    expect(screen.getByText("5 ETH")).toBeInTheDocument();
+    expect(screen.getByText("0.1 ETH")).toBeInTheDocument();
     expect(screen.getByText("Pending Settlement")).toBeInTheDocument();
   });
 });
