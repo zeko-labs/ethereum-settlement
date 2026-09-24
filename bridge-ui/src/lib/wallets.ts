@@ -158,7 +158,7 @@ export const ensureAuroPoCNetwork = async (
   config: RuntimeConfig
 ): Promise<void> => {
   const current = await provider.requestNetwork()
-  if (isProviderError(current)) throw new Error(current.message ?? `Mina wallet error ${current.code}`)
+  if (isProviderError(current)) throw new Error(current.message ?? `Zeko wallet error ${current.code}`)
   if (provider.isMinaSnap) {
     if (current.url && new URL(current.url).href === new URL(config.sequencerGraphqlUrl).href) {
       if (!isAuroPoCNetwork(current.networkID)) {
@@ -171,14 +171,14 @@ export const ensureAuroPoCNetwork = async (
       .catch((error: unknown) => error)
     if (added instanceof Error) throw added
     if (isProviderError(added)) {
-      throw new Error(added.message ?? `Mina wallet error ${added.code}`)
+      throw new Error(added.message ?? `Zeko wallet error ${added.code}`)
     }
     const selected = await provider.requestNetwork()
     if (isProviderError(selected)) {
-      throw new Error(selected.message ?? `Mina wallet error ${selected.code}`)
+      throw new Error(selected.message ?? `Zeko wallet error ${selected.code}`)
     }
     if (!isAuroPoCNetwork(selected.networkID)) {
-      throw new Error("The Mina Snap did not select the configured Zeko endpoint")
+      throw new Error("The Zeko Snap did not select the configured Zeko endpoint")
     }
     return
   }
@@ -206,22 +206,22 @@ export const ensureAuroPoCNetwork = async (
           `Auro blocks dapps from adding local HTTP nodes. Add ${config.sequencerGraphqlUrl} manually in Auro Settings > Networks, select it, then reconnect.`
         )
       }
-      throw new Error(added.message ?? `Mina wallet error ${added.code}`)
+      throw new Error(added.message ?? `Zeko wallet error ${added.code}`)
     }
   }
 
   const network = await provider.requestNetwork()
-  if (isProviderError(network)) throw new Error(network.message ?? `Mina wallet error ${network.code}`)
+  if (isProviderError(network)) throw new Error(network.message ?? `Zeko wallet error ${network.code}`)
   if (!isAuroPoCNetwork(network.networkID)) {
-    throw new Error("The Mina wallet did not select Zeko Testnet")
+    throw new Error("The Zeko wallet did not select Zeko Testnet")
   }
 }
 
 export const connectMina = async (config: RuntimeConfig, wallet: MinaWalletKind): Promise<string> => {
   const provider = getMinaProvider(wallet)
   const accounts = await provider.requestAccounts()
-  if (isProviderError(accounts)) throw new Error(accounts.message ?? `Mina wallet error ${accounts.code}`)
-  if (!accounts[0]) throw new Error("No Mina account selected")
+  if (isProviderError(accounts)) throw new Error(accounts.message ?? `Zeko wallet error ${accounts.code}`)
+  if (!accounts[0]) throw new Error("No Zeko account selected")
   await ensureAuroPoCNetwork(provider, config)
   return accounts[0]
 }

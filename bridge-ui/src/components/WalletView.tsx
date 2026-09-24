@@ -63,25 +63,25 @@ export const WalletView = ({ config, getProvider, account, onConnect, onSubmitte
   }
 
   return (
-    <section className="bridge-form" aria-label="Mina wallet payments">
+    <section className="bridge-form" aria-label="Zeko wallet payments">
       <div className="form-heading">
         <h2>Send from Zeko</h2>
-        <div className="route-kicker"><strong>Mina wallet</strong><span>·</span><span>Payments and standard MFT tokens</span></div>
+        <div className="route-kicker"><strong>Zeko wallet</strong><span>·</span><span>Payments and standard MFT tokens</span></div>
       </div>
       <div className="tabs" role="tablist" aria-label="Asset type">
-        <button type="button" className={`tab${kind === "MINA" ? " active" : ""}`} role="tab" aria-selected={kind === "MINA"} onClick={() => { setKind("MINA"); setFee("0.1") }}>MINA</button>
+        <button type="button" className={`tab${kind === "MINA" ? " active" : ""}`} role="tab" aria-selected={kind === "MINA"} onClick={() => { setKind("MINA"); setFee("0.1") }}>ETH</button>
         <button type="button" className={`tab${kind === "MFT" ? " active" : ""}`} role="tab" aria-selected={kind === "MFT"} onClick={() => { setKind("MFT"); setFee(mftFee) }}>MFT token</button>
       </div>
       {kind === "MFT" && (
         <label className="recipient-editor"><span className="recipient-label-text">MFT token owner</span><input className="recipient-input" aria-label="MFT token owner" placeholder="B62…" value={tokenOwner} onChange={(event) => setTokenOwner(event.target.value.trim())} /></label>
       )}
       <label className="recipient-editor"><span className="recipient-label-text">Recipient</span><input className="recipient-input" aria-label="Payment recipient" placeholder="B62…" value={recipient} onChange={(event) => setRecipient(event.target.value.trim())} /></label>
-      <label className="recipient-editor"><span className="recipient-label-text">{kind === "MINA" ? "Amount (MINA)" : "Amount (exact base units)"}</span><input className="recipient-input" aria-label="Payment amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.trim())} /></label>
-      <label className="recipient-editor"><span className="recipient-label-text">{kind === "MINA" ? "Fee (MINA)" : "Fee (nanomina)"}</span><input className="recipient-input" aria-label="Payment fee" inputMode="decimal" value={fee} onChange={(event) => setFee(event.target.value.trim())} /></label>
+      <label className="recipient-editor"><span className="recipient-label-text">{kind === "MINA" ? "Amount (ETH)" : "Amount (exact base units)"}</span><input className="recipient-input" aria-label="Payment amount" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.trim())} /></label>
+      <label className="recipient-editor"><span className="recipient-label-text">{kind === "MINA" ? "Fee (ETH)" : "Fee (Zeko base units)"}</span><input className="recipient-input" aria-label="Payment fee" inputMode="decimal" value={fee} onChange={(event) => setFee(event.target.value.trim())} /></label>
       {kind === "MINA" && <label className="recipient-editor"><span className="recipient-label-text">Memo (optional)</span><input className="recipient-input" aria-label="Payment memo" value={memo} onChange={(event) => setMemo(event.target.value)} /></label>}
-      {kind === "MFT" && <Notice kind="warning">MFT amounts use exact base units. The first transfer compiles and proves the standard token contract locally and can take several minutes.</Notice>}
+      {kind === "MFT" && <Notice kind="warning">MFT amounts use exact token base units. Fees use Zeko base units (1 ETH = 1,000,000,000 base units). The first transfer compiles and proves the standard token contract locally and can take several minutes.</Notice>}
       {error && <Notice kind="error">{error}</Notice>}
-      <button type="button" className="primary-button" disabled={busy} onClick={() => void submit()}>{busy ? (kind === "MFT" ? "Building and proving…" : "Opening Mina wallet…") : account ? `Review ${kind} payment` : "Connect Mina wallet"}</button>
+      <button type="button" className="primary-button" disabled={busy} onClick={() => void submit()}>{busy ? (kind === "MFT" ? "Building and proving…" : "Opening Zeko wallet…") : account ? `Review ${kind === "MINA" ? "ETH" : "MFT"} payment` : "Connect Zeko wallet"}</button>
     </section>
   )
 }

@@ -226,7 +226,7 @@ export function Overview({
       </section>
       <footer>
         <span>
-          Zeko Testnet · Mina <code>testnet</code> signing domain
+          {config.networkName} · Ethereum rollup
         </span>
         <span>Ethereum settlement · Sepolia · Experimental</span>
       </footer>

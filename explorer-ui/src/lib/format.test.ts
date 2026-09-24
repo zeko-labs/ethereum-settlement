@@ -13,8 +13,14 @@ describe("lossless amount formatting", () => {
       "18,446,744,073,709,551,615",
     );
     expect(formatNano("18446744073709551615")).toBe(
-      "18,446,744,073.709551 ZEKO",
+      "18,446,744,073.709551615 ETH",
     );
+  });
+
+  it("uses the Zeko ledger scale for ETH balances and the Ethereum scale for wei", () => {
+    expect(formatNano("1000000000")).toBe("1 ETH");
+    expect(formatNano("2500")).toBe("0.0000025 ETH");
+    expect(formatWei("1000000000000000000")).toBe("1 ETH");
   });
 
   it("formats wei from its decimal string", () => {

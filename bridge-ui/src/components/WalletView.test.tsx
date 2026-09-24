@@ -20,21 +20,22 @@ const recipient = "B62qpsAarHNrGH4NXUUGNcaEQR66ksaR1bDURSHdiXNRgHVxi9YRTUA"
 const tokenOwner = "B62qm7w14uvoXCU6LCTLnZnMT41qD2prFJEpYtRdU1Ny7BvgHcxhVT8"
 const provider = {} as ReturnType<Parameters<typeof WalletView>[0]["getProvider"]>
 
-describe("Mina wallet payment view", () => {
+describe("Zeko wallet payment view", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
   })
 
-  it("submits a native MINA payment through the connected wallet", async () => {
+  it("submits a native ETH payment through the connected wallet", async () => {
     const submitted = vi.fn()
     const user = userEvent.setup()
     render(<WalletView config={validConfig} getProvider={() => provider} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
 
+    expect(screen.getByRole("tab", { name: "ETH" })).toBeVisible()
     await user.type(screen.getByLabelText("Payment recipient"), recipient)
     await user.type(screen.getByLabelText("Payment amount"), "1.25")
     await user.type(screen.getByLabelText("Payment memo"), "hello")
-    await user.click(screen.getByRole("button", { name: "Review MINA payment" }))
+    await user.click(screen.getByRole("button", { name: "Review ETH payment" }))
 
     expect(mocks.native).toHaveBeenCalledWith(expect.objectContaining({
       config: validConfig,
@@ -50,6 +51,8 @@ describe("Mina wallet payment view", () => {
     render(<WalletView config={validConfig} getProvider={() => provider} account={account} onConnect={vi.fn()} onSubmitted={submitted} />)
 
     await user.click(screen.getByRole("tab", { name: "MFT token" }))
+    expect(screen.getByText("Fee (Zeko base units)")).toBeVisible()
+    expect(screen.getByText(/1 ETH = 1,000,000,000 base units/)).toBeVisible()
     await user.type(screen.getByLabelText("MFT token owner"), tokenOwner)
     await user.type(screen.getByLabelText("Payment recipient"), recipient)
     await user.type(screen.getByLabelText("Payment amount"), "1250000")
