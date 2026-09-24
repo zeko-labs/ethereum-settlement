@@ -1,7 +1,7 @@
 {
   "name": "@mondejka/mina-snap",
   "version": "0.1.0",
-  "description": "Auro-compatible Mina signer for MetaMask Snaps",
+  "description": "Zeko wallet and transaction signer for MetaMask Snaps",
   "license": "MIT",
   "type": "module",
   "main": "dist/bundle.js",

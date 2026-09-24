@@ -43,6 +43,10 @@ Use credential files and the explicit variables in a persistent deployment.
 
 ## Virtual Mina view
 
+These retained `VIRTUAL_MINA_*` names describe the gateway's compatibility
+interface for the Zeko sequencer. Ethereum supplies the settlement state;
+user-facing native amounts on Zeko are ETH with nine decimal places.
+
 | Variable | Purpose |
 | --- | --- |
 | `VIRTUAL_MINA_GENESIS_TIMESTAMP` | Must match settlement's virtual-slot genesis. |
@@ -119,7 +123,7 @@ record whose MFT or universal VK identifier differs from this configuration.
 
 For this PoC, `MINA_SIGNING_NETWORK_ID=testnet` is the source value used to
 materialize `ZEKO_SIGNATURE_KIND`. Auro assigns that built-in signing domain to
-custom endpoints, and the MetaMask Mina Snap applies the same mapping for Zeko
+custom endpoints, and the Zeko Wallet MetaMask Snap applies the same mapping for Zeko
 testnet. Do not substitute the display name or `zeko-testnet`; signatures and
 circuit commitments must use the same salt.
 

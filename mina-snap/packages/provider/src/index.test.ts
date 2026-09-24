@@ -123,7 +123,7 @@ describe("Auro-compatible Mina Provider", () => {
   })
 
   it("maps standard Snap authorization and parameter errors to Auro codes", async () => {
-    let failure = Object.assign(new Error("Connect the Mina account before signing"), {
+    let failure = Object.assign(new Error("Connect the wallet account before signing"), {
       code: 4100
     })
     const request = vi.fn(async ({ method }: { method: string }) => {
@@ -207,7 +207,7 @@ describe("Auro-compatible Mina Provider", () => {
     target.dispatchEvent(new Event("mina:requestProvider"))
 
     expect(announcement?.detail).toMatchObject({
-      info: { slug: "zeko-mina-snap", name: "Zeko Mina Snap" },
+      info: { slug: "zeko-mina-snap", name: "Zeko Wallet" },
       provider: { isAuro: false, isMinaSnap: true }
     })
     expect(Object.isFrozen(announcement?.detail)).toBe(true)

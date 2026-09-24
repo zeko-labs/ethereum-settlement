@@ -1,10 +1,17 @@
-# Zeko Mina Wallet Snap
+# Zeko Wallet Snap
 
-This workspace contains a MetaMask Snap that signs Mina and Zeko operations,
-plus a browser adapter with the same dapp-facing method names and result shapes
-as Auro's `window.mina` provider. The Ethereum bridge consumes that adapter at
-its existing Auro `onlySign` boundary, so the bridge SDK and transaction
-submission path are unchanged.
+Zeko Wallet is the MetaMask Snap for signing transactions on the Zeko Ethereum
+rollup. It manages a Zeko `B62…` account, displays ETH balances on Zeko, and
+works with the Ethereum bridge through an Auro-compatible browser adapter.
+Your Ethereum `0x…` account pays for L1 deposits and claims; the Snap's `B62…`
+account receives and sends assets on Zeko.
+
+Zeko retains Mina-compatible account derivation and transaction signatures.
+The adapter therefore keeps Auro's `window.mina` method names and result shapes,
+and the bridge uses the existing `onlySign` boundary. The ETH display targets
+the current Ethereum-backed `zeko:testnet` deployment. Mina mainnet/devnet and
+legacy `zeko:mainnet` support retain their network names and MINA currency labels;
+those networks have not been migrated by this wallet update.
 
 The implementation is based on Auro extension 2.5.2 and its provider package,
 not on the abandoned MinaPortal Snap. The detailed source review and design
@@ -12,11 +19,10 @@ record is in [`../docs/research/metamask-mina-snap.md`](../docs/research/metamas
 
 ## Packages
 
-- `packages/snap` derives Mina account 0 from MetaMask, provides a wallet home
-  page for the address, MINA balance, nonce, token accounts, and native MINA
-  payments, displays
-  confirmations, signs with `mina-signer`, and optionally submits signed
-  operations to a user-approved Mina GraphQL endpoint.
+- `packages/snap` derives Zeko account 0 from MetaMask, provides a wallet home
+  page for the address, ETH balance, nonce, token accounts, and native payments
+  on Zeko, displays confirmations, signs with `mina-signer`, and optionally
+  submits signed operations to a user-approved GraphQL endpoint.
 - `packages/provider` discovers MetaMask with EIP-6963, installs or reconnects
   the Snap, translates Auro method calls to `wallet_invokeSnap`, revives
   nullifier bigints, and emits Auro-style account/network events.
@@ -30,7 +36,7 @@ credential-storage request requires a MetaMask confirmation. Reloading an
 already authorized bridge origin does not open another account-permission
 prompt.
 
-## Supported Mina Provider surface
+## Supported wallet features
 
 | Capability | Status |
 | --- | --- |
@@ -43,7 +49,7 @@ prompt.
 | zkApp sign/broadcast, including `onlySign` | Compatible; Berkeley and Mesa shapes are detected, and broadcast needs a configured endpoint |
 | Auro provider errors and change events | Adapter-compatible |
 | Multiple Auro account profiles | Not exposed; the Snap currently uses account 0 |
-| Private credential storage | Stored per Mina account; schema/proof validation is not implemented |
+| Private credential storage | Stored per wallet account; schema/proof validation is not implemented |
 | Private credential presentation | Not supported |
 
 Credential presentation is deliberately outside the signing claim. Auro runs
@@ -99,24 +105,31 @@ VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
 pnpm dev
 ```
 
-After the user chooses MetaMask Flask in the bridge's Mina-wallet dialog, the
+After the user chooses MetaMask Flask in the bridge's Zeko-wallet dialog, the
 bridge detects Flask through EIP-6963, asks it to install the local Snap,
-connects Mina account 0, selects `zeko:testnet`, and uses the Snap for the same
+connects Zeko account 0, selects `zeko:testnet`, and uses the Snap for the same
 `onlySign` request used with Auro. For a retained local Zeko stack, update
 `bridge-ui/public/runtime-config.json` as described in the bridge UI README.
 
-After connecting once, open MetaMask, select **Snaps**, then select **Zeko Mina
-Wallet** to view its wallet home page. The page reads the selected network's
-approved GraphQL endpoint and shows the copyable Mina address, exact MINA
-balance breakdown, nonce, and custom token accounts. Custom-token amounts are
-shown in exact base units because Mina account responses do not include trusted
-token-decimal metadata. The home-page form signs and broadcasts native MINA
-payments through that same approved endpoint. Use **Refresh balances** after a
-transaction settles.
+After connecting once, open MetaMask, select **Snaps**, then select **Zeko
+Wallet** to view its wallet home page. New installations start on Zeko testnet;
+existing installations keep their selected network. Connect through the bridge
+to approve the deployment's GraphQL endpoint before reading balances or sending.
+The page shows the copyable `B62…` address, exact ETH balance breakdown on Zeko,
+nonce, and custom token accounts. Custom-token amounts use exact base units
+because account responses do not include trusted token-decimal metadata.
+The home-page form signs and broadcasts native ETH payments on Zeko through
+that same approved endpoint. Use **Refresh balances** after a transaction settles.
 
-The bridge application's **Wallet** tab also sends native MINA and standard MFT
-tokens. MFT construction and proving deliberately stay outside the Snap: the
-standard's `FungibleToken.transfer` method requires an `o1js` proof, while
+Zeko uses nine decimal places for native ETH: `1000000000` L2 base units are
+1 ETH, and one L2 base unit corresponds to 1 gwei on Ethereum. Wallet display
+formatting does not change the signed amount. Approval dialogs include both
+ETH and the exact L2 base units. When explicitly connected to Mina mainnet,
+Mina devnet, or legacy Zeko mainnet, the Snap displays MINA instead.
+
+The bridge application's **Wallet** tab also sends native ETH and standard MFT
+tokens on Zeko. MFT construction and proving deliberately stay outside the
+Snap: the standard's `FungibleToken.transfer` method requires an `o1js` proof, while
 `mina-signer` supplies the fee-payer and signed-account-update authorization.
 The browser builds and proves against the configured Zeko endpoint, asks the
 Snap to sign the finished command through `onlySign`, then submits it. The first
@@ -125,7 +138,7 @@ compiled. Token amounts are entered in exact base units.
 
 When updating an existing local installation after the manifest permissions or
 bundle changes, reconnect from the bridge and approve MetaMask's update prompt.
-If MetaMask continues to use the cached build, remove **Zeko Mina Wallet** from
+If MetaMask continues to use the cached build, remove **Zeko Wallet** from
 MetaMask's Snaps settings, reload the bridge, and connect it again.
 
 `VITE_MINA_WALLET` only seeds the bridge's initial provider preference; it never

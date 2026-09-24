@@ -303,7 +303,7 @@ export const announceMinaProvider = (
 ): (() => void) => {
   const info = Object.freeze({
     slug: "zeko-mina-snap",
-    name: "Zeko Mina Snap",
+    name: "Zeko Wallet",
     icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%235c3df5'/%3E%3Cpath d='M18 20h28L26 44h20' fill='none' stroke='white' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E",
     rdns: "io.zeko.snap"
   })

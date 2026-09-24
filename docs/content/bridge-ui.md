@@ -5,17 +5,51 @@ flows, registry discovery, and activity recovery. The application is built and
 deployed independently from the Vue applications in the companion Zeko UI
 repository and uses only browser-safe APIs.
 
-## User flows
+## Connect your wallets
+
+The bridge connects two accounts with different roles:
+
+- **Ethereum wallet:** a `0x…` account for Ethereum deposits, ERC-20 approvals,
+  and withdrawal claims. Use the Ethereum network selected by the deployment
+  (Sepolia for the testnet).
+- **Zeko wallet:** a `B62…` account for receiving bridged assets and signing
+  Zeko transactions. Choose Zeko Wallet (the MetaMask Snap) or Auro. The Snap
+  can use the same MetaMask installation as your Ethereum wallet, but the
+  accounts and transaction approvals remain separate.
+
+The bridge configures the Zeko endpoint after connection. MetaMask Snap users
+must approve the requested network endpoint and account access. For local Snap
+builds, follow the [MetaMask Flask setup](https://github.com/zeko-labs/ethereum-settlement/blob/main/mina-snap/README.md#try-it-locally).
+
+## Bridge ETH and tokens
+
+1. Connect both wallets and select ETH or a supported registered ERC-20.
+2. Deposit on Ethereum to your Zeko account, approving ERC-20 spending if
+   requested. Wait for Ethereum finality, deposit processing, and the Zeko
+   settlement that synchronizes the deposit; then complete the Zeko-side
+   finalization when available.
+3. To return funds, request a withdrawal from Zeko to your Ethereum address.
+   After settlement inclusion and the withdrawal delay, claim the funds with
+   your Ethereum wallet.
+
+Native balances, payment amounts, and fees on Zeko are displayed in **ETH**.
+Zeko uses nine decimal places: 1 ETH is `1000000000` L2 base units, and each
+L2 base unit maps to 1 gwei on Ethereum. The bridge performs the conversion to
+Ethereum's 18-decimal wei representation. Supported ERC-20 assets use their
+registered precision. A `B62…` address identifies a Zeko account; use a `0x…`
+address when sending on Ethereum.
+
+## Wallet payments
 
 Native payments use the wallet provider directly. For MFT transfers, the web
 application constructs and proves `FungibleToken.transfer` with the pinned
 `mina-fungible-token@1.1.0` and `o1js@2.8.0`, then asks Auro or the MetaMask Snap
 to sign the completed command through `onlySign`. This keeps the proving runtime
 out of the signing Snap while preserving the wallet approval boundary. MFT
-amounts are exact base units because Mina account data does not provide trusted
+amounts are exact base units because account data does not provide trusted
 decimal metadata. Because an MFT transfer carries a local proof and is
 materially heavier than an ordinary bridge operation, the form defaults its MFT
-fee to at least one MINA (`1000000000` nanomina). The user can edit that value,
+fee to at least 1 ETH (`1000000000` L2 base units). The user can edit that value,
 and a higher deployment-configured operation fee takes precedence.
 
 Deposit batching, SP1 execution/proving, and Ethereum settlement submission
@@ -32,9 +66,9 @@ from the archive-backed gateway endpoint. A locally submitted withdrawal is
 shown immediately while archive indexing catches up. Zeko transaction links
 use `/transactions/<hash>`.
 
-## Mina wallet signing domain
+## Zeko wallet signing domain
 
-Both supported Mina wallets must follow the deployment signing-domain contract
+Both supported Zeko wallets must follow the deployment signing-domain contract
 in the [configuration reference](/reference/configuration#sequencer).
 Wallet-facing network names are display values only. Treat any future wallet
 support for custom signing salts as a versioned network migration rather than
@@ -68,8 +102,8 @@ in `bridge-ui/README.md`.
 | `actionsApiUrl` | Public Actions GraphQL endpoint for inclusion witnesses and the canonical asset registry snapshot. |
 | `expectedEthereumChainId` | `11155111` for Sepolia or `31337` for the local Anvil profile. |
 | `minaSigningNetworkId` | Exact value `testnet`. |
-| `auroNetworkName` | Mina wallet display name for the custom endpoint. |
-| `zekoTransactionFeeNanomina` | Fee supplied to sequencer bridge operations, as a decimal string. |
+| `auroNetworkName` | Zeko wallet display name for the custom endpoint. |
+| `zekoTransactionFeeNanomina` | Fee in native L2 base units (nine decimals per ETH), supplied as a decimal string. The configuration key is retained for SDK compatibility. |
 | `ethereumExplorerUrl` / `zekoExplorerUrl` | Public transaction explorer bases. |
 | `pollIntervalMs` | UI status polling period. |
 
