@@ -68,7 +68,7 @@ describe("wallet payments", () => {
     mocks.sign.mockResolvedValue({ send: mocks.send })
   })
 
-  it("sends native MINA through the Auro-compatible provider", async () => {
+  it("sends native ETH through the Auro-compatible provider", async () => {
     const provider = { requestNetwork: vi.fn(), sendPayment: mocks.sendPayment }
     await expect(sendNativePayment({
       config: validConfig,

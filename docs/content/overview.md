@@ -1,7 +1,8 @@
 # Overview
 
-This repository is the Ethereum settlement and bridge glue for Zeko. It does
-not reimplement Zeko in Rust or Solidity. The OCaml Zeko repository remains the
+Zeko is an Ethereum rollup with ETH as its native asset. This repository
+contains its Ethereum settlement, bridge, wallet, explorer, and operator tools.
+It does not reimplement Zeko in Rust or Solidity. The OCaml Zeko repository remains the
 source of ledger, transaction, proving, action-state, bridge, and rollup
 state-transition semantics.
 
@@ -9,6 +10,17 @@ The current milestone is a **Sepolia proof of concept with the existing 2-of-3
 multisig DA path**. EIP-4844 blobs are intentionally deferred. A production
 Ethereum design is expected to replace the committee DA path with blob-backed
 batch data.
+
+## Wallets and assets
+
+Connect an Ethereum `0x…` account to deposit ETH or a supported ERC-20 and claim
+withdrawals on Ethereum. Connect a Zeko `B62…` account through Zeko Wallet (the
+MetaMask Snap) or Auro to use those assets on Zeko. See the
+[bridge and wallet guide](/bridge-ui) for the complete flow.
+
+Zeko retains Mina-compatible address and signing formats and uses the Pickles
+proof system. Those implementation interfaces remain in SDKs and protocol
+references; Ethereum is the settlement and bridge custody layer.
 
 ## What runs where
 
@@ -28,7 +40,7 @@ Normal settlement:
 ```text
 transaction -> sequencer -> 2-of-3 DA -> OCaml prover -> Pickles commit
   -> gateway GraphQL -> pinned native verification -> operator approval
-  -> Succinct proof -> ZekoSettlement -> confirmed virtual Mina state
+  -> Succinct proof -> ZekoSettlement -> confirmed settlement state
 ```
 
 Bridge:
@@ -53,7 +65,7 @@ Keccak Merkle path to Ethereum.
 | `program/bridge` | SP1 guest for canonical native and registered ERC-20 deposit batches. |
 | `crates/pickles-verifier` | o1 `o1js-to-zkvm` Pickles verifier adapted to SP1. |
 | `lib` | Shared, versioned host/guest public-value and witness types. |
-| `api` | Gateway, Mina GraphQL façade, proof worker, and Ethereum indexer. |
+| `api` | Gateway, sequencer-compatible GraphQL façade, proof worker, and Ethereum indexer. |
 | `contracts` | Upgradeable settlement and bridge contracts plus deployment scripts. |
 | `deploy/testnet` | Persistent, pinned Compose reference profile for Sepolia. |
 | `tools` | Artifact preparation, OCaml export, preflight, and local E2E scripts. |

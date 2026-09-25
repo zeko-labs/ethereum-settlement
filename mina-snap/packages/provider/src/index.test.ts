@@ -37,6 +37,21 @@ describe("Auro-compatible Mina Provider", () => {
     })
   })
 
+  it("passes approved native currency display metadata through the existing network RPC", async () => {
+    const chain = { networkID: "testnet", url: "https://node.example/graphql", name: "Zeko", nativeCurrency: { symbol: "ETH" as const, decimals: 9 as const } }
+    const request = vi.fn(async ({ method }: { method: string }) => {
+      if (method === "wallet_getSnaps") return { "npm:@mondejka/mina-snap": {} }
+      return chain
+    })
+    const provider = new MinaSnapProvider({ request })
+    await expect(provider.addChain(chain)).resolves.toEqual(chain)
+    expect(request).toHaveBeenLastCalledWith({
+      method: "wallet_invokeSnap",
+      params: { snapId: "npm:@mondejka/mina-snap", request: { method: "mina_addChain", params: chain } }
+    })
+    await expect(provider.requestNetwork()).resolves.toEqual(chain)
+  })
+
   it("requests an exact audited npm Snap version", async () => {
     const request = vi.fn(async ({ method }: { method: string }) => {
       if (method === "wallet_getSnaps") return {}
@@ -123,7 +138,7 @@ describe("Auro-compatible Mina Provider", () => {
   })
 
   it("maps standard Snap authorization and parameter errors to Auro codes", async () => {
-    let failure = Object.assign(new Error("Connect the Mina account before signing"), {
+    let failure = Object.assign(new Error("Connect the wallet account before signing"), {
       code: 4100
     })
     const request = vi.fn(async ({ method }: { method: string }) => {
@@ -207,7 +222,7 @@ describe("Auro-compatible Mina Provider", () => {
     target.dispatchEvent(new Event("mina:requestProvider"))
 
     expect(announcement?.detail).toMatchObject({
-      info: { slug: "zeko-mina-snap", name: "Zeko Mina Snap" },
+      info: { slug: "zeko-mina-snap", name: "Zeko Wallet" },
       provider: { isAuro: false, isMinaSnap: true }
     })
     expect(Object.isFrozen(announcement?.detail)).toBe(true)

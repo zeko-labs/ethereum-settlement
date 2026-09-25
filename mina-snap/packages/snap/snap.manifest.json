@@ -1,14 +1,14 @@
 {
   "version": "0.1.0",
-  "description": "Auro-compatible Mina signer for MetaMask",
-  "proposedName": "Zeko Mina Wallet",
+  "description": "Zeko wallet and transaction signer for MetaMask",
+  "proposedName": "Zeko Wallet",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zeko-labs/ethereum-settlement.git",
     "directory": "mina-snap/packages/snap"
   },
   "source": {
-    "shasum": "5BKptCuE5ufeAbJLMjiv7Liyva63VR+jNejV7SmXxjc=",
+    "shasum": "3Skipfk5AfBKnzxCK6w3NyjaS8qMnUswZFjEswCp6w0=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",

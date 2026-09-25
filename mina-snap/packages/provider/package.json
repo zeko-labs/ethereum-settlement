@@ -1,7 +1,7 @@
 {
   "name": "@zeko-labs/mina-snap-provider",
   "version": "0.1.0",
-  "description": "Auro-compatible Mina Provider adapter for the Zeko Mina Snap",
+  "description": "Auro-compatible provider adapter for the Zeko Wallet Snap",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

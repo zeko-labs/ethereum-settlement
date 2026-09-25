@@ -37,7 +37,7 @@ const unsignedInteger = (value: string, label: string, allowZero = false): bigin
   if (!/^\d+$/u.test(value)) throw new Error(`${label} must use exact integer base units.`)
   const parsed = BigInt(value)
   if (allowZero ? parsed < 0n : parsed <= 0n) throw new Error(`${label} must be greater than zero.`)
-  if (parsed > (1n << 64n) - 1n) throw new Error(`${label} exceeds Mina's UInt64 range.`)
+  if (parsed > (1n << 64n) - 1n) throw new Error(`${label} exceeds the supported 64-bit amount range.`)
   return parsed
 }
 
@@ -54,7 +54,7 @@ export const sendNativePayment = async ({
   const amount = positiveDecimal(input.amountMina, "Amount")
   const fee = positiveDecimal(input.feeMina, "Fee")
   await ensureAuroPoCNetwork(provider, config)
-  if (!provider.sendPayment) throw new Error("The selected Mina wallet cannot send payments.")
+  if (!provider.sendPayment) throw new Error("The selected Zeko wallet cannot send payments.")
   const result = await provider.sendPayment({
     to: input.recipient,
     amount,
@@ -62,8 +62,8 @@ export const sendNativePayment = async ({
     ...(input.memo ? { memo: input.memo } : {})
   })
   if (result instanceof Error) throw result
-  if (isProviderError(result)) throw new Error(result.message ?? `Mina wallet error ${result.code}`)
-  if (!result.hash) throw new Error("The Mina wallet returned no payment hash.")
+  if (isProviderError(result)) throw new Error(result.message ?? `Zeko wallet error ${result.code}`)
+  if (!result.hash) throw new Error("The Zeko wallet returned no payment hash.")
   return result.hash
 }
 
@@ -131,7 +131,7 @@ export const sendMftPayment = async ({
   const signed = await createAuroSigner(provider, config)(proved)
   const pending = await signed.send()
   if (pending.status === "rejected") {
-    throw new Error(pending.errors.join("; ") || "The Mina node rejected the MFT transfer.")
+    throw new Error(pending.errors.join("; ") || "The Zeko node rejected the MFT transfer.")
   }
   return pending.hash
 }

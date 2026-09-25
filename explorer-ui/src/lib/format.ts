@@ -16,7 +16,7 @@ export function formatInteger(value: string | null | undefined): string {
 
 export function formatNano(
   value: string | null | undefined,
-  symbol = "ZEKO",
+  symbol = "ETH",
 ): string {
   if (!value || !/^-?\d+$/.test(value))
     return value ? `${value} ${symbol}` : "—";
@@ -24,7 +24,7 @@ export function formatNano(
   const digits = negative ? value.slice(1) : value;
   const padded = digits.padStart(10, "0");
   const whole = padded.slice(0, -9).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  const fraction = padded.slice(-9).replace(/0+$/, "").slice(0, 6);
+  const fraction = padded.slice(-9).replace(/0+$/, "");
   return `${negative ? "−" : ""}${whole}${fraction ? `.${fraction}` : ""} ${symbol}`;
 }
 

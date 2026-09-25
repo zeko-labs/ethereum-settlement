@@ -3,7 +3,7 @@
 Standalone React application for the native ETH and canonical ERC-20 bridge
 PoC. It talks directly to the public gateway bridge API, gateway/sequencer
 GraphQL endpoints, injected Ethereum wallets, and either Auro or the
-Auro-compatible MetaMask Mina Snap. It never calls proof-operator routes.
+Auro-compatible MetaMask Zeko Snap. It never calls proof-operator routes.
 
 After an Ethereum wallet connects, the bridge fetches the canonical asset
 snapshot from the configured Actions API, authenticates its root/count/schema
@@ -16,18 +16,27 @@ registry leaves native ETH available and displays a warning.
 
 Select an asset in the **Bridge** tab, enter the amount and recipient, and review
 the transfer. For deposits, sign any required ERC-20 approval and then the deposit
-in the Ethereum wallet; once synchronization is ready, finalize with the Mina
-wallet. For withdrawals, sign the request with the Mina wallet, wait for
+in the Ethereum wallet; once synchronization is ready, finalize with the Zeko
+wallet. For withdrawals, sign the request with the Zeko wallet, wait for
 settlement and the safety delay, then claim in the Ethereum wallet. ETH retains
 its nine-decimal bridge precision. Deposits have no cancellation/refund path.
 
-The **Wallet** tab sends native MINA and Mina Fungible Token standard assets.
-Native payments use the provider's `sendPayment` operation. Standard MFT
+The **Wallet** tab sends native ETH and standard fungible tokens on Zeko.
+Native ETH payments retain nine-decimal precision on Zeko. Fees use ETH for
+native payments and integer Zeko base units for token transfers
+(1 ETH = 1,000,000,000 Zeko base units). Native payments use the provider's
+`sendPayment` operation. Standard MFT
 transfers are built and proved in the browser with the pinned
 `mina-fungible-token` and `o1js` versions, signed through the same Auro-compatible
 `onlySign` boundary used by bridge zkApps, and submitted to the configured
 sequencer. MFT amounts use exact base units; the first proof can take several
 minutes while the token contract compiles.
+
+The Zeko Wallet Snap receives an explicit ETH display label with nine-decimal
+precision in its network approval. Saved endpoints without that display
+metadata request approval once on reconnection. Network identifiers, signing
+domains, and transaction amounts are unchanged; ambiguous older Snap networks
+show neutral native units until the label is approved.
 
 ## Run locally
 
@@ -40,11 +49,11 @@ The default URL is `http://127.0.0.1:5174`. Edit
 `public/runtime-config.json` before deployment; it contains public endpoints and
 limits only.
 
-Clicking **Connect Mina wallet** opens a dialog that lets each browser choose
+Clicking **Connect Zeko wallet** opens a dialog that lets each browser choose
 between the MetaMask Snap (shown as MetaMask Flask for a local Snap) and Auro at
-runtime. Clicking the connected Mina wallet chip opens the same account dialog
+runtime. Clicking the connected Zeko wallet chip opens the same account dialog
 with a disconnect action. Snap disconnect attempts to revoke the bridge
-origin's Mina-account permission and still clears the local session if
+origin's Zeko-account permission and still clears the local session if
 revocation fails; Auro disconnect is local because Auro does not expose an
 equivalent dapp method. The choice is stored locally, and the settings dialog
 can still change the preferred provider. Vite only seeds the initial preference
@@ -73,7 +82,7 @@ VITE_MINA_SNAP_ID=local:http://127.0.0.1:8080 \
 pnpm dev
 ```
 
-Click **Connect Mina wallet** to choose between the local Snap and Auro. Auro
+Click **Connect Zeko wallet** to choose between the local Snap and Auro. Auro
 must be installed and configured with the local Zeko endpoint before it can sign
 against this stack.
 
@@ -108,7 +117,7 @@ Supported public variables:
 | --- | --- | --- |
 | `BRIDGE_UI_GATEWAY_URL` | `http://127.0.0.1:8080` | Public bridge gateway base URL |
 | `BRIDGE_UI_SEQUENCER_GRAPHQL_URL` | `http://127.0.0.1:1923/graphql` | Zeko sequencer GraphQL and Auro custom-network URL |
-| `BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL` | `http://127.0.0.1:8080/archive/graphql` | Read-only Mina-compatible view rebuilt from the Zeko archive database |
+| `BRIDGE_UI_ZEKO_ARCHIVE_GRAPHQL_URL` | `http://127.0.0.1:8080/archive/graphql` | Read-only archive view rebuilt from the Zeko archive database |
 | `BRIDGE_UI_ACTIONS_API_URL` | `http://127.0.0.1:9101/graphql` | Public actions preparation/index API |
 | `BRIDGE_UI_ETHEREUM_CHAIN_ID` | `11155111` | Sepolia, or 31337 for the local manual stack |
 | `BRIDGE_UI_AURO_NETWORK_NAME` | `Zeko Ethereum PoC` | Auro custom-network display name |
@@ -124,9 +133,9 @@ for custom networks.
 See the [vendored SDK guide](vendor/README.md) for the matched dependency bundle
 and its update constraints.
 
-## Mina wallet signing domain
+## Zeko wallet signing domain
 
-Auro and the MetaMask Snap use the Mina signing salt `testnet` for Zeko testnet
+Auro and the MetaMask Snap use the transaction signing salt `testnet` for Zeko testnet
 and custom testnet networks. The PoC therefore constructs the bridge SDK runtime
 with both circuit networks set to `testnet`. This is separate from the
 wallet-facing chain identifier and is not the intended production network ID.
@@ -171,7 +180,7 @@ keys and exports them as `BRIDGE_E2E_ZEKO_PRIVATE_KEYS` plus their addresses as
 accounts to genesis with enough balance for deposit
 finalization and one withdrawal request. Reuse mode instead requires that
 variable to contain two keys which are already funded in the retained stack.
-The local virtual Mina slot duration defaults to 12 seconds; override it with
+The local virtual slot duration defaults to 12 seconds; override it with
 `BRIDGE_E2E_VIRTUAL_MINA_SLOT_SECONDS` when the retained deployment uses a
 different duration. The withdrawal step derives its time jump from the live
 `claimableSlot` instead of assuming a fixed delay.

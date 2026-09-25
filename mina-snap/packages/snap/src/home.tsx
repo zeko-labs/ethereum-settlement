@@ -38,11 +38,14 @@ export type WalletAccounts = {
   tokens: TokenAccount[]
 }
 
+export type NativeCurrency = { symbol: "ETH" | "MINA"; decimals: 9 }
+
 export type WalletHomeSnapshot = {
   publicKey: string
   networkId: string
   networkName: string
   endpoint?: string
+  nativeCurrency?: NativeCurrency
   native?: NativeAccount | null
   tokens: TokenAccount[]
   error?: string
@@ -54,14 +57,14 @@ const readUnsignedInteger = (value: unknown, label: string): string => {
     return String(value)
   }
   if (typeof value !== "string" || !/^\d+$/u.test(value)) {
-    throw new Error(`Mina node returned an invalid ${label}`)
+    throw new Error(`The node returned an invalid ${label}`)
   }
   return value.replace(/^0+(?=\d)/u, "")
 }
 
 const readBalance = (value: unknown): MinaBalance => {
   if (typeof value !== "object" || value === null) {
-    throw new Error("Mina node returned an invalid balance")
+    throw new Error("The node returned an invalid balance")
   }
   const balance = value as Record<string, unknown>
   const total = readUnsignedInteger(balance.total, "total balance")
@@ -78,19 +81,19 @@ const readBalance = (value: unknown): MinaBalance => {
 
 export const parseWalletAccounts = (value: unknown): WalletAccounts => {
   if (!Array.isArray(value)) {
-    throw new Error("Mina node returned an invalid accounts list")
+    throw new Error("The node returned an invalid accounts list")
   }
 
   let native: NativeAccount | null = null
   const tokens: TokenAccount[] = []
   for (const valueAccount of value) {
     if (typeof valueAccount !== "object" || valueAccount === null) {
-      throw new Error("Mina node returned an invalid account")
+      throw new Error("The node returned an invalid account")
     }
     const account = valueAccount as Record<string, unknown>
     if (typeof account.tokenId !== "string" || !account.tokenId ||
         account.tokenId.length > 128) {
-      throw new Error("Mina node returned an invalid token ID")
+      throw new Error("The node returned an invalid token ID")
     }
     const balance = readBalance(account.balance)
     if (account.tokenId === MINA_TOKEN_ID) {
@@ -117,7 +120,7 @@ export const parseWalletAccounts = (value: unknown): WalletAccounts => {
 }
 
 export const formatNanomina = (value: string): string => {
-  const nanomina = BigInt(readUnsignedInteger(value, "MINA balance"))
+  const nanomina = BigInt(readUnsignedInteger(value, "native balance"))
   const whole = nanomina / 1_000_000_000n
   const fraction = (nanomina % 1_000_000_000n)
     .toString()
@@ -137,22 +140,43 @@ const endpointLabel = (endpoint: string | undefined): string | undefined => {
 }
 
 export const missingEndpointMessage = (networkId: string): string =>
-  `No GraphQL endpoint is configured for ${networkId}. Connect a Mina dapp and add or switch to a configured network.`
+  `No GraphQL endpoint is configured for ${networkId}. Connect a Zeko dapp and add or switch to a configured network.`
+
+// Testnet identifiers are shared with legacy deployments. Use the currency
+// approved with the endpoint instead of inferring it from an ID, name, or URL.
+export const nativeTokenSymbol = (
+  networkId: string,
+  nativeCurrency?: NativeCurrency
+): "ETH" | "MINA" | "native units" => {
+  if (["mina:mainnet", "mina:devnet", "zeko:mainnet"].includes(networkId)) return "MINA"
+  return nativeCurrency?.decimals === 9 ? nativeCurrency.symbol : "native units"
+}
+
+export const formatNativeReview = (
+  value: string,
+  networkId: string,
+  nativeCurrency?: NativeCurrency
+): string => {
+  const symbol = nativeTokenSymbol(networkId, nativeCurrency)
+  if (symbol === "ETH") return `${formatNanomina(value)} ETH (${value} base units)`
+  return `${value} ${symbol === "MINA" ? "nanomina" : "native base units"}`
+}
 
 export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
+  const symbol = nativeTokenSymbol(snapshot.networkId, snapshot.nativeCurrency)
   const nativeBalance = snapshot.native === undefined
     ? "Unavailable"
-    : `${formatNanomina(snapshot.native?.total ?? "0")} MINA`
+    : `${formatNanomina(snapshot.native?.total ?? "0")} ${symbol}`
   const availableBalance = snapshot.native === undefined
     ? "Unavailable"
-    : `${formatNanomina(snapshot.native?.liquid ?? "0")} MINA`
+    : `${formatNanomina(snapshot.native?.liquid ?? "0")} ${symbol}`
   const lockedBalance = snapshot.native?.locked ?? "0"
   const visibleTokens = snapshot.tokens.slice(0, 20)
   const endpoint = endpointLabel(snapshot.endpoint)
 
   return (
     <Box>
-      <Heading>Zeko Mina Wallet</Heading>
+      <Heading>Zeko Wallet</Heading>
       <Section>
         <Row label="Network">
           <Text>{snapshot.networkName}</Text>
@@ -173,9 +197,17 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
         </Banner>
       ) : null}
 
+      {symbol === "ETH" ? (
+        <Text>This B62 address receives ETH on Zeko. Use your Ethereum account for Ethereum transfers.</Text>
+      ) : null}
+
+      {symbol === "native units" ? (
+        <Text>Native asset label is not configured. Reconnect through the bridge to approve its currency display.</Text>
+      ) : null}
+
       <Heading>Balance</Heading>
       <Section>
-        <Row label="MINA">
+        <Row label={symbol === "native units" ? "Native balance" : symbol}>
           <Text><Bold>{nativeBalance}</Bold></Text>
         </Row>
         <Row label="Available">
@@ -183,7 +215,7 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
         </Row>
         {lockedBalance !== "0" ? (
           <Row label="Locked">
-            <Text>{formatNanomina(lockedBalance)} MINA</Text>
+            <Text>{formatNanomina(lockedBalance)} {symbol}</Text>
           </Row>
         ) : null}
         <Row label="Nonce">
@@ -219,21 +251,21 @@ export const renderWalletHome = (snapshot: WalletHomeSnapshot) => {
           {snapshot.tokens.length > visibleTokens.length ? (
             <Text>{String(snapshot.tokens.length - visibleTokens.length)} more token accounts are not shown.</Text>
           ) : null}
-          <Text>Custom-token amounts use exact base units because token decimals are not part of Mina account data.</Text>
+          <Text>Custom-token amounts use exact base units because token decimals are not part of account data.</Text>
         </Box>
       )}
 
       <Divider />
-      <Heading>Send MINA</Heading>
+      <Heading>Send {symbol === "native units" ? "native token" : symbol}</Heading>
       {snapshot.endpoint ? (
         <Form name="send-mina">
           <Field label="Recipient">
             <Input name="recipient" type="text" placeholder="B62…" />
           </Field>
-          <Field label="Amount (MINA)">
+          <Field label={`Amount (${symbol})`}>
             <Input name="amount" type="text" placeholder="0.00" />
           </Field>
-          <Field label="Fee (MINA)">
+          <Field label={`Fee (${symbol})`}>
             <Input name="fee" type="text" value="0.1" />
           </Field>
           <Field label="Memo (optional)">
@@ -261,7 +293,7 @@ WalletHomeSnapshot,
 "publicKey" | "networkName"
 >) => (
   <Box>
-    <Heading>Zeko Mina Wallet</Heading>
+    <Heading>Zeko Wallet</Heading>
     <Section>
       <Row label="Network">
         <Text>{snapshot.networkName}</Text>

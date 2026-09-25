@@ -27,11 +27,11 @@ export const ReviewView = ({ direction, amount, recipient, asset, config, busy, 
         <div className="summary-row"><span>Recipient</span><strong title={recipient}>{shortAddress(recipient, 12, 10)}</strong></div>
         <div className="summary-row"><span>Amount received</span><strong>{amount} {asset.symbol}</strong></div>
         <div className="summary-row"><span>Protocol fees</span><strong>Determined by the bridge SDK</strong></div>
-        <div className="summary-row"><span>Signing wallet</span><strong>{deposit ? `Ethereum · ${ethereum}` : `Mina wallet · ${config.minaSigningNetworkId} salt`}</strong></div>
+        <div className="summary-row"><span>Signing wallet</span><strong>{deposit ? `Ethereum · ${ethereum}` : "Zeko wallet · Zeko Testnet"}</strong></div>
       </div>
       <div className="proof-note"><NetworkIcon network="proof" /><span><strong>Proof-bound settlement.</strong> The bridge transition is accepted only after the SP1 and Ethereum settlement checks succeed.</span></div>
       <Notice kind="warning">Experimental PoC: there is no cancellation or refund path.</Notice>
-      <div className="button-row"><button type="button" className="secondary-button" onClick={onBack}>Back</button><button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>{busy ? "Opening wallet…" : deposit ? "Confirm in Ethereum wallet" : "Confirm in Mina wallet"}</button></div>
+      <div className="button-row"><button type="button" className="secondary-button" onClick={onBack}>Back</button><button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>{busy ? "Opening wallet…" : deposit ? "Confirm in Ethereum wallet" : "Confirm in Zeko wallet"}</button></div>
     </section>
   )
 }

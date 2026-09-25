@@ -25,14 +25,14 @@ export const SettingsModal = ({ config, minaWallet, minaWalletBusy, showDetails,
         <div className="modal-body">
           <div className="setting-group"><span className="setting-label">Ethereum settlement</span><strong className="read-only-setting">{ethereum} · chain {config.expectedEthereumChainId}</strong></div>
           <fieldset className="setting-group wallet-setting">
-            <legend className="setting-label">Mina wallet</legend>
-            <div className="wallet-options" role="radiogroup" aria-label="Mina wallet provider">
-              <button type="button" role="radio" disabled={minaWalletBusy} aria-checked={minaWallet === "metamask-snap"} className={`wallet-option${minaWallet === "metamask-snap" ? " selected" : ""}`} onClick={() => onMinaWalletChange("metamask-snap")}><strong>{minaWalletName("metamask-snap")}</strong><span>Use the Zeko Mina account managed inside MetaMask.</span></button>
+            <legend className="setting-label">Zeko wallet</legend>
+            <div className="wallet-options" role="radiogroup" aria-label="Zeko wallet provider">
+              <button type="button" role="radio" disabled={minaWalletBusy} aria-checked={minaWallet === "metamask-snap"} className={`wallet-option${minaWallet === "metamask-snap" ? " selected" : ""}`} onClick={() => onMinaWalletChange("metamask-snap")}><strong>{minaWalletName("metamask-snap")}</strong><span>Use the Zeko account managed inside MetaMask.</span></button>
               <button type="button" role="radio" disabled={minaWalletBusy} aria-checked={minaWallet === "auro"} className={`wallet-option${minaWallet === "auro" ? " selected" : ""}`} onClick={() => onMinaWalletChange("auro")}><strong>Auro Wallet</strong><span>Use the account and network selected in Auro.</span></button>
             </div>
-            <p className="setting-help">Changing wallet disconnects the current Mina account. Connect the selected wallet again before signing.</p>
+            <p className="setting-help">Changing wallet disconnects the current Zeko account. Connect the selected wallet again before signing.</p>
           </fieldset>
-          <div className="setting-group"><span className="setting-label">Zeko signing domain</span><strong className="read-only-setting">Mina wallet · {config.minaSigningNetworkId}</strong><p className="setting-help">Auro and the {minaWalletName("metamask-snap")} currently assign the Mina testnet salt to this Zeko endpoint.</p></div>
+          <div className="setting-group"><span className="setting-label">Zeko signing domain</span><strong className="read-only-setting">Zeko wallet · {config.minaSigningNetworkId}</strong><p className="setting-help">Auro and the {minaWalletName("metamask-snap")} use the testnet signing domain for this Zeko endpoint.</p></div>
           <div className="setting-group"><span className="setting-label">Deposit policy</span><strong className="read-only-setting warning">No cancellation/refund</strong><p className="setting-help">Deposits are not capped by the browser. Contract and protocol validation still apply.</p></div>
           <div className="toggle-row"><div><span className="setting-label">Route details</span><p className="setting-help">Expose the SP1 settlement route on the bridge form.</p></div><button type="button" className={`switch${showDetails ? " active" : ""}`} onClick={onToggleDetails} aria-pressed={showDetails} aria-label="Show route details"></button></div>
         </div>

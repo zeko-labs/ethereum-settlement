@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Zeko on Ethereum"
   text: "Multisig-DA settlement PoC"
-  tagline: "Real OCaml Zeko transitions, verified in SP1 and checkpointed on Ethereum through a Mina-compatible gateway."
+  tagline: "Zeko transactions and native ETH bridging, verified with SP1 and settled on Ethereum."
   image:
     src: /logo.svg
     alt: Zeko
@@ -25,7 +25,7 @@ features:
     details: Finalized Ethereum deposits become exact outer Witness actions; settled inner actions become ordinary Merkle claims.
     link: /protocol/deposit-bridge
 
-  - title: Mina-compatible gateway
+  - title: Ethereum settlement gateway
     details: The sequencer keeps using the GraphQL subset it expects while the gateway owns pinned local validation, SP1 proving, submission, and indexing.
     link: /gateway/api
 

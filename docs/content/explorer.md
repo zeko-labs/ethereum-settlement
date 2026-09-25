@@ -36,8 +36,14 @@ because the archive schema does not persist one. Withdrawal pages use the
 gateway's authoritative Merkle proof and live virtual-slot/cursor state, then
 link canonical claim transactions when indexed.
 
+Native account balances, payments, and fees are displayed in ETH on Zeko.
+The L2 ledger uses nine decimal places per ETH, while Ethereum amounts use
+18-decimal wei. Custom token quantities remain in base units when registered
+decimal metadata is unavailable. Account pages use Zeko `B62…` identities;
+Ethereum transaction links open the configured Ethereum explorer.
+
 Every amount, height, nonce, sequence, and slot that can exceed JavaScript's
-safe integer range is returned and rendered as a decimal string.
+safe integer range is returned and rendered without floating-point conversion.
 
 The overview shows a live **Next commit** metric. While the sequencer is
 waiting it counts down to `nextAttemptAt`; while a commit is being assembled it

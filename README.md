@@ -1,6 +1,8 @@
 # Zeko Ethereum L2
 
-This repository contains SP1 programs and Ethereum contracts used to settle Zeko state transitions on Ethereum.
+Zeko is an Ethereum rollup with native ETH and registered ERC-20 bridging.
+This repository contains its Ethereum settlement contracts, SP1 programs,
+bridge and wallet application, MetaMask Snap, explorer, and documentation.
 
 The project has two SP1 verification paths:
 
@@ -16,21 +18,27 @@ The goal is to let Ethereum verify succinct SP1 proofs instead of directly verif
 
 The VitePress documentation lives in [`docs/content`](docs/content).
 
-## Launching A Zeko Rollup
+## Wallets and bridging
 
-The project includes a dedicated Docker Compose stack for running the Zeko
-rollup services described in the Zeko operator guide.
+Use an Ethereum wallet with a `0x…` account for deposits and withdrawal claims
+on Ethereum. Use **Zeko Wallet** (the MetaMask Snap) or Auro with a `B62…`
+account for transactions on Zeko. Native balances and fees on Zeko are in ETH;
+Zeko's ledger represents ETH with nine decimal places.
 
-[https://docs.zeko.io/operators/guides/launch-rollup.html](https://docs.zeko.io/operators/guides/launch-rollup.html)
+See the [bridge guide](docs/content/bridge-ui.md),
+[MetaMask Snap setup](mina-snap/README.md), and
+[explorer guide](docs/content/explorer.md). The SDK and signing interfaces retain
+Mina-compatible formats, while Ethereum provides settlement and bridge custody.
 
-```sh
-docker compose -f docker-compose.yaml up -d
-docker compose -f docker-compose.yaml exec -it init-config bash
-docker compose -f docker-compose.yaml exec -it init-deploy bash
-docker compose -f docker-compose.yaml logs -f
-```
+## Running the Ethereum rollup
 
-### Cloudflare Pages
+Start with the [Sepolia deployment runbook](docs/content/operations/testnet.md)
+for the Ethereum reference profile under `deploy/testnet`, or the
+[local E2E guide](docs/content/operations/local-e2e.md) for an isolated Anvil
+stack. These guides cover the gateway, Ethereum contracts, sequencer, provers,
+and DA configuration required for this experimental deployment.
+
+## Publishing the documentation
 
 Import this GitHub repository from **Workers & Pages > Create application >
 Pages > Import an existing Git repository**, then use:
@@ -59,7 +67,7 @@ other branches create preview deployments.
 | `contracts/src/EthereumZekoBridge.sol` | Ethereum-side custody contract for canonical deposits and settlement-bound withdrawal claims. |
 | `contracts/src/ZekoAssetRegistry.sol` | Immutable registry module delegated through the bridge proxy for proposal and proof-settled activation. |
 | `bridge-ui` | Standalone React [bridge and wallet application](bridge-ui/README.md). |
-| `mina-snap` | MetaMask Snap signer and Auro-compatible Mina Provider adapter used by the bridge UI. |
+| `mina-snap` | Zeko Wallet MetaMask Snap and Auro-compatible provider adapter used by the bridge UI. |
 | `explorer-ui` | Standalone React explorer for Zeko blocks, transactions, accounts, settlements, and bridge activity. |
 | `tools/zeko-action-state` | o1js fixture that reproduces Zeko action-state updates for bridge deposits. |
 | `proofs/bridge-input.json` | Synthetic bridge-guest input fixture. |
