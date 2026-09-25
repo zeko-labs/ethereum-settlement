@@ -1,3 +1,14 @@
+#[cfg(all(feature = "fake-prover-tests", not(test)))]
+compile_error!(
+    "fake-prover-tests is restricted to the unit-test binary; it cannot build a gateway server"
+);
+#[cfg(all(feature = "fake-prover-tests", feature = "real-prover"))]
+compile_error!(
+    "fake-prover-tests and real-prover are mutually exclusive; use --no-default-features for tests"
+);
+#[cfg(not(any(feature = "real-prover", feature = "fake-prover-tests")))]
+compile_error!("select real-prover for a gateway server or fake-prover-tests for unit tests");
+
 use alloy::primitives::{Address, B256, U256};
 use anyhow::{Context, Result};
 use axum::{
@@ -20,18 +31,28 @@ use tower_http::{
     trace::TraceLayer,
 };
 use uuid::Uuid;
+use zeko_sp1_lib::SettlementProofBundle;
 use zeko_sp1_lib::{
     inner_action_commitment, BridgeDeposit, BridgeTransitionInput, EthereumBridgeState,
     SettlementContextV1, SettlementPublicValues, ZekoBridgeState, ERC20_ACTION_ENCODING_V2,
 };
-use zkapp_script::SettlementProofBundle;
 
 mod ethereum;
 mod explorer;
 mod graphql;
 mod indexer;
+#[cfg(all(test, feature = "fake-prover-tests"))]
+mod lifetime_tests;
+mod outer_writer;
 mod proof_kind;
+#[cfg(feature = "real-prover")]
 mod prover;
+#[cfg(all(test, feature = "fake-prover-tests"))]
+#[path = "fake_prover.rs"]
+mod prover;
+mod prover_types;
+mod rpc;
+mod submission;
 mod withdrawal_activity;
 
 use ethereum::HISTORICAL_ERC20_ACTION_ENCODING_V1;
@@ -50,6 +71,7 @@ struct AppState {
     local_mock_submit: bool,
     require_proof_approval: bool,
     min_remaining_slots: u64,
+    submission_min_remaining_slots: u64,
     ethereum_finality_mode: indexer::FinalityMode,
     ethereum_confirmations: u64,
     sequencer_graphql_url: Option<Arc<str>>,
@@ -65,6 +87,8 @@ struct SettlementRequest {
     #[serde(rename = "minaTransactionHash")]
     mina_transaction_hash: String,
     proof: SettlementProofBundle,
+    #[serde(default)]
+    reservation: Option<outer_writer::ReservationToken>,
 }
 
 #[derive(Debug, Serialize)]
@@ -235,8 +259,12 @@ struct ProofJob {
     input: Value,
     public_values: Option<String>,
     proof_request_id: Option<String>,
+    proof_request_intent: Option<Uuid>,
     transaction_hash: Option<String>,
     error: Option<String>,
+    error_class: Option<String>,
+    next_attempt_at: Option<DateTime<Utc>>,
+    retry_count: i32,
     attempts: i32,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -264,11 +292,14 @@ struct ProofJob {
 #[derive(Debug, FromRow)]
 struct ClaimedJob {
     id: Uuid,
+    attempts: i32,
     kind: String,
     input: Value,
     proof_request_id: Option<String>,
     claimed_status: String,
     public_values: Option<String>,
+    proof_bytes: Option<String>,
+    prepared: bool,
     cycle_count: Option<i64>,
     approval_max_pgu: Option<i64>,
     approval_max_price_per_pgu: Option<i64>,
@@ -377,18 +408,6 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
-    sqlx::query(
-        "UPDATE proof_jobs
-         SET status = CASE
-               WHEN approved_at IS NOT NULL THEN 'approved'::proof_status
-               ELSE 'queued'::proof_status
-             END,
-             error = 'worker restarted before completion', updated_at = NOW()
-         WHERE status IN ('validating', 'proof_requested', 'proving', 'submitting')",
-    )
-    .execute(&pool)
-    .await
-    .context("recover interrupted jobs")?;
     let ethereum_confirmations = u64_env("ETHEREUM_CONFIRMATIONS", 12)?;
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -406,6 +425,7 @@ async fn main() -> Result<()> {
         local_mock_submit,
         require_proof_approval,
         min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
+        submission_min_remaining_slots: u64_env("ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS", 10)?,
         ethereum_finality_mode,
         ethereum_confirmations,
         sequencer_graphql_url: nonempty_env("SEQUENCER_GRAPHQL_URL").map(Into::into),
@@ -441,6 +461,19 @@ async fn main() -> Result<()> {
     }
 
     let protected = Router::new()
+        .route("/v1/settlement-reservations", post(outer_writer::acquire))
+        .route(
+            "/v1/settlement-reservations/:id/renew",
+            post(outer_writer::renew),
+        )
+        .route(
+            "/v1/settlement-reservations/:id",
+            axum::routing::delete(outer_writer::release),
+        )
+        .route(
+            "/v1/settlements/by-mina-hash/:hash",
+            get(outer_writer::outcome),
+        )
         .route("/v1/proofs/settlement", post(create_settlement))
         .route("/v1/settlements", post(create_settlement))
         .route("/v1/proofs/bridge", post(create_bridge))
@@ -611,25 +644,8 @@ async fn create_settlement(
             "settlement proof must include the OCaml account-update binding",
         );
     }
-    match conflicting_outer_writer(&state.pool, ProofKind::Settlement).await {
-        Ok(false) => {}
-        Ok(true) => {
-            return api_error(
-                StatusCode::CONFLICT,
-                "a bridge batch is queued or active; retry after it is finalized",
-            );
-        }
-        Err(error) => {
-            tracing::error!(%error, "check bridge writer before settlement");
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not check the outer action-state queue",
-            );
-        }
-    }
-    // Ethereum-domain context is assigned when the worker claims this job.
-    // This lets the sequencer queue later OCaml commits while an earlier
-    // settlement is still proving without binding them to a stale L1 batch.
+    // The reservation is checked atomically with job admission below. Domain
+    // context is assigned by the worker; the OCaml state binding stays fixed.
     request.proof.context = None;
     if let Some(batch) = &mut request.proof.inner_action_batch {
         batch.bridge_address = state
@@ -764,6 +780,7 @@ async fn queue_canonical_deposit_batch(
         .and_then(|value| value.to_str().ok());
     let id = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
+    outer_writer::lock(&mut tx).await?;
     let eligible = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*)
          FROM gateway_bridge_deposits deposits
@@ -803,6 +820,9 @@ async fn queue_canonical_deposit_batch(
     .fetch_optional(&mut *tx)
     .await?
     .context("idempotency key already exists with a different payload")?;
+    if actual_id == id {
+        outer_writer::attach_bridge(&mut tx, id, &input).await?;
+    }
     let updated = sqlx::query(
         "UPDATE gateway_bridge_deposits
          SET bridge_job_id = $1
@@ -848,7 +868,8 @@ async fn automatic_deposit_batch_loop(state: AppState, interval: Duration) {
 }
 
 async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInput> {
-    let (bridge, _historical) = state.ethereum.bridge_state(None, None).await?;
+    let block = state.ethereum.latest_block().await?;
+    let (bridge, _historical) = state.ethereum.bridge_state_at(&block, None, None).await?;
     anyhow::ensure!(!bridge.paused, "bridge contract is paused");
     anyhow::ensure!(
         bridge.deposit_nonce > bridge.bridged_deposit_nonce,
@@ -856,10 +877,10 @@ async fn canonical_deposit_batch(state: &AppState) -> Result<BridgeTransitionInp
     );
     let (_, historical) = state
         .ethereum
-        .bridge_state(Some(bridge.bridged_deposit_nonce), None)
+        .bridge_state_at(&block, Some(bridge.bridged_deposit_nonce), None)
         .await?;
     let historical = historical.context("missing bridged deposit checkpoint")?;
-    let settlement = state.ethereum.settlement_state().await?;
+    let settlement = state.ethereum.settlement_state_at(&block).await?;
     let rows = sqlx::query(
         "SELECT nonce, old_deposit_state, new_deposit_state, token, asset_id,
                 action_encoding_version, registry_index, record_commitment,
@@ -1756,27 +1777,52 @@ async fn create_job(
 ) -> Response {
     let id = Uuid::new_v4();
     let input_digest = proof_input_digest(&input);
+    let default_key = match kind {
+        ProofKind::Settlement => input
+            .get("minaTransactionHash")
+            .and_then(Value::as_str)
+            .map(|hash| {
+                let reservation = input
+                    .get("reservation")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok());
+                outer_writer::settlement_idempotency_key(hash, reservation.as_ref())
+            }),
+        ProofKind::Bridge => None,
+    };
     let idempotency_key = headers
         .get("idempotency-key")
-        .and_then(|value| value.to_str().ok());
-    let result = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO proof_jobs (id, kind, input, idempotency_key, input_digest)
-         VALUES ($1, $2::proof_kind, $3, $4, $5)
-         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
-         DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
-         WHERE proof_jobs.input_digest = EXCLUDED.input_digest
-         RETURNING id",
-    )
-    .bind(id)
-    .bind(kind.as_str())
-    .bind(input)
-    .bind(idempotency_key)
-    .bind(input_digest)
-    .fetch_optional(&state.pool)
+        .and_then(|value| value.to_str().ok())
+        .or(default_key.as_deref());
+    let result = async {
+        let mut tx = state.pool.begin().await?;
+        outer_writer::lock(&mut tx).await?;
+        let actual_id = sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO proof_jobs (id, kind, input, idempotency_key, input_digest)
+             VALUES ($1, $2::proof_kind, $3, $4, $5)
+             ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+             DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+             WHERE proof_jobs.input_digest = EXCLUDED.input_digest
+             RETURNING id",
+        )
+        .bind(id)
+        .bind(kind.as_str())
+        .bind(&input)
+        .bind(idempotency_key)
+        .bind(input_digest)
+        .fetch_optional(&mut *tx)
+        .await?
+        .context("idempotency key already exists with a different payload")?;
+        if actual_id == id {
+            outer_writer::attach_job(&mut tx, id, kind, &input).await?;
+        }
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(actual_id)
+    }
     .await;
 
     match result {
-        Ok(Some(id)) => (
+        Ok(id) => (
             StatusCode::ACCEPTED,
             Json(CreatedJob {
                 id,
@@ -1785,55 +1831,12 @@ async fn create_job(
             }),
         )
             .into_response(),
-        Ok(None) => api_error(
-            StatusCode::CONFLICT,
-            "idempotency key already exists with a different payload",
-        ),
-        Err(error) => {
-            if error
-                .as_database_error()
-                .and_then(|database| database.constraint())
-                == Some("one_active_settlement")
-            {
-                return api_error(
-                    StatusCode::CONFLICT,
-                    "another settlement is still active; retry after it is finalized",
-                );
-            }
-            if error
-                .as_database_error()
-                .and_then(|database| database.constraint())
-                == Some("one_active_bridge_batch")
-            {
-                return api_error(
-                    StatusCode::CONFLICT,
-                    "another bridge batch is still active; retry after it is finalized",
-                );
-            }
-            tracing::error!(%error, "create proof job");
-            api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not create proof job",
-            )
-        }
+        Err(error) => outer_writer::error_response(error),
     }
 }
 
-async fn conflicting_outer_writer(pool: &PgPool, requested_kind: ProofKind) -> Result<bool> {
-    let conflicting_kind = requested_kind.conflicting();
-    Ok(sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(
-             SELECT 1 FROM proof_jobs
-             WHERE kind::text = $1
-               AND status IN (
-                 'queued', 'validating', 'awaiting_approval', 'approved',
-                 'proof_requested', 'proving', 'submitting', 'submitted'
-               )
-         )",
-    )
-    .bind(conflicting_kind.as_str())
-    .fetch_one(pool)
-    .await?)
+async fn conflicting_outer_writer(pool: &PgPool, _requested_kind: ProofKind) -> Result<bool> {
+    outer_writer::busy(pool).await
 }
 
 async fn get_proof_quote(
@@ -2014,27 +2017,37 @@ async fn approve_proof_inner(
 }
 
 async fn cancel_proof(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
-    let result = sqlx::query(
-        "UPDATE proof_jobs SET status = 'rejected',
+    let result = async {
+        let mut tx = state.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE proof_jobs SET status = 'rejected',
                 error = 'cancelled by operator before network proof request',
                 completed_at = NOW(), updated_at = NOW()
-         WHERE id = $1 AND proof_request_id IS NULL
+         WHERE id = $1 AND proof_request_id IS NULL AND proof_request_intent IS NULL
+           AND proof_request_intent IS NULL
+           AND prepared_transaction IS NULL AND transaction_hash IS NULL
            AND status IN ('queued', 'validating', 'awaiting_approval', 'approved')",
-    )
-    .bind(id)
-    .execute(&state.pool)
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 1 {
+            sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Result::<bool>::Ok(result.rows_affected() == 1)
+    }
     .await;
     match result {
-        Ok(result) if result.rows_affected() == 1 => {
-            let _ = sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
-                .bind(id)
-                .execute(&state.pool)
-                .await;
+        Ok(true) => {
             Json(serde_json::json!({"id": id, "status": "rejected"})).into_response()
         }
         Ok(_) => api_error(
             StatusCode::CONFLICT,
-            "proof job cannot be cancelled after a network request or terminal transition",
+            "proof job cannot be cancelled after a network request, signed transaction, or terminal transition",
         ),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
@@ -2045,15 +2058,23 @@ async fn proof_remaining_slots(
     kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<Option<u64>> {
+    Ok(settlement_lifetime(state, kind, public_values_hex)
+        .await?
+        .map(|(current, upper)| upper.saturating_sub(current)))
+}
+
+async fn settlement_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+) -> Result<Option<(u64, u64)>> {
     if kind != ProofKind::Settlement {
         return Ok(None);
     }
     let public_values = decode_hex_bytes(public_values_hex, "settlement public values")?;
     let values = SettlementPublicValues::decode(&public_values).map_err(anyhow::Error::msg)?;
     let current = state.ethereum.current_virtual_slot().await?;
-    Ok(Some(
-        u64::from(values.settlement().slot_upper).saturating_sub(current),
-    ))
+    Ok(Some((current, u64::from(values.settlement().slot_upper))))
 }
 
 async fn require_proof_lifetime(
@@ -2061,11 +2082,39 @@ async fn require_proof_lifetime(
     kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<()> {
-    if let Some(remaining) = proof_remaining_slots(state, kind, public_values_hex).await? {
+    require_settlement_lifetime(state, kind, public_values_hex, state.min_remaining_slots).await
+}
+
+async fn require_submission_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+) -> Result<()> {
+    require_settlement_lifetime(
+        state,
+        kind,
+        public_values_hex,
+        state.submission_min_remaining_slots,
+    )
+    .await
+}
+
+async fn require_settlement_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+    min_remaining_slots: u64,
+) -> Result<()> {
+    if let Some((current, upper)) = settlement_lifetime(state, kind, public_values_hex).await? {
+        // The contract accepts current == upper. A zero submission margin may
+        // allow that boundary, but must never allow an already expired proof.
+        let remaining = upper
+            .checked_sub(current)
+            .context("settlement proof expired")?;
         anyhow::ensure!(
-            remaining >= state.min_remaining_slots,
+            remaining >= min_remaining_slots,
             "settlement proof has {remaining} slots remaining; at least {} are required",
-            state.min_remaining_slots
+            min_remaining_slots
         );
     }
     Ok(())
@@ -2106,7 +2155,8 @@ fn database_safe_error(error: &anyhow::Error) -> String {
 async fn get_job(State(state): State<AppState>, Path(id): Path<Uuid>) -> Response {
     let job = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
-                proof_request_id, transaction_hash, error, attempts, created_at,
+                proof_request_id, proof_request_intent, transaction_hash, error,
+                error_class, next_attempt_at, retry_count, attempts, created_at,
                 updated_at, started_at, completed_at, input_digest,
                 preflight_input_digest, cycle_count,
                 prover_gas, base_fee_prove, max_price_per_pgu,
@@ -2139,7 +2189,8 @@ async fn list_jobs(State(state): State<AppState>, Query(query): Query<ListJobsQu
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let jobs = sqlx::query_as::<_, ProofJob>(
         "SELECT id, kind::text AS kind, status::text AS status, input, public_values,
-                proof_request_id, transaction_hash, error, attempts, created_at,
+                proof_request_id, proof_request_intent, transaction_hash, error,
+                error_class, next_attempt_at, retry_count, attempts, created_at,
                 updated_at, started_at, completed_at, input_digest,
                 preflight_input_digest, cycle_count,
                 prover_gas, base_fee_prove, max_price_per_pgu,
@@ -2175,8 +2226,50 @@ async fn list_jobs(State(state): State<AppState>, Query(query): Query<ListJobsQu
 
 async fn worker_loop(state: AppState) {
     loop {
+        if let Err(error) = run_owned_worker(&state).await {
+            tracing::error!(%error, "proof worker lost database ownership; durable work will resume");
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn run_owned_worker(state: &AppState) -> Result<()> {
+    // A new replica must not reset another worker's in-flight stages. Keep a
+    // dedicated session lock, and cancel work if that connection is lost.
+    const WORKER_LOCK: i64 = 0x5a454b4f50524f4f;
+    let mut owner = state.pool.acquire().await?;
+    let acquired = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+        .bind(WORKER_LOCK)
+        .fetch_one(&mut *owner)
+        .await?;
+    if !acquired {
+        return Ok(());
+    }
+    // Never return a session-level advisory lock to the pool.
+    owner.close_on_drop();
+    submission::recover_interrupted(&state.pool).await?;
+    let keep_ownership = async {
+        loop {
+            sleep(Duration::from_secs(5)).await;
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                sqlx::query("SELECT 1").execute(&mut *owner),
+            )
+            .await??;
+        }
+        #[allow(unreachable_code)]
+        Result::<()>::Ok(())
+    };
+    tokio::select! {
+        result = keep_ownership => result,
+        result = work_owned_jobs(state) => result,
+    }
+}
+
+async fn work_owned_jobs(state: &AppState) -> Result<()> {
+    loop {
         match claim_job(&state.pool).await {
-            Ok(Some(job)) => process_job(&state, job).await,
+            Ok(Some(job)) => process_job(state, job).await?,
             Ok(None) => sleep(Duration::from_secs(2)).await,
             Err(error) => {
                 tracing::error!(%error, "claim proof job");
@@ -2202,13 +2295,22 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
         tx.commit().await?;
         return Ok(None);
     }
+    outer_writer::lock(&mut tx).await?;
     let job = sqlx::query_as::<_, ClaimedJob>(
-        "SELECT queued.id, queued.kind::text AS kind, queued.input,
+        "SELECT queued.id, queued.attempts + 1 AS attempts, queued.kind::text AS kind, queued.input,
                 queued.proof_request_id, queued.status::text AS claimed_status,
-                queued.public_values, queued.cycle_count,
+                queued.public_values, queued.proof_bytes,
+                queued.prepared_transaction IS NOT NULL AS prepared, queued.cycle_count,
                 queued.approval_max_pgu, queued.approval_max_price_per_pgu
          FROM proof_jobs queued
          WHERE queued.status IN ('queued', 'approved')
+           AND (queued.proof_request_intent IS NULL OR queued.proof_request_id IS NOT NULL)
+           AND (queued.next_attempt_at IS NULL OR queued.next_attempt_at <= NOW())
+           AND NOT EXISTS (
+             SELECT 1 FROM gateway_outer_writer w
+             WHERE w.id = TRUE AND w.reservation_id IS NOT NULL
+               AND w.job_id IS DISTINCT FROM queued.id
+           )
            AND (queued.kind <> 'settlement' OR NOT EXISTS (
              SELECT 1 FROM proof_jobs active
              WHERE active.id <> queued.id AND active.kind = 'settlement'
@@ -2251,15 +2353,32 @@ async fn claim_job(pool: &PgPool) -> Result<Option<ClaimedJob>> {
     Ok(job)
 }
 
-async fn process_job(state: &AppState, mut job: ClaimedJob) {
+async fn process_job(state: &AppState, mut job: ClaimedJob) -> Result<()> {
     let result = async {
         let kind: ProofKind = job.kind.parse()?;
-        let (preflight, request_config) = if job.claimed_status == "approved" {
+        if let Some(proof_hex) = &job.proof_bytes {
+            let public_values_hex = job
+                .public_values
+                .as_deref()
+                .context("persisted proof has no public values")?;
+            let public_values = decode_hex_bytes(public_values_hex, "public values")?;
+            let proof = decode_hex_bytes(proof_hex, "proof bytes")?;
+            // A signed transaction may already be mined. Its immutable bytes
+            // must be reconciled before judging its checkpoint stale.
+            if !job.prepared {
+                require_submission_lifetime(state, kind, public_values_hex).await?;
+                let preflight = prover::Preflight::decode(kind, public_values.clone(), None)?;
+                validate_preflight(state, &job.input, &preflight).await?;
+            }
+            submission::send(state, job.id, job.attempts, kind, &public_values, &proof).await?;
+            return Result::<()>::Ok(());
+        }
+        let resuming_request = job.proof_request_id.is_some();
+        let (preflight, request_config) = if job.claimed_status == "approved" && !resuming_request {
             let public_values_hex = job
                 .public_values
                 .as_deref()
                 .context("approved proof job has no public values")?;
-            require_proof_lifetime(state, kind, public_values_hex).await?;
             let public_values = decode_hex_bytes(public_values_hex, "public values")?;
             let cycles = job.cycle_count.map(u64::try_from).transpose()?;
             let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
@@ -2274,15 +2393,27 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                     .context("approved proof job has no max price per PGU")?,
             )?);
             (preflight, config)
+        } else if resuming_request {
+            let public_values_hex = job
+                .public_values
+                .as_deref()
+                .context("requested proof has no persisted preflight")?;
+            // Reattach to the same network request. Never rehydrate its input
+            // or execute another preflight against a different checkpoint.
+            let public_values = decode_hex_bytes(public_values_hex, "public values")?;
+            let cycles = job.cycle_count.map(u64::try_from).transpose()?;
+            let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
+            (preflight, state.prover_config.clone())
         } else {
             if kind == ProofKind::Settlement {
                 hydrate_queued_settlement(state, &mut job.input).await?;
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET input = $2, updated_at = NOW()
-                     WHERE id = $1 AND status = 'validating'",
+                     WHERE id = $1 AND attempts = $3 AND status = 'validating' AND proof_request_intent IS NULL",
                 )
                 .bind(job.id)
                 .bind(&job.input)
+                .bind(job.attempts)
                 .execute(&state.pool)
                 .await?;
                 anyhow::ensure!(result.rows_affected() == 1, "settlement job was cancelled");
@@ -2290,10 +2421,11 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             let preflight_input_digest = proof_input_digest(&job.input);
             let digest_result = sqlx::query(
                 "UPDATE proof_jobs SET preflight_input_digest = $2, updated_at = NOW()
-                 WHERE id = $1 AND status = 'validating'",
+                 WHERE id = $1 AND attempts = $3 AND status = 'validating' AND proof_request_intent IS NULL",
             )
             .bind(job.id)
             .bind(preflight_input_digest)
+            .bind(job.attempts)
             .execute(&state.pool)
             .await?;
             anyhow::ensure!(
@@ -2311,11 +2443,12 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             let result = sqlx::query(
                 "UPDATE proof_jobs SET public_values = $2, cycle_count = $3,
                         updated_at = NOW()
-                 WHERE id = $1 AND status = 'validating'",
+                 WHERE id = $1 AND attempts = $4 AND status = 'validating' AND proof_request_intent IS NULL",
             )
             .bind(job.id)
             .bind(&public_values_hex)
             .bind(cycle_count)
+            .bind(job.attempts)
             .execute(&state.pool)
             .await?;
             anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
@@ -2323,9 +2456,10 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET status = 'executed',
                             completed_at = NOW(), updated_at = NOW()
-                     WHERE id = $1 AND status = 'validating'",
+                     WHERE id = $1 AND attempts = $2 AND status = 'validating' AND proof_request_intent IS NULL",
                 )
                 .bind(job.id)
+                .bind(job.attempts)
                 .execute(&state.pool)
                 .await?;
                 anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
@@ -2335,9 +2469,10 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
                 let result = sqlx::query(
                     "UPDATE proof_jobs SET status = 'awaiting_approval',
                             completed_at = NULL, updated_at = NOW()
-                     WHERE id = $1 AND status = 'validating'",
+                     WHERE id = $1 AND attempts = $2 AND status = 'validating' AND proof_request_intent IS NULL",
                 )
                 .bind(job.id)
+                .bind(job.attempts)
                 .execute(&state.pool)
                 .await?;
                 anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
@@ -2347,28 +2482,28 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         };
 
         if state.local_mock_submit {
-            submit_local_mock(state, job.id, kind, &preflight).await?;
+            submit_local_mock(state, job.id, job.attempts, kind, &preflight).await?;
             return Result::<()>::Ok(());
         }
 
-        set_status(&state.pool, job.id, "proving").await?;
+        set_status(&state.pool, job.id, job.attempts, "proving").await?;
 
         let request_id = match job.proof_request_id {
             Some(request_id) => request_id,
             None => {
+                // Budget for proving only before purchasing a new proof. A
+                // completed or already requested proof needs only time to submit.
+                require_proof_lifetime(
+                    state,
+                    kind,
+                    &format!("0x{}", hex::encode(preflight.public_values())),
+                )
+                .await?;
+                let intent = submission::begin_proof_request(&state.pool, job.id, job.attempts).await?;
                 let request_id =
                     prover::request_proof(kind, &job.input, &state.proof_system, &request_config)
                         .await?;
-                let result = sqlx::query(
-                    "UPDATE proof_jobs SET proof_request_id = $2, updated_at = NOW()
-                     WHERE id = $1 AND status = 'proving'",
-                )
-                .bind(job.id)
-                .bind(&request_id)
-                .execute(&state.pool)
-                .await?;
-                anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
-                set_status(&state.pool, job.id, "proof_requested").await?;
+                submission::finish_proof_request(&state.pool, job.id, intent, &request_id).await?;
                 request_id
             }
         };
@@ -2377,44 +2512,34 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
             proof.public_values == preflight.public_values(),
             "network proof public values differ from local SP1 preflight"
         );
+        // Save the proof before optional metric reads or submission RPCs.
+        // A retry must never purchase or retrieve a fresh proof unnecessarily.
+        let proof_bytes = proof.proof.bytes();
+        let result = sqlx::query(
+            "UPDATE proof_jobs SET proof_bytes = $2, public_values = $3, updated_at = NOW()
+             WHERE id = $1 AND attempts = $4 AND status IN ('proving', 'proof_requested')",
+        )
+        .bind(job.id)
+        .bind(format!("0x{}", hex::encode(&proof_bytes)))
+        .bind(format!("0x{}", hex::encode(&proof.public_values)))
+        .bind(job.attempts)
+        .execute(&state.pool)
+        .await?;
+        anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");
         let metrics = prover::request_metrics(&request_id)
             .await
             .unwrap_or_else(|error| {
                 tracing::warn!(%error, %request_id, "could not read prover-network metrics");
                 prover::RequestMetrics::default()
             });
-        set_status(&state.pool, job.id, "submitting").await?;
-        let mut submit_tx = state.pool.begin().await?;
-        sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
-            .fetch_one(&mut *submit_tx)
-            .await?;
-        let still_submitting = sqlx::query_scalar::<_, bool>(
-            "SELECT status = 'submitting' FROM proof_jobs WHERE id = $1",
-        )
-        .bind(job.id)
-        .fetch_one(&mut *submit_tx)
-        .await?;
-        anyhow::ensure!(
-            still_submitting,
-            "proof job was cancelled before submission"
-        );
-        let transaction_hash = state
-            .ethereum
-            .submit(kind, proof.public_values.clone(), proof.proof.bytes())
-            .await?;
         let result = sqlx::query(
-            "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
-                    proof_request_id = $3, transaction_hash = $4,
-                    cycle_count = $5, prover_gas = $6, base_fee_prove = $7,
-                    max_price_per_pgu = $8, actual_cost_prove = $9,
-                    confirmations = 0, explorer_url = $10,
+            "UPDATE proof_jobs SET cycle_count = $2, prover_gas = $3,
+                    base_fee_prove = $4, max_price_per_pgu = $5,
+                    actual_cost_prove = $6, explorer_url = $7,
                     updated_at = NOW()
-             WHERE id = $1 AND status = 'submitting'",
+             WHERE id = $1 AND attempts = $8 AND status IN ('proving', 'proof_requested')",
         )
         .bind(job.id)
-        .bind(format!("0x{}", hex::encode(proof.public_values)))
-        .bind(&request_id)
-        .bind(transaction_hash.to_string())
         .bind(
             metrics
                 .cycles
@@ -2430,87 +2555,68 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) {
         .bind(metrics.max_price_per_pgu)
         .bind(metrics.actual_cost_prove)
         .bind(format!("{}/{}", state.network_explorer_base, request_id))
-        .execute(&mut *submit_tx)
+        .bind(job.attempts)
+        .execute(&state.pool)
         .await?;
         anyhow::ensure!(
             result.rows_affected() == 1,
-            "proof job was cancelled after submission"
+            "proof job was cancelled before submission"
         );
-        submit_tx.commit().await?;
+        require_submission_lifetime(
+            state,
+            kind,
+            &format!("0x{}", hex::encode(&proof.public_values)),
+        )
+        .await?;
+        validate_preflight(state, &job.input, &preflight).await?;
+        submission::send(state, job.id, job.attempts, kind, &proof.public_values, &proof_bytes).await?;
         Result::<()>::Ok(())
     }
     .await;
 
     if let Err(error) = result {
-        tracing::error!(job_id = %job.id, %error, "proof job failed");
-        let error_message = database_safe_error(&error);
-        if let Err(update_error) = sqlx::query(
-            "UPDATE proof_jobs SET status = 'failed', error = $2,
-                    completed_at = NOW(), updated_at = NOW()
-             WHERE id = $1 AND status NOT IN ('reorged', 'rejected')",
-        )
-        .bind(job.id)
-        .bind(error_message)
-        .execute(&state.pool)
-        .await
-        {
-            tracing::error!(job_id = %job.id, %update_error, "could not persist proof failure");
-        }
-        let _ = sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
-            .bind(job.id)
-            .execute(&state.pool)
-            .await;
+        submission::record_failure(state, job.id, job.attempts, &error)
+            .await
+            .context("persist proof failure before resuming the worker")?;
     }
+    Ok(())
 }
 
 async fn submit_local_mock(
     state: &AppState,
     job_id: Uuid,
+    attempts: i32,
     kind: ProofKind,
     preflight: &prover::Preflight,
 ) -> Result<()> {
-    set_status(&state.pool, job_id, "submitting").await?;
-    let mut tx = state.pool.begin().await?;
-    sqlx::query("SELECT id FROM gateway_config WHERE id = TRUE FOR UPDATE")
-        .fetch_one(&mut *tx)
-        .await?;
-    let still_submitting =
-        sqlx::query_scalar::<_, bool>("SELECT status = 'submitting' FROM proof_jobs WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    anyhow::ensure!(
-        still_submitting,
-        "proof job was cancelled before submission"
-    );
-
-    let transaction_hash = state
-        .ethereum
-        .submit(kind, preflight.public_values().to_vec(), Vec::new())
-        .await?;
     let cycle_count = preflight
         .cycles()
         .map(i64::try_from)
         .transpose()
         .context("SP1 preflight cycle count exceeds PostgreSQL BIGINT")?;
     let result = sqlx::query(
-        "UPDATE proof_jobs SET status = 'submitted', public_values = $2,
-                transaction_hash = $3, cycle_count = $4, confirmations = 0,
+        "UPDATE proof_jobs SET cycle_count = $2,
                 updated_at = NOW()
-         WHERE id = $1 AND status = 'submitting'",
+         WHERE id = $1 AND attempts = $3 AND status IN ('validating', 'proving')",
     )
     .bind(job_id)
-    .bind(format!("0x{}", hex::encode(preflight.public_values())))
-    .bind(transaction_hash.to_string())
     .bind(cycle_count)
-    .execute(&mut *tx)
+    .bind(attempts)
+    .execute(&state.pool)
     .await?;
     anyhow::ensure!(
         result.rows_affected() == 1,
-        "proof job was cancelled after local submission"
+        "proof job was cancelled before local submission"
     );
-    tx.commit().await?;
-    Ok(())
+    submission::send(
+        state,
+        job_id,
+        attempts,
+        kind,
+        preflight.public_values(),
+        &[],
+    )
+    .await
 }
 
 async fn hydrate_queued_settlement(state: &AppState, input: &mut Value) -> Result<()> {
@@ -2593,6 +2699,7 @@ async fn validate_preflight(
         prover::Preflight::Bridge { values, .. } => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;
             let chain_id = state.ethereum.chain_id().await?;
+            let block = state.ethereum.latest_block().await?;
             anyhow::ensure!(input.ethereum.chain_id == chain_id, "chain id mismatch");
             anyhow::ensure!(
                 input.ethereum.bridge_address.as_slice()
@@ -2601,7 +2708,8 @@ async fn validate_preflight(
             );
             let (chain, historical) = state
                 .ethereum
-                .bridge_state(
+                .bridge_state_at(
+                    &block,
                     Some(values.ethereum_nonce_before),
                     Some(values.zeko_action_state_after.into()),
                 )
@@ -2634,7 +2742,7 @@ async fn validate_preflight(
                 chain.current_deposit_state,
                 "current deposit state",
             )?;
-            let settlement = state.ethereum.settlement_state().await?;
+            let settlement = state.ethereum.settlement_state_at(&block).await?;
             ensure_bytes_eq(
                 values.zeko_action_state_before,
                 settlement.action_state,
@@ -2675,13 +2783,15 @@ fn ensure_hex_eq(actual: &str, expected: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> Result<()> {
+async fn set_status(pool: &PgPool, id: Uuid, attempts: i32, status: &str) -> Result<()> {
     let result = sqlx::query(
         "UPDATE proof_jobs SET status = $2::proof_status, updated_at = NOW()
-         WHERE id = $1 AND status <> 'reorged'",
+         WHERE id = $1 AND attempts = $3 AND status NOT IN
+             ('reorged', 'rejected', 'confirmed', 'ethereum_reverted', 'failed', 'executed')",
     )
     .bind(id)
     .bind(status)
+    .bind(attempts)
     .execute(pool)
     .await?;
     anyhow::ensure!(result.rows_affected() == 1, "proof job was cancelled");

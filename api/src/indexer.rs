@@ -93,12 +93,32 @@ async fn index_blocks(
     head: u64,
     finalized_block: Option<&BlockRef>,
 ) -> Result<()> {
-    let latest = sqlx::query(
+    let mut latest = sqlx::query(
         "SELECT block_number, block_hash FROM gateway_blocks
          WHERE canonical ORDER BY block_number DESC LIMIT 1",
     )
     .fetch_optional(pool)
     .await?;
+
+    if let Some(row) = &latest {
+        let number = u64::try_from(row.try_get::<i64, _>("block_number")?)?;
+        if number >= head {
+            // No new child block will call ensure_parent at a stationary or
+            // regressed head (notably after evm_revert). Check the tip itself.
+            let remote = ethereum.block(head).await?;
+            let hash: String = row.try_get("block_hash")?;
+            if number > head || hash != remote.hash.to_string() {
+                let ancestor = common_ancestor(pool, ethereum, remote).await?;
+                rollback_canonical_chain(pool, config.finality_mode, ancestor).await?;
+                latest = sqlx::query(
+                    "SELECT block_number, block_hash FROM gateway_blocks
+                     WHERE canonical ORDER BY block_number DESC LIMIT 1",
+                )
+                .fetch_optional(pool)
+                .await?;
+            }
+        }
+    }
 
     let mut next = match latest {
         Some(row) => {
@@ -111,11 +131,21 @@ async fn index_blocks(
     while next <= head {
         let block = ethereum.block(next).await?;
         ensure_parent(pool, ethereum, config.finality_mode, &block).await?;
-        insert_block(pool, &block).await?;
-        index_bridge_deposits(pool, ethereum, block.number).await?;
+        index_bridge_deposits(pool, ethereum, &block).await?;
         next = block.number + 1;
     }
 
+    let head_block = ethereum.block(head).await?;
+    let indexed_head = sqlx::query_scalar::<_, String>(
+        "SELECT block_hash FROM gateway_blocks WHERE block_number = $1 AND canonical",
+    )
+    .bind(i64::try_from(head)?)
+    .fetch_optional(pool)
+    .await?;
+    anyhow::ensure!(
+        indexed_head.as_deref() == Some(head_block.hash.to_string().as_str()),
+        "Ethereum head changed while indexing; retry before advancing finality"
+    );
     let finalized_through = match finalized_block {
         Some(block) => {
             anyhow::ensure!(
@@ -152,19 +182,18 @@ async fn index_blocks(
                 previous_finalized.unwrap_or_default(),
                 block.number
             );
-            block.number
+            Some(block.number)
         }
-        None => head.saturating_sub(config.confirmations),
+        None => head.checked_sub(config.confirmations.max(1) - 1),
     };
     sqlx::query(
         "UPDATE gateway_blocks
-         SET finalized = canonical AND block_number <= $1",
+         SET finalized = canonical AND COALESCE(block_number <= $1, FALSE)",
     )
-    .bind(i64::try_from(finalized_through)?)
+    .bind(finalized_through.map(i64::try_from).transpose()?)
     .execute(pool)
     .await?;
 
-    let head_block = ethereum.block(head).await?;
     sqlx::query(
         "UPDATE gateway_config
          SET block_height = $1, state_hash = $2, updated_at = NOW()
@@ -200,24 +229,47 @@ async fn ensure_parent(
         return Ok(());
     }
 
-    let mut candidate = block.number - 1;
-    let ancestor = loop {
-        let remote = ethereum.block(candidate).await?;
+    let parent = ethereum.block(block.number - 1).await?;
+    anyhow::ensure!(
+        parent.hash == block.parent_hash,
+        "Ethereum parent changed while indexing; refetch the child block"
+    );
+    let ancestor = common_ancestor(pool, ethereum, parent).await?;
+    rollback_canonical_chain(pool, finality_mode, ancestor).await?;
+    anyhow::ensure!(
+        ancestor + 1 == block.number,
+        "Ethereum reorg rolled back to {ancestor}; caller must refetch from the new tip"
+    );
+    Ok(())
+}
+
+async fn common_ancestor(pool: &PgPool, ethereum: &Ethereum, mut remote: BlockRef) -> Result<u64> {
+    loop {
         let local = sqlx::query_scalar::<_, String>(
             "SELECT block_hash FROM gateway_blocks
              WHERE block_number = $1 AND canonical",
         )
-        .bind(i64::try_from(candidate)?)
+        .bind(i64::try_from(remote.number)?)
         .fetch_optional(pool)
         .await?;
         if local.as_deref() == Some(remote.hash.to_string().as_str()) {
-            break candidate;
+            return Ok(remote.number);
         }
-        if candidate == 0 {
-            break 0;
+        // No indexed state exists below the configured start height. Stop at
+        // that boundary instead of querying all the way back to genesis.
+        if local.is_none() {
+            return Ok(remote.number);
         }
-        candidate -= 1;
-    };
+        anyhow::ensure!(remote.number > 0, "Ethereum genesis hash changed");
+        remote = ethereum.block(remote.number - 1).await?;
+    }
+}
+
+async fn rollback_canonical_chain(
+    pool: &PgPool,
+    finality_mode: FinalityMode,
+    ancestor: u64,
+) -> Result<()> {
     if finality_mode == FinalityMode::Finalized {
         let would_reorg_finalized = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
@@ -233,12 +285,7 @@ async fn ensure_parent(
             "Ethereum canonical chain conflicts with a consensus-finalized checkpoint above block {ancestor}"
         );
     }
-    rollback_after(pool, ancestor).await?;
-    anyhow::ensure!(
-        ancestor + 1 == block.number,
-        "Ethereum reorg rolled back to {ancestor}; caller must refetch from the new tip"
-    );
-    Ok(())
+    rollback_after(pool, ancestor).await
 }
 
 async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
@@ -379,10 +426,31 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     .bind(ancestor)
     .execute(&mut *tx)
     .await?;
+    // Recovered history normally has no submission owner. If a retained job
+    // does have an owner or pending command, its known hash remains ambiguous
+    // after a reorg. Keep that identity and ownership until canonical event
+    // recovery observes its outcome, rather than deleting a referenced job or
+    // clearing the writer reservation merely to satisfy its foreign key.
     sqlx::query(
-        "DELETE FROM proof_jobs
-         WHERE input->>'recoveredFromEthereum' = 'true'
-           AND submitted_block_number > $1",
+        "UPDATE proof_jobs j SET status = 'reorged', completed_at = NOW(),
+                error = 'Recovered Ethereum submission was orphaned; awaiting canonical reconciliation',
+                updated_at = NOW()
+         WHERE j.input->>'recoveredFromEthereum' = 'true'
+           AND j.submitted_block_number > $1
+           AND (j.prepared_transaction IS NOT NULL
+                OR EXISTS(SELECT 1 FROM gateway_outer_writer w WHERE w.job_id = j.id)
+                OR EXISTS(SELECT 1 FROM gateway_pending_commands p WHERE p.job_id = j.id))",
+    )
+    .bind(ancestor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proof_jobs j
+         WHERE j.input->>'recoveredFromEthereum' = 'true'
+           AND j.submitted_block_number > $1
+           AND j.prepared_transaction IS NULL
+           AND NOT EXISTS(SELECT 1 FROM gateway_outer_writer w WHERE w.job_id = j.id)
+           AND NOT EXISTS(SELECT 1 FROM gateway_pending_commands p WHERE p.job_id = j.id)",
     )
     .bind(ancestor)
     .execute(&mut *tx)
@@ -425,7 +493,8 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     .await?;
     sqlx::query(
         "DELETE FROM gateway_pending_commands
-         WHERE job_id IN (SELECT id FROM proof_jobs WHERE status = 'reorged')",
+         WHERE job_id IN (SELECT id FROM proof_jobs WHERE status = 'reorged'
+                         AND transaction_hash IS NULL AND prepared_transaction IS NULL)",
     )
     .execute(&mut *tx)
     .await?;
@@ -451,7 +520,10 @@ async fn rollback_after(pool: &PgPool, ancestor: u64) -> Result<()> {
     Ok(())
 }
 
-async fn insert_block(pool: &PgPool, block: &BlockRef) -> Result<()> {
+async fn insert_block<'e, E>(executor: E, block: &BlockRef) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     sqlx::query(
         "INSERT INTO gateway_blocks
             (block_number, block_hash, parent_hash, canonical, finalized)
@@ -466,20 +538,22 @@ async fn insert_block(pool: &PgPool, block: &BlockRef) -> Result<()> {
     .bind(i64::try_from(block.number)?)
     .bind(block.hash.to_string())
     .bind(block.parent_hash.to_string())
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
 
-async fn index_bridge_deposits(
-    pool: &PgPool,
-    ethereum: &Ethereum,
-    block_number: u64,
-) -> Result<()> {
-    for deposit in ethereum
-        .bridge_deposit_logs(block_number, block_number)
-        .await?
-    {
+async fn index_bridge_deposits(pool: &PgPool, ethereum: &Ethereum, block: &BlockRef) -> Result<()> {
+    // Fetch before opening a database transaction. The block row is the next
+    // tick's cursor, so persist it atomically with every deposit only after a
+    // successful RPC response. Exhausted 429 retries must not skip this block.
+    let deposits = ethereum.bridge_deposit_logs(block).await?;
+    let mut tx = pool.begin().await?;
+    for deposit in deposits {
+        anyhow::ensure!(
+            deposit.block_number == block.number && deposit.block_hash == block.hash,
+            "bridge deposit RPC returned logs outside the requested block"
+        );
         let asset_id = deposit
             .erc20_identity
             .map(|identity| identity.asset_id().to_string());
@@ -544,9 +618,11 @@ async fn index_bridge_deposits(
         .bind(deposit.block_hash.to_string())
         .bind(deposit.transaction_hash.to_string())
         .bind(i64::try_from(deposit.log_index)?)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+    insert_block(&mut *tx, block).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -785,11 +861,15 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let block_number = u64::try_from(event.try_get::<i64, _>("ethereum_block_number")?)?;
         let block_hash: String = event.try_get("ethereum_block_hash")?;
         let transaction_hash: String = event.try_get("ethereum_tx_hash")?;
+        // Account application commits before the job status update. If a
+        // restart interrupts that boundary, replay the idempotent application
+        // and finish confirming the job instead of stranding its writer.
         let already_applied = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
                SELECT 1 FROM gateway_account_history history
                JOIN proof_jobs jobs ON jobs.id = history.job_id
                WHERE lower(jobs.transaction_hash) = lower($1)
+                 AND jobs.status = 'confirmed'
              )",
         )
         .bind(&transaction_hash)
@@ -806,6 +886,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let existing = sqlx::query(
             "SELECT id, input FROM proof_jobs
              WHERE lower(transaction_hash) = lower($1)
+                OR lower(prepared_transaction->>'transaction_hash') = lower($1)
              ORDER BY created_at LIMIT 1",
         )
         .bind(&transaction_hash)
@@ -883,6 +964,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         sqlx::query(
             "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
                     submitted_block_number = $3, submitted_block_hash = $4,
+                    transaction_hash = $5,
                     confirmations = GREATEST(confirmations, 1),
                     completed_at = COALESCE(completed_at, NOW()),
                     updated_at = NOW()
@@ -892,6 +974,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         .bind(&public_values_hex)
         .bind(i64::try_from(block_number)?)
         .bind(&block_hash)
+        .bind(&transaction_hash)
         .execute(pool)
         .await?;
         tracing::info!(%kind, %transaction_hash, "recovered finalized gateway state from Ethereum");
@@ -964,11 +1047,33 @@ async fn reconcile_jobs(
     finalized_block: Option<&BlockRef>,
 ) -> Result<()> {
     let rows = sqlx::query(
-        "SELECT id, kind::text AS kind, input, public_values, status::text AS status,
-                transaction_hash FROM proof_jobs
-         WHERE transaction_hash IS NOT NULL
-           AND status IN ('submitted', 'confirmed')
-           AND kind::text IN ('settlement', 'bridge')",
+        "SELECT j.id, j.kind::text AS kind, j.input, j.public_values,
+                j.status::text AS status, j.transaction_hash,
+                (EXISTS(SELECT 1 FROM gateway_account_history h WHERE h.job_id = j.id)
+                 OR (j.kind::text = 'settlement' AND NOT (j.input ? 'submission')))
+                   AS state_applied
+         FROM proof_jobs j
+         WHERE j.transaction_hash IS NOT NULL
+           AND j.status IN ('submitted', 'confirmed', 'reorged')
+           AND j.kind::text IN ('settlement', 'bridge')
+           AND ($1 OR j.status <> 'confirmed'
+                OR NOT EXISTS(
+                    SELECT 1 FROM gateway_blocks b
+                    WHERE b.block_number = j.submitted_block_number
+                      AND b.block_hash = j.submitted_block_hash
+                      AND b.canonical AND b.finalized
+                      AND b.block_number <= $2)
+                OR ((j.kind::text = 'bridge' OR j.input ? 'submission')
+                    AND NOT EXISTS(SELECT 1 FROM gateway_account_history h
+                                   WHERE h.job_id = j.id)))",
+    )
+    // A confirmation threshold is reversible, so retain receipt reconciliation
+    // in that mode. Consensus-finalized, applied jobs need no more RPC traffic.
+    .bind(config.finality_mode == FinalityMode::Confirmations)
+    .bind(
+        finalized_block
+            .map(|block| i64::try_from(block.number))
+            .transpose()?,
     )
     .fetch_all(pool)
     .await?;
@@ -978,30 +1083,12 @@ async fn reconcile_jobs(
         let input: Value = row.try_get("input")?;
         let public_values: Option<String> = row.try_get("public_values")?;
         let previous_status: String = row.try_get("status")?;
+        let state_applied: bool = row.try_get("state_applied")?;
         let transaction_hash: String = row.try_get("transaction_hash")?;
         let Some(receipt) = ethereum.transaction_receipt(&transaction_hash).await? else {
             continue;
         };
         let confirmations = head.saturating_sub(receipt.block_number) + 1;
-        if !receipt.succeeded {
-            sqlx::query(
-                "UPDATE proof_jobs SET status = 'ethereum_reverted',
-                        ethereum_gas_used = $2, confirmations = $3,
-                        error = 'Ethereum transaction reverted',
-                        completed_at = NOW(), updated_at = NOW()
-                 WHERE id = $1",
-            )
-            .bind(id)
-            .bind(i64::try_from(receipt.gas_used)?)
-            .bind(i32::try_from(confirmations.min(i32::MAX as u64))?)
-            .execute(pool)
-            .await?;
-            sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
-                .bind(id)
-                .execute(pool)
-                .await?;
-            continue;
-        }
         let canonical_hash = sqlx::query_scalar::<_, String>(
             "SELECT block_hash FROM gateway_blocks
              WHERE block_number = $1 AND canonical",
@@ -1019,7 +1106,40 @@ async fn reconcile_jobs(
             config.confirmations,
             finalized_block.map(|block| block.number),
         );
-        if confirmed && previous_status != "confirmed" && kind == ProofKind::Settlement {
+        // A signed successor remains the writer after its predecessor is
+        // orphaned. Keep polling its hash without making it claimable or
+        // releasing its reservation on an uncertain outcome. Successful
+        // successors must be applied by recover_gateway_state in canonical
+        // event order, after their predecessors; a finalized revert needs no
+        // account replay and can release the writer below.
+        if previous_status == "reorged" && (!confirmed || receipt.succeeded) {
+            continue;
+        }
+        if !receipt.succeeded && confirmed {
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                "UPDATE proof_jobs SET status = 'ethereum_reverted',
+                        ethereum_gas_used = $2, confirmations = $3,
+                        error = 'Ethereum transaction reverted',
+                        completed_at = NOW(), updated_at = NOW()
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(i64::try_from(receipt.gas_used)?)
+            .bind(i32::try_from(confirmations.min(i32::MAX as u64))?)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DELETE FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            continue;
+        }
+        if confirmed
+            && (previous_status != "confirmed" || !state_applied)
+            && kind == ProofKind::Settlement
+        {
             apply_confirmed_settlement(
                 pool,
                 id,
@@ -1033,7 +1153,10 @@ async fn reconcile_jobs(
             )
             .await?;
         }
-        if confirmed && previous_status != "confirmed" && kind == ProofKind::Bridge {
+        if confirmed
+            && (previous_status != "confirmed" || !state_applied)
+            && kind == ProofKind::Bridge
+        {
             apply_confirmed_bridge(
                 pool,
                 id,
@@ -1050,7 +1173,7 @@ async fn reconcile_jobs(
             "UPDATE proof_jobs SET status = $2::proof_status,
                     submitted_block_number = $3, submitted_block_hash = $4,
                     ethereum_gas_used = $5, confirmations = $6,
-                    completed_at = CASE WHEN $7 THEN NOW() ELSE NULL END,
+                    completed_at = CASE WHEN $7 THEN COALESCE(completed_at, NOW()) ELSE NULL END,
                     updated_at = NOW()
              WHERE id = $1",
         )
@@ -1744,6 +1867,1030 @@ fn transaction_is_finalized(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::B256;
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    fn test_ethereum(url: &str) -> Ethereum {
+        Ethereum::new(
+            url.into(),
+            format!("0x{}", "11".repeat(20)),
+            format!("0x{}", "22".repeat(20)),
+            "01".repeat(32),
+            "02".repeat(32),
+        )
+        .unwrap()
+    }
+
+    fn test_config(finality_mode: FinalityMode) -> Config {
+        Config {
+            start_block: Some(0),
+            finality_mode,
+            confirmations: 12,
+            poll_interval: Duration::from_secs(1),
+            fee_payer_public_key: None,
+        }
+    }
+
+    fn test_receipt(request: &Value, block: &BlockRef, succeeded: bool) -> Value {
+        json!({"jsonrpc":"2.0", "id":request["id"], "result":{
+            "transactionHash":request["params"][0], "transactionIndex":"0x0",
+            "blockHash":block.hash.to_string(), "blockNumber":format!("0x{:x}", block.number),
+            "from":format!("0x{}", "11".repeat(20)), "to":format!("0x{}", "22".repeat(20)),
+            "cumulativeGasUsed":"0x5208", "gasUsed":"0x5208", "contractAddress":null,
+            "logs":[], "logsBloom":format!("0x{}", "00".repeat(256)),
+            "status":if succeeded {"0x1"} else {"0x0"}, "effectiveGasPrice":"0x1", "type":"0x2"
+        }})
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn exhausted_deposit_read_does_not_advance_block_cursor(pool: PgPool) {
+        sqlx::query("INSERT INTO gateway_config (genesis_timestamp, fork_slot, account_creation_fee, state_hash) VALUES ('0', 0, '1', 'test')")
+            .execute(&pool).await.unwrap();
+        let block = BlockRef {
+            number: 100,
+            hash: B256::repeat_byte(1),
+            parent_hash: B256::repeat_byte(2),
+        };
+        let empty: alloy::rpc::types::Block = Default::default();
+        let mut rpc_block = serde_json::to_value(empty).unwrap();
+        rpc_block["number"] = json!("0x64");
+        rpc_block["hash"] = json!(block.hash.to_string());
+        rpc_block["parentHash"] = json!(block.parent_hash.to_string());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let retries = crate::rpc::RpcConfig::from_env().unwrap().max_retries as usize;
+        let server = crate::rpc::test_support::serve(move |request| {
+            let rpc_block = rpc_block.clone();
+            let counter = counter.clone();
+            async move {
+                let result = match request["method"].as_str().unwrap() {
+                    "eth_getBlockByNumber" => rpc_block,
+                    "eth_getLogs" => {
+                        assert_eq!(request["params"][0]["blockHash"], block.hash.to_string());
+                        assert!(request["params"][0].get("fromBlock").is_none());
+                        assert!(request["params"][0].get("toBlock").is_none());
+                        if counter.fetch_add(1, Ordering::SeqCst) <= retries {
+                            return (
+                                StatusCode::TOO_MANY_REQUESTS,
+                                [("retry-after", "0")],
+                                "temporarily rate limited",
+                            )
+                                .into_response();
+                        }
+                        json!([])
+                    }
+                    method => panic!("unexpected RPC method {method}"),
+                };
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result})).into_response()
+            }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let mut config = test_config(FinalityMode::Confirmations);
+        config.start_block = Some(100);
+        config.confirmations = 1;
+        let error = index_blocks(&pool, &ethereum, &config, 100, None)
+            .await
+            .unwrap_err();
+        assert!(crate::rpc::is_rate_limited(&error));
+        let indexed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_blocks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(indexed, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), retries + 1);
+
+        // The next tick must retry exactly the failed block, even when it has
+        // no deposits. Only a successful log response permits cursor advance.
+        index_blocks(&pool, &ethereum, &config, 100, None)
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), retries + 2);
+        let indexed: (i64, String, bool) = sqlx::query_as(
+            "SELECT block_number, block_hash, finalized FROM gateway_blocks WHERE canonical",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(indexed, (100, B256::repeat_byte(1).to_string(), true));
+    }
+
+    async fn check_changed_tip(pool: PgPool, head: u64, mode: FinalityMode) -> Result<()> {
+        sqlx::query("INSERT INTO gateway_config (genesis_timestamp, fork_slot, account_creation_fee, state_hash, recovery_ready) VALUES ('0', 0, '1', 'test', TRUE)")
+            .execute(&pool).await?;
+        let anchor = BlockRef {
+            number: 99,
+            hash: B256::repeat_byte(9),
+            parent_hash: B256::repeat_byte(8),
+        };
+        let orphan = BlockRef {
+            number: 100,
+            hash: B256::repeat_byte(10),
+            parent_hash: anchor.hash,
+        };
+        insert_block(&pool, &anchor).await?;
+        insert_block(&pool, &orphan).await?;
+        sqlx::query("UPDATE gateway_blocks SET finalized = TRUE")
+            .execute(&pool)
+            .await?;
+        let job = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash, submitted_block_number, submitted_block_hash) VALUES ($1, 'settlement', 'confirmed', '{}'::jsonb, $2, 100, $3)")
+            .bind(job).bind(B256::repeat_byte(4).to_string()).bind(orphan.hash.to_string())
+            .execute(&pool).await?;
+        sqlx::query("INSERT INTO gateway_accounts (public_key, token_id, account_json, ethereum_block_number, ethereum_block_hash) VALUES ('outer', '1', '{\"nonce\":\"1\"}', 100, $1)")
+            .bind(orphan.hash.to_string()).execute(&pool).await?;
+        sqlx::query("INSERT INTO gateway_account_history (job_id, public_key, token_id, account_before, ethereum_block_number, ethereum_block_hash) VALUES ($1, 'outer', '1', '{\"nonce\":\"0\"}', 100, $2)")
+            .bind(job).bind(orphan.hash.to_string()).execute(&pool).await?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let replacement = BlockRef {
+            hash: B256::repeat_byte(11),
+            ..orphan.clone()
+        };
+        let remote_anchor = anchor.clone();
+        let remote_replacement = replacement.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let anchor = remote_anchor.clone();
+            let replacement = remote_replacement.clone();
+            async move {
+                let result = match request["method"].as_str().unwrap() {
+                    "eth_getBlockByNumber" => {
+                        let block = match request["params"][0].as_str().unwrap() {
+                            "0x63" => anchor,
+                            "0x64" => replacement,
+                            number => panic!("unbounded ancestry query {number}"),
+                        };
+                        let empty: alloy::rpc::types::Block = Default::default();
+                        let mut result = serde_json::to_value(empty).unwrap();
+                        result["number"] = json!(format!("0x{:x}", block.number));
+                        result["hash"] = json!(block.hash.to_string());
+                        result["parentHash"] = json!(block.parent_hash.to_string());
+                        result
+                    }
+                    "eth_getLogs" => {
+                        assert_eq!(
+                            request["params"][0]["blockHash"],
+                            replacement.hash.to_string()
+                        );
+                        json!([])
+                    }
+                    method => panic!("unexpected RPC method {method}"),
+                };
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result})).into_response()
+            }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let mut config = test_config(mode);
+        config.confirmations = 1;
+        let result = index_blocks(
+            &pool,
+            &ethereum,
+            &config,
+            head,
+            Some(&anchor).filter(|_| mode == FinalityMode::Finalized),
+        )
+        .await;
+        let expected_nonce = if mode == FinalityMode::Finalized {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("consensus-finalized checkpoint"));
+            "1"
+        } else {
+            result?;
+            let ready: bool = sqlx::query_scalar("SELECT recovery_ready FROM gateway_config")
+                .fetch_one(&pool)
+                .await?;
+            assert!(
+                !ready,
+                "recovery must finish before writer admission resumes"
+            );
+            let status: String =
+                sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                    .bind(job)
+                    .fetch_one(&pool)
+                    .await?;
+            assert_eq!(status, "queued");
+            let indexed: (i64, String) = sqlx::query_as("SELECT block_number, block_hash FROM gateway_blocks WHERE canonical ORDER BY block_number DESC LIMIT 1")
+                .fetch_one(&pool).await?;
+            assert_eq!(
+                indexed,
+                (
+                    head as i64,
+                    if head == 99 {
+                        anchor.hash
+                    } else {
+                        replacement.hash
+                    }
+                    .to_string()
+                )
+            );
+            "0"
+        };
+        let account: Value = sqlx::query_scalar(
+            "SELECT account_json FROM gateway_accounts WHERE public_key = 'outer'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(account["nonce"], expected_nonce);
+        assert!(calls.load(Ordering::SeqCst) <= 5);
+        Ok(())
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn confirmation_mode_rolls_back_same_height_reorg(pool: PgPool) -> Result<()> {
+        check_changed_tip(pool, 100, FinalityMode::Confirmations).await
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn confirmation_mode_rolls_back_regressed_head(pool: PgPool) -> Result<()> {
+        check_changed_tip(pool, 99, FinalityMode::Confirmations).await
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn same_height_reorg_cannot_roll_back_consensus_finality(pool: PgPool) -> Result<()> {
+        check_changed_tip(pool, 100, FinalityMode::Finalized).await
+    }
+
+    fn rollback_test_state(pool: PgPool, url: &str) -> crate::AppState {
+        crate::AppState {
+            pool,
+            archive_pool: None,
+            api_key: "test".into(),
+            ethereum: test_ethereum(url),
+            proof_system: "groth16".into(),
+            prover_config: crate::prover::NetworkRequestConfig {
+                timeout: Duration::from_secs(1),
+                min_auction_period: 1,
+                gas_limit: None,
+                max_price_per_pgu: None,
+            },
+            network_explorer_base: "http://unused".into(),
+            execute_only: false,
+            local_mock_submit: false,
+            require_proof_approval: false,
+            min_remaining_slots: 1,
+            submission_min_remaining_slots: 1,
+            ethereum_finality_mode: FinalityMode::Confirmations,
+            ethereum_confirmations: 1,
+            sequencer_graphql_url: None,
+            inner_public_key: None,
+            fee_payer_public_key: None,
+            http_client: reqwest::Client::new(),
+        }
+    }
+
+    async fn rollback_fixture(
+        pool: &PgPool,
+        signed_dependent: bool,
+    ) -> (uuid::Uuid, uuid::Uuid, crate::ethereum::PreparedSubmission) {
+        sqlx::query("INSERT INTO gateway_config (genesis_timestamp, fork_slot, account_creation_fee, state_hash, recovery_ready, outer_public_key) VALUES ('0', 0, '1', 'test', TRUE, 'outer')")
+            .execute(pool).await.unwrap();
+        let accepted = uuid::Uuid::new_v4();
+        let dependent = uuid::Uuid::new_v4();
+        let prepared = crate::ethereum::PreparedSubmission {
+            transaction_hash: alloy::primitives::keccak256([1, 2]).to_string(),
+            raw_transaction: "0x0102".into(),
+            sender: format!("0x{}", "11".repeat(20)),
+            nonce: 0,
+        };
+        let dependent_prepared = crate::ethereum::PreparedSubmission {
+            transaction_hash: alloy::primitives::keccak256([3, 4]).to_string(),
+            raw_transaction: "0x0304".into(),
+            nonce: 1,
+            ..prepared.clone()
+        };
+        let input = json!({"submission":{"feePayerPublicKey":"payer", "nonce":0, "commandBase64":"accepted-command"}});
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, public_values, proof_bytes, proof_request_id, prepared_transaction, transaction_hash, submitted_block_number, submitted_block_hash)
+                     VALUES ($1, 'settlement', 'confirmed', $2, '0x01', '0x02', 'paid-request', $3, $4, 101, $5)")
+            .bind(accepted).bind(input).bind(serde_json::to_value(&prepared).unwrap())
+            .bind(&prepared.transaction_hash).bind(B256::repeat_byte(1).to_string()).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, prepared_transaction, transaction_hash)
+                     VALUES ($1, 'settlement', 'validating', '{}', $2, $3)")
+            .bind(dependent)
+            .bind(signed_dependent.then(|| serde_json::to_value(&dependent_prepared).unwrap()))
+            .bind(signed_dependent.then(|| dependent_prepared.transaction_hash.clone()))
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO gateway_pending_commands (job_id, public_key, nonce, command_kind, command_base64) VALUES ($1, 'payer', 1, 'zkapp', 'dependent-command')")
+            .bind(dependent).execute(pool).await.unwrap();
+        sqlx::query("UPDATE gateway_outer_writer SET reservation_id = $1, owner_id = 'sequencer', fencing_token = 1, job_id = $2 WHERE id = TRUE")
+            .bind(uuid::Uuid::new_v4()).bind(dependent).execute(pool).await.unwrap();
+        (accepted, dependent, prepared)
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollback_releases_unsigned_successor_then_reuses_earliest_signed_attempt(
+        pool: PgPool,
+    ) {
+        let (accepted, dependent, prepared) = rollback_fixture(&pool, false).await;
+        rollback_after(&pool, 100).await.unwrap();
+        assert!(
+            crate::claim_job(&pool).await.unwrap().is_none(),
+            "the indexer must finish canonical recovery first"
+        );
+        let row = sqlx::query("SELECT status::text AS status, proof_request_id, proof_bytes, prepared_transaction, transaction_hash FROM proof_jobs WHERE id = $1")
+            .bind(accepted).fetch_one(&pool).await.unwrap();
+        assert_eq!(row.get::<String, _>("status"), "queued");
+        assert_eq!(row.get::<String, _>("proof_request_id"), "paid-request");
+        assert_eq!(row.get::<String, _>("proof_bytes"), "0x02");
+        assert_eq!(
+            row.get::<Value, _>("prepared_transaction"),
+            serde_json::to_value(&prepared).unwrap()
+        );
+        assert!(row.get::<Option<String>, _>("transaction_hash").is_none());
+        let pending: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_pending_commands")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, vec![accepted]);
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "reorged");
+
+        sqlx::query("UPDATE gateway_config SET recovery_ready = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // claim_job calls the same writer lock used by competing API instances.
+        let resumed = crate::claim_job(&pool)
+            .await
+            .unwrap()
+            .expect("unsigned successor must release the writer");
+        assert_eq!(resumed.id, accepted);
+        assert!(resumed.prepared);
+        let owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(owner.is_none());
+
+        let sends = Arc::new(AtomicUsize::new(0));
+        let observed = sends.clone();
+        let expected = prepared.clone();
+        let rpc_pool = pool.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let observed = observed.clone();
+            let expected = expected.clone();
+            let pool = rpc_pool.clone();
+            async move {
+                let result = match request["method"].as_str().unwrap() {
+                    "eth_getTransactionByHash" | "eth_getTransactionReceipt" => Value::Null,
+                    "eth_sendRawTransaction" => {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(request["params"][0], expected.raw_transaction);
+                        let hash: String = sqlx::query_scalar(
+                            "SELECT transaction_hash FROM proof_jobs WHERE id = $1",
+                        )
+                        .bind(accepted)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                        assert_eq!(
+                            hash, expected.transaction_hash,
+                            "restored hash must be durable before rebroadcast"
+                        );
+                        json!(hash)
+                    }
+                    method => panic!(
+                        "rollback must not request a new nonce, simulation, or proof: {method}"
+                    ),
+                };
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result})).into_response()
+            }
+        })
+        .await;
+        crate::process_job(&rollback_test_state(pool.clone(), &server.url), resumed)
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT status::text AS status, transaction_hash, proof_request_id, proof_bytes FROM proof_jobs WHERE id = $1")
+            .bind(accepted).fetch_one(&pool).await.unwrap();
+        assert_eq!(row.get::<String, _>("status"), "submitted");
+        assert_eq!(
+            row.get::<String, _>("transaction_hash"),
+            prepared.transaction_hash
+        );
+        assert_eq!(row.get::<String, _>("proof_request_id"), "paid-request");
+        assert_eq!(row.get::<String, _>("proof_bytes"), "0x02");
+        assert_eq!(sends.load(Ordering::SeqCst), 1);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollback_reconciles_signed_successor_revert_after_restart(pool: PgPool) {
+        let (accepted, dependent, prepared) = rollback_fixture(&pool, true).await;
+        rollback_after(&pool, 100).await.unwrap();
+        sqlx::query("UPDATE gateway_config SET recovery_ready = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        crate::outer_writer::lock(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let pending: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_pending_commands")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains(&accepted) && pending.contains(&dependent));
+        let owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owner, Some(dependent));
+        assert!(
+            crate::claim_job(&pool).await.unwrap().is_none(),
+            "a signed dependent needs canonical reconciliation before releasing its writer"
+        );
+
+        let block = BlockRef {
+            number: 102,
+            hash: B256::repeat_byte(3),
+            parent_hash: B256::repeat_byte(4),
+        };
+        insert_block(&pool, &block).await.unwrap();
+        let phase = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let served_phase = phase.clone();
+        let served_calls = calls.clone();
+        let served_block = block.clone();
+        let dependent_hash: String =
+            sqlx::query_scalar("SELECT transaction_hash FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let server = crate::rpc::test_support::serve(move |request| {
+            assert_eq!(request["method"], "eth_getTransactionReceipt");
+            assert_eq!(request["params"][0], dependent_hash);
+            served_calls.fetch_add(1, Ordering::SeqCst);
+            let phase = served_phase.load(Ordering::SeqCst);
+            let mut block = served_block.clone();
+            if phase == 1 {
+                block.hash = B256::repeat_byte(9);
+            }
+            let response = if phase == 0 {
+                json!({"jsonrpc":"2.0", "id":request["id"], "result":null})
+            } else {
+                test_receipt(&request, &block, false)
+            };
+            async move { Json(response).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Confirmations);
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        for (current_phase, head) in [(0, 113), (1, 113), (2, 112)] {
+            phase.store(current_phase, Ordering::SeqCst);
+            reconcile_jobs(&pool, &ethereum, &config, head, None)
+                .await
+                .unwrap();
+            let row = sqlx::query(
+                "SELECT status::text AS status, transaction_hash FROM proof_jobs WHERE id = $1",
+            )
+            .bind(dependent)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(row.get::<String, _>("status"), "reorged");
+            assert_eq!(
+                row.get::<String, _>("transaction_hash"),
+                alloy::primitives::keccak256([3, 4]).to_string()
+            );
+            assert!(crate::claim_job(&pool).await.unwrap().is_none());
+            let owner: Option<uuid::Uuid> =
+                sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(owner, Some(dependent));
+            let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(pending, 2, "uncertain receipt must retain both commands");
+        }
+
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        phase.store(3, Ordering::SeqCst);
+        reconcile_jobs(&pool, &ethereum, &config, 113, None)
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "ethereum_reverted");
+        let pending: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_pending_commands")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, vec![accepted]);
+        let resumed = crate::claim_job(&pool)
+            .await
+            .unwrap()
+            .expect("the canonical reverted successor must release its writer");
+        assert_eq!(resumed.id, accepted);
+        assert!(resumed.prepared);
+        assert_eq!(resumed.proof_request_id.as_deref(), Some("paid-request"));
+        assert_eq!(resumed.proof_bytes.as_deref(), Some("0x02"));
+        let saved: Value =
+            sqlx::query_scalar("SELECT prepared_transaction FROM proof_jobs WHERE id = $1")
+                .bind(accepted)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(saved, serde_json::to_value(prepared).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn rollback_keeps_referenced_recovered_job_without_violating_writer_fk(pool: PgPool) {
+        sqlx::query("INSERT INTO gateway_config (genesis_timestamp, fork_slot, account_creation_fee, state_hash, recovery_ready) VALUES ('0', 0, '1', 'test', TRUE)").execute(&pool).await.unwrap();
+        let retained = uuid::Uuid::new_v4();
+        let historical = uuid::Uuid::new_v4();
+        for id in [retained, historical] {
+            sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash, submitted_block_number) VALUES ($1, 'settlement', 'confirmed', '{\"recoveredFromEthereum\":true}', $2, 101)")
+                .bind(id).bind(B256::repeat_byte(1).to_string()).execute(&pool).await.unwrap();
+        }
+        sqlx::query("UPDATE gateway_outer_writer SET reservation_id = $1, owner_id = 'sequencer', fencing_token = 1, job_id = $2 WHERE id = TRUE")
+            .bind(uuid::Uuid::new_v4()).bind(retained).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gateway_pending_commands (job_id, public_key, nonce, command_kind, command_base64) VALUES ($1, 'payer', 0, 'zkapp', 'command')")
+            .bind(retained).execute(&pool).await.unwrap();
+        rollback_after(&pool, 100).await.unwrap();
+        let jobs: Vec<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM proof_jobs")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(jobs, vec![retained]);
+        let row = sqlx::query(
+            "SELECT status::text AS status, transaction_hash FROM proof_jobs WHERE id = $1",
+        )
+        .bind(retained)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("status"), "reorged");
+        assert_eq!(
+            row.get::<String, _>("transaction_hash"),
+            B256::repeat_byte(1).to_string()
+        );
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(retained)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, 1);
+        let owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(owner, Some(retained));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn signed_reorged_success_recovers_original_jobs_in_order_after_restart(pool: PgPool) {
+        use alloy::sol_types::SolCall;
+        use zeko_sp1_lib::{OuterStateV1, SettlementDaMode};
+
+        alloy::sol! {
+            function verifyAndUpdateRoot(bytes publicValues, bytes proofBytes) external;
+        }
+
+        let (accepted, dependent, prepared) = rollback_fixture(&pool, true).await;
+        rollback_after(&pool, 100).await.unwrap();
+        sqlx::query("UPDATE gateway_config SET recovery_ready = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO gateway_accounts (public_key, token_id, account_json)
+                     VALUES ('outer', '1', $1), ('payer', '1', '{\"nonce\":\"0\"}')",
+        )
+        .bind(json!({"zkappState":vec!["0"; 8], "actionState":vec!["0"; 5]}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut transactions = Vec::new();
+        // Insert the successor first: recovery must use chain order, not row
+        // insertion order or the order of the receipt polling query.
+        for (job_id, nonce, hash) in [
+            (
+                dependent,
+                1_u32,
+                alloy::primitives::keccak256([3, 4]).to_string(),
+            ),
+            (accepted, 0_u32, prepared.transaction_hash.clone()),
+        ] {
+            let block = BlockRef {
+                number: 101 + u64::from(nonce),
+                hash: B256::repeat_byte(5 + nonce as u8),
+                parent_hash: B256::repeat_byte(4 + nonce as u8),
+            };
+            insert_block(&pool, &block).await.unwrap();
+            let values = SettlementPublicValuesV1 {
+                da_mode: SettlementDaMode::Multisig,
+                chain_id: 31_337,
+                settlement_contract: [0x11; 20],
+                batch_sequence: u64::from(nonce + 1),
+                vk_hash: [0; 32],
+                app_statement: [0; 32],
+                mina_transaction_hash: u32_word(nonce + 1),
+                state_before: OuterStateV1 {
+                    fields: [u32_word(nonce); 8],
+                },
+                state_after: OuterStateV1 {
+                    fields: [u32_word(nonce + 1); 8],
+                },
+                outer_action_state_before: u32_word(nonce),
+                outer_action_state_after: u32_word(nonce + 1),
+                outer_action_state_length_before: nonce,
+                outer_action_state_length_after: nonce + 1,
+                synchronized_outer_action_state: [0; 32],
+                synchronized_outer_action_state_length: 0,
+                slot_lower: 0,
+                slot_upper: 1000,
+            }
+            .encode()
+            .to_vec();
+            let input = json!({
+                "submission": {
+                    "outerAccountPublicKey":"outer", "feePayerPublicKey":"payer",
+                    "nonce":nonce, "commandBase64":"saved-command"
+                },
+                "proof":{"binding":{"actions":[[format!("0x{}", hex::encode(u32_word(nonce + 1)))]]}}
+            });
+            sqlx::query("UPDATE proof_jobs SET input = $2, public_values = $3 WHERE id = $1")
+                .bind(job_id)
+                .bind(input)
+                .bind(format!("0x{}", hex::encode(&values)))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO gateway_explorer_settlements
+                            (batch_sequence, mina_transaction_hash, ledger_hash, outer_action_state,
+                             outer_action_state_length, inner_action_state, inner_action_state_length,
+                             slot_lower, slot_upper, ethereum_block_number, ethereum_block_hash,
+                             ethereum_tx_hash, ethereum_log_index)
+                         VALUES ($1, '0', '0', '0', 0, '0', 0, 0, 1000, $2, $3, $4, 0)")
+                .bind(i64::from(nonce + 1)).bind(block.number as i64)
+                .bind(block.hash.to_string()).bind(&hash).execute(&pool).await.unwrap();
+            let calldata = verifyAndUpdateRootCall {
+                publicValues: values.into(),
+                proofBytes: vec![1].into(),
+            }
+            .abi_encode();
+            let transaction = json!({
+                "hash":hash, "nonce":format!("0x{nonce:x}"), "type":"0x0",
+                "blockNumber":format!("0x{:x}", block.number),
+                "blockHash":block.hash.to_string(), "transactionIndex":"0x0",
+                "from":format!("0x{}", "11".repeat(20)),
+                "to":format!("0x{}", "22".repeat(20)),
+                "value":"0x0", "gas":"0x100000", "gasPrice":"0x1",
+                "input":format!("0x{}", hex::encode(calldata)),
+                "v":"0x1b", "r":"0x1", "s":"0x1"
+            });
+            transactions.push((hash, block, transaction));
+        }
+        sqlx::query("UPDATE gateway_blocks SET finalized = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let decoded_transactions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = decoded_transactions.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let hash = request["params"][0].as_str().unwrap();
+            let (_, block, transaction) = transactions
+                .iter()
+                .find(|(known_hash, _, _)| known_hash == hash)
+                .unwrap();
+            let response = match request["method"].as_str().unwrap() {
+                "eth_getTransactionReceipt" => test_receipt(&request, block, true),
+                "eth_getTransactionByHash" => {
+                    observed.lock().unwrap().push(hash.to_owned());
+                    json!({"jsonrpc":"2.0", "id":request["id"], "result":transaction})
+                }
+                method => panic!("unexpected recovery RPC: {method}"),
+            };
+            async move { Json(response).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Confirmations);
+
+        // A successful B receipt cannot apply nonce 1 before A's nonce 0. Even
+        // though B has reached confirmation depth, retain its writer until
+        // ordered canonical event recovery applies both account transitions.
+        reconcile_jobs(&pool, &ethereum, &config, 113, None)
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "reorged");
+        assert!(crate::claim_job(&pool).await.unwrap().is_none());
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nonce, "0");
+
+        sqlx::query("CREATE FUNCTION interrupt_recovered_confirmation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected confirmation interruption'; END; $$")
+            .execute(&pool).await.unwrap();
+        sqlx::query(&format!("CREATE TRIGGER interrupt_recovered_confirmation BEFORE UPDATE ON proof_jobs FOR EACH ROW WHEN (NEW.id = '{dependent}'::uuid AND NEW.status = 'confirmed') EXECUTE FUNCTION interrupt_recovered_confirmation()"))
+            .execute(&pool).await.unwrap();
+        let error = recover_gateway_state(&pool, &ethereum, &config)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected confirmation interruption"));
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            nonce, "2",
+            "both ordered applications committed before interruption"
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "reorged");
+        sqlx::query("DROP TRIGGER interrupt_recovered_confirmation ON proof_jobs")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        recover_gateway_state(&pool, &ethereum, &config)
+            .await
+            .unwrap();
+        let rows: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT id, status::text, transaction_hash FROM proof_jobs ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "re-included A must retain its original job identity"
+        );
+        assert!(rows.iter().all(|(_, status, _)| status == "confirmed"));
+        assert!(rows
+            .iter()
+            .any(|(id, _, hash)| *id == accepted && hash == &prepared.transaction_hash));
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nonce, "2", "restart must not apply either transition twice");
+        let outer: Value = sqlx::query_scalar(
+            "SELECT account_json FROM gateway_accounts WHERE public_key = 'outer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outer["zkappState"][2], "2");
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pending, 0);
+        let mut tx = pool.begin().await.unwrap();
+        crate::outer_writer::lock(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(owner.is_none());
+        assert_eq!(
+            *decoded_transactions.lock().unwrap(),
+            vec![
+                prepared.transaction_hash,
+                alloy::primitives::keccak256([3, 4]).to_string(),
+                alloy::primitives::keccak256([3, 4]).to_string(),
+            ]
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn finalized_applied_history_makes_no_receipt_requests(pool: PgPool) {
+        let block = BlockRef {
+            number: 100,
+            hash: B256::repeat_byte(1),
+            parent_hash: B256::repeat_byte(2),
+        };
+        insert_block(&pool, &block).await.unwrap();
+        sqlx::query("UPDATE gateway_blocks SET finalized = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash, submitted_block_number, submitted_block_hash, completed_at)
+                     SELECT gen_random_uuid(), 'settlement', 'confirmed', '{\"submission\":{}}'::jsonb, $1, 100, $2, '2026-09-01'::timestamptz
+                     FROM generate_series(1,1380)")
+            .bind(B256::repeat_byte(3).to_string()).bind(block.hash.to_string()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gateway_account_history (job_id, public_key, token_id, account_before, ethereum_block_number, ethereum_block_hash)
+                     SELECT id, 'outer', '1', '{}'::jsonb, 100, $1 FROM proof_jobs")
+            .bind(block.hash.to_string()).execute(&pool).await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":null})).into_response()
+            }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Finalized);
+        reconcile_jobs(&pool, &ethereum, &config, 110, Some(&block))
+            .await
+            .unwrap();
+        reconcile_jobs(&pool, &ethereum, &config, 111, Some(&block))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        // A confirmed row whose state was never applied must remain eligible.
+        sqlx::query("DELETE FROM gateway_account_history WHERE job_id = (SELECT id FROM proof_jobs LIMIT 1)").execute(&pool).await.unwrap();
+        reconcile_jobs(&pool, &ethereum, &config, 111, Some(&block))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // An active submission must be polled even below the finalized head.
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash) VALUES (gen_random_uuid(), 'settlement', 'submitted', '{}'::jsonb, $1)")
+            .bind(B256::repeat_byte(4).to_string()).execute(&pool).await.unwrap();
+        reconcile_jobs(&pool, &ethereum, &config, 111, Some(&block))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let unchanged: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM proof_jobs WHERE completed_at = '2026-09-01'::timestamptz",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unchanged, 1380);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn confirmation_mode_rechecks_receipts_and_preserves_completion_time(pool: PgPool) {
+        let block = BlockRef {
+            number: 100,
+            hash: B256::repeat_byte(1),
+            parent_hash: B256::repeat_byte(2),
+        };
+        insert_block(&pool, &block).await.unwrap();
+        let id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash, submitted_block_number, submitted_block_hash, completed_at)
+                     VALUES ($1, 'settlement', 'confirmed', '{}'::jsonb, $2, 100, $3, '2026-09-01'::timestamptz)")
+            .bind(id).bind(B256::repeat_byte(3).to_string()).bind(block.hash.to_string()).execute(&pool).await.unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let result = test_receipt(&request, &block, true);
+            async move { Json(result).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Confirmations);
+        reconcile_jobs(&pool, &ethereum, &config, 112, None)
+            .await
+            .unwrap();
+        let unchanged: bool = sqlx::query_scalar(
+            "SELECT completed_at = '2026-09-01'::timestamptz FROM proof_jobs WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(unchanged);
+        reconcile_jobs(&pool, &ethereum, &config, 105, None)
+            .await
+            .unwrap();
+        let row = sqlx::query("SELECT status::text AS status, completed_at IS NULL AS unfinished FROM proof_jobs WHERE id = $1").bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(row.get::<String, _>("status"), "submitted");
+        assert!(row.get::<bool, _>("unfinished"));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reverted_receipts_only_fail_after_canonical_finality(pool: PgPool) {
+        let block = BlockRef {
+            number: 100,
+            hash: B256::repeat_byte(1),
+            parent_hash: B256::repeat_byte(2),
+        };
+        insert_block(&pool, &block).await.unwrap();
+        let id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, transaction_hash) VALUES ($1, 'settlement', 'submitted', '{}'::jsonb, $2)")
+            .bind(id).bind(B256::repeat_byte(3).to_string()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gateway_pending_commands (job_id, public_key, nonce, command_kind, command_base64) VALUES ($1, 'payer', 0, 'zkapp', 'command')")
+            .bind(id).execute(&pool).await.unwrap();
+        let served_block = block.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let result = test_receipt(&request, &served_block, false);
+            async move { Json(result).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Finalized);
+        let not_finalized = BlockRef {
+            number: 99,
+            ..block.clone()
+        };
+        reconcile_jobs(&pool, &ethereum, &config, 120, Some(&not_finalized))
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "submitted");
+        sqlx::query("CREATE FUNCTION reject_pending_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected pending cleanup failure'; END; $$")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TRIGGER reject_pending_delete BEFORE DELETE ON gateway_pending_commands FOR EACH ROW EXECUTE FUNCTION reject_pending_delete()")
+            .execute(&pool).await.unwrap();
+        let error = reconcile_jobs(&pool, &ethereum, &config, 120, Some(&block))
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected pending cleanup failure"));
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            status, "submitted",
+            "failed cleanup must not strand a terminal job"
+        );
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, 1);
+        sqlx::query("DROP TRIGGER reject_pending_delete ON gateway_pending_commands")
+            .execute(&pool)
+            .await
+            .unwrap();
+        reconcile_jobs(&pool, &ethereum, &config, 120, Some(&block))
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "ethereum_reverted");
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, 0);
+    }
 
     #[test]
     fn confirmation_count_includes_submission_block() {

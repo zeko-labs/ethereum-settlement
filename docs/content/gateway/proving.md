@@ -82,6 +82,13 @@ Approval mode always supplies the configured `PROVER_GAS_LIMIT`; the SP1
 Network request therefore skips its redundant zkVM simulation and uses the
 reviewed cap directly.
 
+The worker checks `PROVER_MIN_REMAINING_SLOTS` (default 1900) immediately before
+purchasing a new settlement proof. Completed and cached proofs use a separate
+`ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS` margin (default 10, two minutes at
+12 seconds/slot). They do not need another full proving budget. A zero margin
+allows the contract's inclusive upper-slot boundary, but never an expired proof.
+Signed transactions retain their existing hash-based reconciliation path.
+
 ## Cost accounting
 
 When available, each job records:

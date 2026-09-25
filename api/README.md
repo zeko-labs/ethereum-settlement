@@ -13,6 +13,12 @@ Network, submits it to Ethereum, and waits for configurable finality.
   `gatewayToken` because the current OCaml client cannot attach a custom HTTP
   header.
 - `POST /v1/settlements` and `POST /v1/proofs/settlement`
+- `POST /v1/settlement-reservations` — reserve an outer checkpoint before
+  synchronizing the OCaml inner account or preparing its outer proof
+- `POST /v1/settlement-reservations/:id/renew` and
+  `DELETE /v1/settlement-reservations/:id` — renew or release preparation
+- `GET /v1/settlements/by-mina-hash/:hash` — explicit pending, failed or
+  finalized outcome with the source and target ledger hashes
 - `POST /v1/proofs/bridge`
 - `POST /v1/bridge/deposits/prove` — builds a deposit proof job from the next
   contiguous finalized `BridgeDeposit` logs; callers cannot supply deposit
@@ -33,20 +39,47 @@ Network, submits it to Ethereum, and waits for configurable finality.
 - `POST /v1/proofs/:id/approve` — approves one preflight digest with explicit
   PGU and price caps
 - `POST /v1/proofs/:id/cancel` — rejects a job only while no network request
-  exists
+  or signed Ethereum transaction exists
 - `GET /health`
 
 Proof-job and proof-creation routes require `x-api-key`; bridge discovery and
 withdrawal Merkle proofs are public. Mutations are idempotent and a Mina
-transaction hash cannot be reused for different input. Multiple OCaml commits
-may queue, but only one settlement can be proving or submitted at a time. The
-gateway assigns its Ethereum batch/action context only when it reaches the
-worker, after the previous settlement is confirmed.
+transaction hash cannot be reused for different input. One durable reservation
+owns outer-state preparation and the accepted job through finality. Successor
+OCaml batches can remain in the sequencer's durable queue; they acquire the
+next checkpoint after the preceding settlement finishes.
 
 Bridge batches and settlements are mutually exclusive outer action-state
-writers. A bridge batch is rejected while any settlement is queued or active,
-and a settlement is rejected while a bridge batch is queued or active. This
-prevents purchasing two proofs against the same starting action checkpoint.
+writers. GraphQL, REST, manual bridge and automatic bridge admission use the
+same database lock. A bridge batch cannot enter while settlement preparation
+owns the reservation. A settlement supplies `reservation: {id, fencingToken}`
+from the acquisition response, and its immutable proof binding must match the
+reserved checkpoint. The preparation lease defaults to 120 seconds and is
+renewable; once attached to a job, ownership does not expire while proving or
+waiting for finality. A stale fencing token cannot admit work after expiry.
+
+Transient RPC errors and insufficient funds retain the pending command, proof
+request ID, completed proof and any signed transaction. The worker retries the
+same stage with capped backoff. A signed transaction's hash is reconciled before
+rebroadcasting identical bytes; ambiguous sends retain ownership. An unsigned
+stale checkpoint is terminal so the sequencer can rebuild its outer proof from
+the saved witness. Gateway replicas use a PostgreSQL session lock to elect one
+proof worker, and only that worker recovers interrupted stages.
+
+Before asking SP1 to create a proof, the worker records a unique request intent.
+If it loses the response before recording the request ID, the job reports
+`proof_request_ambiguous` and retains its reservation. It cannot automatically
+buy another proof or be cancelled as unsubmitted work. A matching late response
+resumes the saved request; otherwise an operator must reconcile that intent
+with the proving service before retrying. Existing request IDs and completed
+proofs always resume without repeating proof creation.
+
+Deploy the gateway and matching sequencer together after draining active jobs.
+Migrations 0020 and 0021 add reservations and durable submission stages; the
+new gateway rejects settlement admission without a reservation. Keep both
+databases and the sequencer ledger intact during rollout. Check the sequencer's
+`/readyz` and the explicit settlement outcome before enabling traffic; pool
+disappearance alone is not proof of finality.
 
 The Mina compatibility subset is deliberately narrow:
 
@@ -68,6 +101,57 @@ indexed canonical chain, and exposes only finalized actions. An unsupported or
 inconsistent finalized checkpoint fails closed. The `confirmations` mode and
 `ETHEREUM_CONFIRMATIONS` depth are runtime-restricted to local chain ID 31337;
 testnet preflight also rejects them.
+
+Receipt polling stops once a job is consensus-finalized, its inclusion block
+matches the indexed canonical chain, and its virtual state has been applied.
+Confirmed historical jobs do not consume more RPC calls or change their
+completion timestamp on each indexer pass. Local confirmation mode keeps
+rechecking confirmed receipts because a depth threshold remains reversible.
+Reverted transactions become terminal only after canonical finality as well.
+The indexer checks the canonical tip even when its height stays unchanged or
+regresses, so local snapshot reverts restore virtual accounts without waiting
+for another block. It never rolls back a consensus-finalized checkpoint.
+Signed successors marked `reorged` retain their writer reservation and remain
+eligible for receipt reconciliation. A canonical finalized revert releases
+their pending work; successful transactions recover in canonical event order.
+Missing or unfinalized receipts keep ownership. In local confirmation mode, a
+pending successor behind an orphaned predecessor's Ethereum nonce can still
+require operator reconciliation; receipt absence does not authorize releasing
+the reservation or replacing the transaction.
+Deposit logs are requested by block hash and committed together with the block
+cursor; exhausted RPC retries cannot advance past an unread deposit block.
+
+All gateway Ethereum calls, including transaction wallet fillers, share one
+HTTP connection pool, request budget and concurrency limit per process. The
+defaults in `.env.api.example` are:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ETHEREUM_RPC_REQUESTS_PER_SECOND` | `8` | RPC calls per second; batch members each consume budget |
+| `ETHEREUM_RPC_MAX_CONCURRENT` | `4` | Maximum HTTP requests in flight |
+| `ETHEREUM_RPC_MAX_RETRIES` | `5` | Additional attempts for transient read failures |
+| `ETHEREUM_RPC_INITIAL_BACKOFF_MS` | `500` | Initial exponential backoff with jitter |
+| `ETHEREUM_RPC_MAX_BACKOFF_MS` | `10000` | Maximum generated backoff; server hints may be longer |
+| `ETHEREUM_RPC_REQUEST_TIMEOUT_MS` | `30000` | Timeout for one HTTP request |
+| `ETHEREUM_RPC_OPERATION_TIMEOUT_MS` | `90000` | Total bounded time including pacing and retries |
+
+HTTP 429, temporary HTTP failures and recognized JSON-RPC throttling responses
+retry safe reads. `Retry-After` and provider backoff hints delay every clone of
+the client. Contract reverts are returned immediately. Size each gateway's
+budget to fit the RPC account allowance shared with other instances and tools.
+
+Settlement, bridge and token-identity snapshots pin related contract reads to
+one canonical block hash using EIP-1898. The gateway requires an RPC endpoint
+that serves these calls; it does not mix fields from different `latest` blocks.
+If that hash becomes noncanonical or unavailable during a worker snapshot,
+the job records `snapshot_unavailable` and retries its durable stage with
+backoff and a fresh header. Completed proofs, request IDs, pending commands,
+and the reservation survive the retry. A real checkpoint mismatch remains a
+stale-proof failure.
+Transaction preparation fills and signs without sending. The worker persists
+the signed bytes and hash before broadcasting; a retry first reconciles that
+hash and only resends the identical transaction. Raw sends are never replayed
+by the read retry transport.
 
 ## Settlement input
 
@@ -201,3 +285,12 @@ proof-bound upper slot. `PROVER_GAS_LIMIT` and
 approval can only be tighter. The approval response snapshots a read-only
 auction quote, but it still does not create the paid request. The worker does
 that only after atomically claiming the `approved` job.
+
+Before purchasing a new settlement proof, the worker checks
+`PROVER_MIN_REMAINING_SLOTS` (default 1900). A completed proof, including one
+resumed after restart, requires only `ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS`
+(default 10, or two minutes at 12 seconds/slot) before its upper slot. This
+separate inclusion margin avoids spending the proving budget a second time.
+Setting it to zero permits the contract's inclusive upper-slot boundary;
+already expired proofs are always rejected. Signed transactions are reconciled
+using their saved bytes and hash before applying freshness checks.

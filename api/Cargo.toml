@@ -3,9 +3,15 @@ name = "zeko-proof-api"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["real-prover"]
+real-prover = ["dep:sp1-sdk", "dep:zkapp-script"]
+# Unit-test binary only; main.rs rejects this feature in deployable builds.
+fake-prover-tests = []
+
 [dependencies]
 anyhow = { workspace = true }
-alloy = { version = "1.0", features = ["contract", "provider-http", "reqwest-rustls-tls", "signer-local"] }
+alloy = { version = "1.0", features = ["contract", "provider-http", "reqwest-rustls-tls", "signer-local", "json-rpc"] }
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 dotenv = "0.15"
@@ -14,12 +20,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
-sp1-sdk = { version = "6.1.0", features = ["network"] }
+sp1-sdk = { version = "6.1.0", features = ["network"], optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-service = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 zeko_sp1_lib = { path = "../lib" }
-zkapp-script = { path = "../script" }
+zkapp-script = { path = "../script", optional = true }

@@ -66,6 +66,18 @@ have much lower memory usage than the SP1 SDK execute wrapper.
 
 Be careful with SP1 workloads:
 
+- The shared development Mac has only 16 GB RAM. For this workspace, run
+  **fake proving tests only**: no real OCaml prover, SP1 execution, local or
+  network proof generation, Groth16, or PLONK workloads.
+- Reuse the persistent `zeko-dev` tmux session for Nix shells and builds.
+  Inspect with `tmux list-windows -t zeko-dev` and attach with
+  `tmux attach -t zeko-dev`. The `zeko-dev` Docker container mounts the
+  workspace at `/workspace`; its Nix store, home/toolchains, and Cargo target
+  cache survive in named volumes. Do not recreate these or clean caches
+  merely because a command observation timed out.
+- Limit builds to `CARGO_BUILD_JOBS=1` and `RAYON_NUM_THREADS=1`, with Nix
+  `--max-jobs 1 --cores 1`. Run one heavy Rust/OCaml build at a time. The
+  container has a 6 GB memory cap; check `docker stats --no-stream zeko-dev`.
 - Do not run local proving on a laptop without explicit approval.
 - Do not run `--prove`, Groth16, PLONK, or network proof generation unless the
   user explicitly asks for it and the machine is sized for it.
@@ -96,6 +108,20 @@ an error opening a `.cargo-lock` under
 Cargo command outside the sandbox or with the appropriate approval.
 
 ## Verification Commands
+
+On the shared 16 GB Mac, use the non-deployable fake prover test build:
+
+```bash
+cargo test -p zeko-proof-api --no-default-features --features fake-prover-tests --bin zeko-proof-api -j 1
+```
+
+Set `DATABASE_URL` to an isolated PostgreSQL instance for the SQL regressions.
+The persistent container uses
+`postgres://postgres@zeko-reliability-postgres/zeko_reliability_test`.
+See [api/TESTING.md](api/TESTING.md) for reservation race tests and the
+compile guard that prevents fake verification from being deployed.
+The realized Rust Nix profile is `/root/nix-profiles/zeko-rust`; reuse it or
+the existing `zeko-dev:rust` tmux shell rather than rebuilding an environment.
 
 Useful non-proving checks:
 

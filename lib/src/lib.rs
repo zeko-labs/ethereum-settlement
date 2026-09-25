@@ -330,6 +330,26 @@ pub struct ChunkedRandomOracleInputV1 {
     pub packed: Vec<PackedFieldV1>,
 }
 
+/// Transport-only OCaml proof bundle shared with the gateway. Keeping this DTO
+/// independent of the host prover lets coordination tests avoid SP1 dependencies.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementProofBundle {
+    pub vk_json: String,
+    pub proof_json: String,
+    pub public_input_skeleton_json: String,
+    pub app_statement_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<SettlementBindingV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<SettlementContextV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_action_batch: Option<InnerActionBatchWitnessV2>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_registry_checkpoint: Option<AssetRegistryCheckpointV3>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_registry_batch: Option<AssetRegistryBatchCheckpointV4>,
+}
 /// Data that is already committed by the Pickles application statement. The
 /// guest hashes `account_update_body`, compares it to the verified statement,
 /// hashes `actions`, and decodes the fixed Zeko outer-commit action.
