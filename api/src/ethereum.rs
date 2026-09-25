@@ -21,7 +21,7 @@ use zeko_sp1_lib::ERC20_ACTION_ENCODING_V2;
 
 use crate::{
     proof_kind::ProofKind,
-    rpc::{RpcConfig, RpcTransport},
+    rpc::{read_pinned_snapshot, RpcConfig, RpcTransport},
 };
 
 pub const HISTORICAL_ERC20_ACTION_ENCODING_V1: u32 = 1;
@@ -490,18 +490,22 @@ impl Ethereum {
     }
 
     pub async fn configured_program_vkeys(&self) -> Result<[B256; 2]> {
-        let block = BlockId::hash_canonical(self.latest_block().await?.hash);
-        let provider = self.provider.clone();
-        let settlement = IZekoSettlement::new(self.settlement_address, &provider)
-            .programVKey()
-            .block(block)
-            .call()
-            .await?;
-        let bridge = IEthereumZekoBridge::new(self.bridge_address, provider);
-        Ok([
-            settlement,
-            bridge.bridgeProgramVKey().block(block).call().await?,
-        ])
+        let snapshot = self.latest_block().await?;
+        read_pinned_snapshot(snapshot.hash, async {
+            let block = BlockId::hash_canonical(snapshot.hash);
+            let provider = self.provider.clone();
+            let settlement = IZekoSettlement::new(self.settlement_address, &provider)
+                .programVKey()
+                .block(block)
+                .call()
+                .await?;
+            let bridge = IEthereumZekoBridge::new(self.bridge_address, provider);
+            Ok([
+                settlement,
+                bridge.bridgeProgramVKey().block(block).call().await?,
+            ])
+        })
+        .await
     }
 
     pub fn settlement_address(&self) -> Address {
@@ -588,24 +592,27 @@ impl Ethereum {
     }
 
     pub async fn settlement_state_at(&self, block: &BlockRef) -> Result<SettlementState> {
-        let provider = self.provider.clone();
-        let contract = IZekoSettlement::new(self.settlement_address, provider);
-        // EIP-1898 binds every getter to the same canonical block. Never silently
-        // fall back to latest when a node cannot serve the requested snapshot.
-        let block = BlockId::hash_canonical(block.hash);
-        Ok(SettlementState {
-            program_vkey: contract.programVKey().block(block).call().await?,
-            vk_hash: contract.vkHash().block(block).call().await?,
-            action_state: contract.actionState().block(block).call().await?,
-            current_root: contract.currentRoot().block(block).call().await?,
-            outer_state: contract.outerState().block(block).call().await?,
-            outer_action_state_length: contract
-                .outerActionStateLength()
-                .block(block)
-                .call()
-                .await?,
-            batch_sequence: contract.batchSequence().block(block).call().await?,
+        read_pinned_snapshot(block.hash, async {
+            let provider = self.provider.clone();
+            let contract = IZekoSettlement::new(self.settlement_address, provider);
+            // EIP-1898 binds every getter to the same canonical block. On a
+            // reorg, discard this partial snapshot and retry the durable stage.
+            let block = BlockId::hash_canonical(block.hash);
+            Ok(SettlementState {
+                program_vkey: contract.programVKey().block(block).call().await?,
+                vk_hash: contract.vkHash().block(block).call().await?,
+                action_state: contract.actionState().block(block).call().await?,
+                current_root: contract.currentRoot().block(block).call().await?,
+                outer_state: contract.outerState().block(block).call().await?,
+                outer_action_state_length: contract
+                    .outerActionStateLength()
+                    .block(block)
+                    .call()
+                    .await?,
+                batch_sequence: contract.batchSequence().block(block).call().await?,
+            })
         })
+        .await
     }
 
     pub async fn bridge_state(
@@ -624,40 +631,51 @@ impl Ethereum {
         nonce: Option<u64>,
         action_state_after: Option<B256>,
     ) -> Result<(BridgeState, Option<B256>)> {
-        let provider = self.provider.clone();
-        let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-        let block = BlockId::hash_canonical(block.hash);
-        let program_vkey = contract.bridgeProgramVKey().block(block).call().await?;
-        let historical = match nonce {
-            Some(nonce) => Some(
-                contract
-                    .depositStateByNonce(nonce)
-                    .block(block)
-                    .call()
-                    .await?,
-            ),
-            None => None,
-        };
-        Ok((
-            BridgeState {
-                program_vkey,
-                deposit_nonce: contract.depositNonce().block(block).call().await?,
-                current_deposit_state: contract.currentDepositState().block(block).call().await?,
-                bridged_deposit_nonce: contract.bridgedDepositNonce().block(block).call().await?,
-                action_state_processed: match action_state_after {
-                    Some(action_state) => Some(
-                        contract
-                            .processedActionState(action_state)
-                            .block(block)
-                            .call()
-                            .await?,
-                    ),
-                    None => None,
+        read_pinned_snapshot(block.hash, async {
+            let provider = self.provider.clone();
+            let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
+            let block = BlockId::hash_canonical(block.hash);
+            let program_vkey = contract.bridgeProgramVKey().block(block).call().await?;
+            let historical = match nonce {
+                Some(nonce) => Some(
+                    contract
+                        .depositStateByNonce(nonce)
+                        .block(block)
+                        .call()
+                        .await?,
+                ),
+                None => None,
+            };
+            Ok((
+                BridgeState {
+                    program_vkey,
+                    deposit_nonce: contract.depositNonce().block(block).call().await?,
+                    current_deposit_state: contract
+                        .currentDepositState()
+                        .block(block)
+                        .call()
+                        .await?,
+                    bridged_deposit_nonce: contract
+                        .bridgedDepositNonce()
+                        .block(block)
+                        .call()
+                        .await?,
+                    action_state_processed: match action_state_after {
+                        Some(action_state) => Some(
+                            contract
+                                .processedActionState(action_state)
+                                .block(block)
+                                .call()
+                                .await?,
+                        ),
+                        None => None,
+                    },
+                    paused: contract.paused().block(block).call().await?,
                 },
-                paused: contract.paused().block(block).call().await?,
-            },
-            historical,
-        ))
+                historical,
+            ))
+        })
+        .await
     }
 
     pub async fn bridge_deposit_logs(&self, block: &BlockRef) -> Result<Vec<BridgeDepositLog>> {
@@ -1083,56 +1101,60 @@ impl Ethereum {
         if identities.is_empty() {
             return Ok(HashMap::new());
         }
-        let block = BlockId::hash_canonical(self.latest_block().await?.hash);
-        let provider = self.provider.clone();
-        let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
-        let mut resolved = HashMap::with_capacity(identities.len());
-        for identity in identities {
-            anyhow::ensure!(
-                identity.encoding_version == ERC20_ACTION_ENCODING_V2,
-                "unsupported ERC20 withdrawal encoding version {}",
-                identity.encoding_version
-            );
-            anyhow::ensure!(
-                !identity.record_commitment.is_zero(),
-                "archived ERC20 registry identity is zero"
-            );
-            let token = contract
-                .assetTokenByRegistryIndex(identity.registry_index)
-                .block(block)
-                .call()
-                .await?;
-            anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
-            anyhow::ensure!(
-                contract
-                    .canonicalTokenRegistered(token)
+        let snapshot = self.latest_block().await?;
+        read_pinned_snapshot(snapshot.hash, async {
+            let block = BlockId::hash_canonical(snapshot.hash);
+            let provider = self.provider.clone();
+            let contract = IEthereumZekoBridge::new(self.bridge_address, provider);
+            let mut resolved = HashMap::with_capacity(identities.len());
+            for identity in identities {
+                anyhow::ensure!(
+                    identity.encoding_version == ERC20_ACTION_ENCODING_V2,
+                    "unsupported ERC20 withdrawal encoding version {}",
+                    identity.encoding_version
+                );
+                anyhow::ensure!(
+                    !identity.record_commitment.is_zero(),
+                    "archived ERC20 registry identity is zero"
+                );
+                let token = contract
+                    .assetTokenByRegistryIndex(identity.registry_index)
                     .block(block)
                     .call()
-                    .await?,
-                "archived ERC20 token is not canonically registered"
-            );
-            anyhow::ensure!(
-                contract.assetIdByToken(token).block(block).call().await? == identity.asset_id,
-                "archived ERC20 asset id does not match Ethereum"
-            );
-            anyhow::ensure!(
-                contract
-                    .registryIndexByToken(token)
-                    .block(block)
-                    .call()
-                    .await?
-                    == identity.registry_index
-                    && contract
-                        .recordCommitmentByToken(token)
+                    .await?;
+                anyhow::ensure!(!token.is_zero(), "archived ERC20 token is zero");
+                anyhow::ensure!(
+                    contract
+                        .canonicalTokenRegistered(token)
+                        .block(block)
+                        .call()
+                        .await?,
+                    "archived ERC20 token is not canonically registered"
+                );
+                anyhow::ensure!(
+                    contract.assetIdByToken(token).block(block).call().await? == identity.asset_id,
+                    "archived ERC20 asset id does not match Ethereum"
+                );
+                anyhow::ensure!(
+                    contract
+                        .registryIndexByToken(token)
                         .block(block)
                         .call()
                         .await?
-                        == identity.record_commitment,
-                "archived ERC20 registry identity does not match Ethereum"
-            );
-            resolved.insert(identity, token);
-        }
-        Ok(resolved)
+                        == identity.registry_index
+                        && contract
+                            .recordCommitmentByToken(token)
+                            .block(block)
+                            .call()
+                            .await?
+                            == identity.record_commitment,
+                    "archived ERC20 registry identity does not match Ethereum"
+                );
+                resolved.insert(identity, token);
+            }
+            Ok(resolved)
+        })
+        .await
     }
 
     pub fn bridge_address(&self) -> Address {

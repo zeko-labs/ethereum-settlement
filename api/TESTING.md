@@ -22,6 +22,11 @@ has an explicit fixture installed. Fixtures decode their supplied receipt using
 the production decoder, match the proof kind and input, and provide deterministic
 proof bytes and request IDs. The worker still performs its normal validation.
 
+The suite exercises completed-proof lifetime and restart submission, a pinned
+snapshot invalidated between getters, and signed successor recovery after a
+local confirmation-mode reorg. These regressions use fake JSON-RPC responses
+with the real worker, receipt reconciler, and PostgreSQL state transitions.
+
 Fixtures are task scoped; concurrent tests cannot share an implicit mock. A
 spawned task must install its own scope. For example, a worker test can use:
 

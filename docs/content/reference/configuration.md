@@ -26,7 +26,8 @@ environment file.
 | `PROOF_SYSTEM` | `groth16` for EVM testnet submission. |
 | `PROVER_TIMEOUT_SECS` | Maximum network proof wait; reference value 21600. |
 | `PROVER_MIN_AUCTION_PERIOD_SECS` | Minimum auction period requested from the network. |
-| `PROVER_MIN_REMAINING_SLOTS` | Minimum settlement lifetime required at approval. |
+| `PROVER_MIN_REMAINING_SLOTS` | Minimum remaining settlement slots before purchasing a new proof; default 1900. |
+| `ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS` | Minimum remaining settlement slots for a completed/cached unsigned proof; default 10. Zero allows the inclusive upper-slot boundary, never past expiry. |
 | `PROVER_GAS_LIMIT` | Deployment-wide maximum PGU. Required in approval mode. |
 | `PROVER_MAX_PRICE_PER_PGU` | Deployment-wide maximum price. Required in approval mode. |
 | `ETHEREUM_FINALITY_MODE` | `finalized` reads Ethereum's consensus-finalized JSON-RPC tag and is required on testnet. `confirmations` is restricted to chain ID 31337. |

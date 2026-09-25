@@ -861,11 +861,15 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let block_number = u64::try_from(event.try_get::<i64, _>("ethereum_block_number")?)?;
         let block_hash: String = event.try_get("ethereum_block_hash")?;
         let transaction_hash: String = event.try_get("ethereum_tx_hash")?;
+        // Account application commits before the job status update. If a
+        // restart interrupts that boundary, replay the idempotent application
+        // and finish confirming the job instead of stranding its writer.
         let already_applied = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(
                SELECT 1 FROM gateway_account_history history
                JOIN proof_jobs jobs ON jobs.id = history.job_id
                WHERE lower(jobs.transaction_hash) = lower($1)
+                 AND jobs.status = 'confirmed'
              )",
         )
         .bind(&transaction_hash)
@@ -882,6 +886,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         let existing = sqlx::query(
             "SELECT id, input FROM proof_jobs
              WHERE lower(transaction_hash) = lower($1)
+                OR lower(prepared_transaction->>'transaction_hash') = lower($1)
              ORDER BY created_at LIMIT 1",
         )
         .bind(&transaction_hash)
@@ -959,6 +964,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         sqlx::query(
             "UPDATE proof_jobs SET status = 'confirmed', public_values = $2,
                     submitted_block_number = $3, submitted_block_hash = $4,
+                    transaction_hash = $5,
                     confirmations = GREATEST(confirmations, 1),
                     completed_at = COALESCE(completed_at, NOW()),
                     updated_at = NOW()
@@ -968,6 +974,7 @@ async fn recover_gateway_state(pool: &PgPool, ethereum: &Ethereum, config: &Conf
         .bind(&public_values_hex)
         .bind(i64::try_from(block_number)?)
         .bind(&block_hash)
+        .bind(&transaction_hash)
         .execute(pool)
         .await?;
         tracing::info!(%kind, %transaction_hash, "recovered finalized gateway state from Ethereum");
@@ -1047,7 +1054,7 @@ async fn reconcile_jobs(
                    AS state_applied
          FROM proof_jobs j
          WHERE j.transaction_hash IS NOT NULL
-           AND j.status IN ('submitted', 'confirmed')
+           AND j.status IN ('submitted', 'confirmed', 'reorged')
            AND j.kind::text IN ('settlement', 'bridge')
            AND ($1 OR j.status <> 'confirmed'
                 OR NOT EXISTS(
@@ -1099,6 +1106,15 @@ async fn reconcile_jobs(
             config.confirmations,
             finalized_block.map(|block| block.number),
         );
+        // A signed successor remains the writer after its predecessor is
+        // orphaned. Keep polling its hash without making it claimable or
+        // releasing its reservation on an uncertain outcome. Successful
+        // successors must be applied by recover_gateway_state in canonical
+        // event order, after their predecessors; a finalized revert needs no
+        // account replay and can release the writer below.
+        if previous_status == "reorged" && (!confirmed || receipt.succeeded) {
+            continue;
+        }
         if !receipt.succeeded && confirmed {
             let mut tx = pool.begin().await?;
             sqlx::query(
@@ -2120,6 +2136,7 @@ mod tests {
             local_mock_submit: false,
             require_proof_approval: false,
             min_remaining_slots: 1,
+            submission_min_remaining_slots: 1,
             ethereum_finality_mode: FinalityMode::Confirmations,
             ethereum_confirmations: 1,
             sequencer_graphql_url: None,
@@ -2143,6 +2160,12 @@ mod tests {
             sender: format!("0x{}", "11".repeat(20)),
             nonce: 0,
         };
+        let dependent_prepared = crate::ethereum::PreparedSubmission {
+            transaction_hash: alloy::primitives::keccak256([3, 4]).to_string(),
+            raw_transaction: "0x0304".into(),
+            nonce: 1,
+            ..prepared.clone()
+        };
         let input = json!({"submission":{"feePayerPublicKey":"payer", "nonce":0, "commandBase64":"accepted-command"}});
         sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, public_values, proof_bytes, proof_request_id, prepared_transaction, transaction_hash, submitted_block_number, submitted_block_hash)
                      VALUES ($1, 'settlement', 'confirmed', $2, '0x01', '0x02', 'paid-request', $3, $4, 101, $5)")
@@ -2151,8 +2174,8 @@ mod tests {
         sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, prepared_transaction, transaction_hash)
                      VALUES ($1, 'settlement', 'validating', '{}', $2, $3)")
             .bind(dependent)
-            .bind(signed_dependent.then(|| serde_json::to_value(&prepared).unwrap()))
-            .bind(signed_dependent.then(|| B256::repeat_byte(2).to_string()))
+            .bind(signed_dependent.then(|| serde_json::to_value(&dependent_prepared).unwrap()))
+            .bind(signed_dependent.then(|| dependent_prepared.transaction_hash.clone()))
             .execute(pool).await.unwrap();
         sqlx::query("INSERT INTO gateway_pending_commands (job_id, public_key, nonce, command_kind, command_base64) VALUES ($1, 'payer', 1, 'zkapp', 'dependent-command')")
             .bind(dependent).execute(pool).await.unwrap();
@@ -2264,8 +2287,8 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "./migrations")]
-    async fn rollback_preserves_pending_and_owner_for_signed_successor(pool: PgPool) {
-        let (accepted, dependent, _) = rollback_fixture(&pool, true).await;
+    async fn rollback_reconciles_signed_successor_revert_after_restart(pool: PgPool) {
+        let (accepted, dependent, prepared) = rollback_fixture(&pool, true).await;
         rollback_after(&pool, 100).await.unwrap();
         sqlx::query("UPDATE gateway_config SET recovery_ready = TRUE")
             .execute(&pool)
@@ -2291,6 +2314,109 @@ mod tests {
             crate::claim_job(&pool).await.unwrap().is_none(),
             "a signed dependent needs canonical reconciliation before releasing its writer"
         );
+
+        let block = BlockRef {
+            number: 102,
+            hash: B256::repeat_byte(3),
+            parent_hash: B256::repeat_byte(4),
+        };
+        insert_block(&pool, &block).await.unwrap();
+        let phase = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let served_phase = phase.clone();
+        let served_calls = calls.clone();
+        let served_block = block.clone();
+        let dependent_hash: String =
+            sqlx::query_scalar("SELECT transaction_hash FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let server = crate::rpc::test_support::serve(move |request| {
+            assert_eq!(request["method"], "eth_getTransactionReceipt");
+            assert_eq!(request["params"][0], dependent_hash);
+            served_calls.fetch_add(1, Ordering::SeqCst);
+            let phase = served_phase.load(Ordering::SeqCst);
+            let mut block = served_block.clone();
+            if phase == 1 {
+                block.hash = B256::repeat_byte(9);
+            }
+            let response = if phase == 0 {
+                json!({"jsonrpc":"2.0", "id":request["id"], "result":null})
+            } else {
+                test_receipt(&request, &block, false)
+            };
+            async move { Json(response).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Confirmations);
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        for (current_phase, head) in [(0, 113), (1, 113), (2, 112)] {
+            phase.store(current_phase, Ordering::SeqCst);
+            reconcile_jobs(&pool, &ethereum, &config, head, None)
+                .await
+                .unwrap();
+            let row = sqlx::query(
+                "SELECT status::text AS status, transaction_hash FROM proof_jobs WHERE id = $1",
+            )
+            .bind(dependent)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(row.get::<String, _>("status"), "reorged");
+            assert_eq!(
+                row.get::<String, _>("transaction_hash"),
+                alloy::primitives::keccak256([3, 4]).to_string()
+            );
+            assert!(crate::claim_job(&pool).await.unwrap().is_none());
+            let owner: Option<uuid::Uuid> =
+                sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(owner, Some(dependent));
+            let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(pending, 2, "uncertain receipt must retain both commands");
+        }
+
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        phase.store(3, Ordering::SeqCst);
+        reconcile_jobs(&pool, &ethereum, &config, 113, None)
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "ethereum_reverted");
+        let pending: Vec<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_pending_commands")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, vec![accepted]);
+        let resumed = crate::claim_job(&pool)
+            .await
+            .unwrap()
+            .expect("the canonical reverted successor must release its writer");
+        assert_eq!(resumed.id, accepted);
+        assert!(resumed.prepared);
+        assert_eq!(resumed.proof_request_id.as_deref(), Some("paid-request"));
+        assert_eq!(resumed.proof_bytes.as_deref(), Some("0x02"));
+        let saved: Value =
+            sqlx::query_scalar("SELECT prepared_transaction FROM proof_jobs WHERE id = $1")
+                .bind(accepted)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(saved, serde_json::to_value(prepared).unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -2337,6 +2463,247 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(owner, Some(retained));
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn signed_reorged_success_recovers_original_jobs_in_order_after_restart(pool: PgPool) {
+        use alloy::sol_types::SolCall;
+        use zeko_sp1_lib::{OuterStateV1, SettlementDaMode};
+
+        alloy::sol! {
+            function verifyAndUpdateRoot(bytes publicValues, bytes proofBytes) external;
+        }
+
+        let (accepted, dependent, prepared) = rollback_fixture(&pool, true).await;
+        rollback_after(&pool, 100).await.unwrap();
+        sqlx::query("UPDATE gateway_config SET recovery_ready = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO gateway_accounts (public_key, token_id, account_json)
+                     VALUES ('outer', '1', $1), ('payer', '1', '{\"nonce\":\"0\"}')",
+        )
+        .bind(json!({"zkappState":vec!["0"; 8], "actionState":vec!["0"; 5]}))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut transactions = Vec::new();
+        // Insert the successor first: recovery must use chain order, not row
+        // insertion order or the order of the receipt polling query.
+        for (job_id, nonce, hash) in [
+            (
+                dependent,
+                1_u32,
+                alloy::primitives::keccak256([3, 4]).to_string(),
+            ),
+            (accepted, 0_u32, prepared.transaction_hash.clone()),
+        ] {
+            let block = BlockRef {
+                number: 101 + u64::from(nonce),
+                hash: B256::repeat_byte(5 + nonce as u8),
+                parent_hash: B256::repeat_byte(4 + nonce as u8),
+            };
+            insert_block(&pool, &block).await.unwrap();
+            let values = SettlementPublicValuesV1 {
+                da_mode: SettlementDaMode::Multisig,
+                chain_id: 31_337,
+                settlement_contract: [0x11; 20],
+                batch_sequence: u64::from(nonce + 1),
+                vk_hash: [0; 32],
+                app_statement: [0; 32],
+                mina_transaction_hash: u32_word(nonce + 1),
+                state_before: OuterStateV1 {
+                    fields: [u32_word(nonce); 8],
+                },
+                state_after: OuterStateV1 {
+                    fields: [u32_word(nonce + 1); 8],
+                },
+                outer_action_state_before: u32_word(nonce),
+                outer_action_state_after: u32_word(nonce + 1),
+                outer_action_state_length_before: nonce,
+                outer_action_state_length_after: nonce + 1,
+                synchronized_outer_action_state: [0; 32],
+                synchronized_outer_action_state_length: 0,
+                slot_lower: 0,
+                slot_upper: 1000,
+            }
+            .encode()
+            .to_vec();
+            let input = json!({
+                "submission": {
+                    "outerAccountPublicKey":"outer", "feePayerPublicKey":"payer",
+                    "nonce":nonce, "commandBase64":"saved-command"
+                },
+                "proof":{"binding":{"actions":[[format!("0x{}", hex::encode(u32_word(nonce + 1)))]]}}
+            });
+            sqlx::query("UPDATE proof_jobs SET input = $2, public_values = $3 WHERE id = $1")
+                .bind(job_id)
+                .bind(input)
+                .bind(format!("0x{}", hex::encode(&values)))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO gateway_explorer_settlements
+                            (batch_sequence, mina_transaction_hash, ledger_hash, outer_action_state,
+                             outer_action_state_length, inner_action_state, inner_action_state_length,
+                             slot_lower, slot_upper, ethereum_block_number, ethereum_block_hash,
+                             ethereum_tx_hash, ethereum_log_index)
+                         VALUES ($1, '0', '0', '0', 0, '0', 0, 0, 1000, $2, $3, $4, 0)")
+                .bind(i64::from(nonce + 1)).bind(block.number as i64)
+                .bind(block.hash.to_string()).bind(&hash).execute(&pool).await.unwrap();
+            let calldata = verifyAndUpdateRootCall {
+                publicValues: values.into(),
+                proofBytes: vec![1].into(),
+            }
+            .abi_encode();
+            let transaction = json!({
+                "hash":hash, "nonce":format!("0x{nonce:x}"), "type":"0x0",
+                "blockNumber":format!("0x{:x}", block.number),
+                "blockHash":block.hash.to_string(), "transactionIndex":"0x0",
+                "from":format!("0x{}", "11".repeat(20)),
+                "to":format!("0x{}", "22".repeat(20)),
+                "value":"0x0", "gas":"0x100000", "gasPrice":"0x1",
+                "input":format!("0x{}", hex::encode(calldata)),
+                "v":"0x1b", "r":"0x1", "s":"0x1"
+            });
+            transactions.push((hash, block, transaction));
+        }
+        sqlx::query("UPDATE gateway_blocks SET finalized = TRUE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let decoded_transactions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = decoded_transactions.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let hash = request["params"][0].as_str().unwrap();
+            let (_, block, transaction) = transactions
+                .iter()
+                .find(|(known_hash, _, _)| known_hash == hash)
+                .unwrap();
+            let response = match request["method"].as_str().unwrap() {
+                "eth_getTransactionReceipt" => test_receipt(&request, block, true),
+                "eth_getTransactionByHash" => {
+                    observed.lock().unwrap().push(hash.to_owned());
+                    json!({"jsonrpc":"2.0", "id":request["id"], "result":transaction})
+                }
+                method => panic!("unexpected recovery RPC: {method}"),
+            };
+            async move { Json(response).into_response() }
+        })
+        .await;
+        let ethereum = test_ethereum(&server.url);
+        let config = test_config(FinalityMode::Confirmations);
+
+        // A successful B receipt cannot apply nonce 1 before A's nonce 0. Even
+        // though B has reached confirmation depth, retain its writer until
+        // ordered canonical event recovery applies both account transitions.
+        reconcile_jobs(&pool, &ethereum, &config, 113, None)
+            .await
+            .unwrap();
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "reorged");
+        assert!(crate::claim_job(&pool).await.unwrap().is_none());
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nonce, "0");
+
+        sqlx::query("CREATE FUNCTION interrupt_recovered_confirmation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected confirmation interruption'; END; $$")
+            .execute(&pool).await.unwrap();
+        sqlx::query(&format!("CREATE TRIGGER interrupt_recovered_confirmation BEFORE UPDATE ON proof_jobs FOR EACH ROW WHEN (NEW.id = '{dependent}'::uuid AND NEW.status = 'confirmed') EXECUTE FUNCTION interrupt_recovered_confirmation()"))
+            .execute(&pool).await.unwrap();
+        let error = recover_gateway_state(&pool, &ethereum, &config)
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("injected confirmation interruption"));
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            nonce, "2",
+            "both ordered applications committed before interruption"
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status::text FROM proof_jobs WHERE id = $1")
+                .bind(dependent)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "reorged");
+        sqlx::query("DROP TRIGGER interrupt_recovered_confirmation ON proof_jobs")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        crate::submission::recover_interrupted(&pool).await.unwrap();
+        recover_gateway_state(&pool, &ethereum, &config)
+            .await
+            .unwrap();
+        let rows: Vec<(uuid::Uuid, String, String)> =
+            sqlx::query_as("SELECT id, status::text, transaction_hash FROM proof_jobs ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "re-included A must retain its original job identity"
+        );
+        assert!(rows.iter().all(|(_, status, _)| status == "confirmed"));
+        assert!(rows
+            .iter()
+            .any(|(id, _, hash)| *id == accepted && hash == &prepared.transaction_hash));
+        let nonce: String = sqlx::query_scalar(
+            "SELECT account_json->>'nonce' FROM gateway_accounts WHERE public_key = 'payer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nonce, "2", "restart must not apply either transition twice");
+        let outer: Value = sqlx::query_scalar(
+            "SELECT account_json FROM gateway_accounts WHERE public_key = 'outer'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(outer["zkappState"][2], "2");
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pending, 0);
+        let mut tx = pool.begin().await.unwrap();
+        crate::outer_writer::lock(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let owner: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT job_id FROM gateway_outer_writer WHERE id = TRUE")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(owner.is_none());
+        assert_eq!(
+            *decoded_transactions.lock().unwrap(),
+            vec![
+                prepared.transaction_hash,
+                alloy::primitives::keccak256([3, 4]).to_string(),
+                alloy::primitives::keccak256([3, 4]).to_string(),
+            ]
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

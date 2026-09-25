@@ -709,6 +709,7 @@ mod tests {
             local_mock_submit: false,
             require_proof_approval: false,
             min_remaining_slots: 1,
+            submission_min_remaining_slots: 1,
             ethereum_finality_mode: crate::indexer::FinalityMode::Finalized,
             ethereum_confirmations: 12,
             sequencer_graphql_url: None,

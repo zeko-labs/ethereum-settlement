@@ -41,6 +41,8 @@ mod ethereum;
 mod explorer;
 mod graphql;
 mod indexer;
+#[cfg(all(test, feature = "fake-prover-tests"))]
+mod lifetime_tests;
 mod outer_writer;
 mod proof_kind;
 #[cfg(feature = "real-prover")]
@@ -69,6 +71,7 @@ struct AppState {
     local_mock_submit: bool,
     require_proof_approval: bool,
     min_remaining_slots: u64,
+    submission_min_remaining_slots: u64,
     ethereum_finality_mode: indexer::FinalityMode,
     ethereum_confirmations: u64,
     sequencer_graphql_url: Option<Arc<str>>,
@@ -422,6 +425,7 @@ async fn main() -> Result<()> {
         local_mock_submit,
         require_proof_approval,
         min_remaining_slots: u64_env("PROVER_MIN_REMAINING_SLOTS", 1_900)?,
+        submission_min_remaining_slots: u64_env("ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS", 10)?,
         ethereum_finality_mode,
         ethereum_confirmations,
         sequencer_graphql_url: nonempty_env("SEQUENCER_GRAPHQL_URL").map(Into::into),
@@ -2054,15 +2058,23 @@ async fn proof_remaining_slots(
     kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<Option<u64>> {
+    Ok(settlement_lifetime(state, kind, public_values_hex)
+        .await?
+        .map(|(current, upper)| upper.saturating_sub(current)))
+}
+
+async fn settlement_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+) -> Result<Option<(u64, u64)>> {
     if kind != ProofKind::Settlement {
         return Ok(None);
     }
     let public_values = decode_hex_bytes(public_values_hex, "settlement public values")?;
     let values = SettlementPublicValues::decode(&public_values).map_err(anyhow::Error::msg)?;
     let current = state.ethereum.current_virtual_slot().await?;
-    Ok(Some(
-        u64::from(values.settlement().slot_upper).saturating_sub(current),
-    ))
+    Ok(Some((current, u64::from(values.settlement().slot_upper))))
 }
 
 async fn require_proof_lifetime(
@@ -2070,11 +2082,39 @@ async fn require_proof_lifetime(
     kind: ProofKind,
     public_values_hex: &str,
 ) -> Result<()> {
-    if let Some(remaining) = proof_remaining_slots(state, kind, public_values_hex).await? {
+    require_settlement_lifetime(state, kind, public_values_hex, state.min_remaining_slots).await
+}
+
+async fn require_submission_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+) -> Result<()> {
+    require_settlement_lifetime(
+        state,
+        kind,
+        public_values_hex,
+        state.submission_min_remaining_slots,
+    )
+    .await
+}
+
+async fn require_settlement_lifetime(
+    state: &AppState,
+    kind: ProofKind,
+    public_values_hex: &str,
+    min_remaining_slots: u64,
+) -> Result<()> {
+    if let Some((current, upper)) = settlement_lifetime(state, kind, public_values_hex).await? {
+        // The contract accepts current == upper. A zero submission margin may
+        // allow that boundary, but must never allow an already expired proof.
+        let remaining = upper
+            .checked_sub(current)
+            .context("settlement proof expired")?;
         anyhow::ensure!(
-            remaining >= state.min_remaining_slots,
+            remaining >= min_remaining_slots,
             "settlement proof has {remaining} slots remaining; at least {} are required",
-            state.min_remaining_slots
+            min_remaining_slots
         );
     }
     Ok(())
@@ -2326,7 +2366,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) -> Result<()> {
             // A signed transaction may already be mined. Its immutable bytes
             // must be reconciled before judging its checkpoint stale.
             if !job.prepared {
-                require_proof_lifetime(state, kind, public_values_hex).await?;
+                require_submission_lifetime(state, kind, public_values_hex).await?;
                 let preflight = prover::Preflight::decode(kind, public_values.clone(), None)?;
                 validate_preflight(state, &job.input, &preflight).await?;
             }
@@ -2334,12 +2374,11 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) -> Result<()> {
             return Result::<()>::Ok(());
         }
         let resuming_request = job.proof_request_id.is_some();
-        let (preflight, request_config) = if job.claimed_status == "approved" {
+        let (preflight, request_config) = if job.claimed_status == "approved" && !resuming_request {
             let public_values_hex = job
                 .public_values
                 .as_deref()
                 .context("approved proof job has no public values")?;
-            require_proof_lifetime(state, kind, public_values_hex).await?;
             let public_values = decode_hex_bytes(public_values_hex, "public values")?;
             let cycles = job.cycle_count.map(u64::try_from).transpose()?;
             let preflight = prover::Preflight::decode(kind, public_values, cycles)?;
@@ -2452,6 +2491,14 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) -> Result<()> {
         let request_id = match job.proof_request_id {
             Some(request_id) => request_id,
             None => {
+                // Budget for proving only before purchasing a new proof. A
+                // completed or already requested proof needs only time to submit.
+                require_proof_lifetime(
+                    state,
+                    kind,
+                    &format!("0x{}", hex::encode(preflight.public_values())),
+                )
+                .await?;
                 let intent = submission::begin_proof_request(&state.pool, job.id, job.attempts).await?;
                 let request_id =
                     prover::request_proof(kind, &job.input, &state.proof_system, &request_config)
@@ -2515,7 +2562,7 @@ async fn process_job(state: &AppState, mut job: ClaimedJob) -> Result<()> {
             result.rows_affected() == 1,
             "proof job was cancelled before submission"
         );
-        require_proof_lifetime(
+        require_submission_lifetime(
             state,
             kind,
             &format!("0x{}", hex::encode(&proof.public_values)),

@@ -9,6 +9,7 @@ use crate::{ethereum::PreparedSubmission, proof_kind::ProofKind, AppState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FailureClass {
+    SnapshotUnavailable,
     RateLimited,
     Transport,
     InsufficientFunds,
@@ -21,6 +22,7 @@ pub(crate) enum FailureClass {
 impl FailureClass {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::SnapshotUnavailable => "snapshot_unavailable",
             Self::RateLimited => "rate_limited",
             Self::Transport => "transport",
             Self::InsufficientFunds => "insufficient_funds",
@@ -34,7 +36,10 @@ impl FailureClass {
     pub(crate) fn retryable(self) -> bool {
         matches!(
             self,
-            Self::RateLimited | Self::Transport | Self::InsufficientFunds
+            Self::SnapshotUnavailable
+                | Self::RateLimited
+                | Self::Transport
+                | Self::InsufficientFunds
         )
     }
 }
@@ -43,7 +48,9 @@ impl FailureClass {
 // RPC classification also covers JSON-RPC errors nested inside HTTP responses.
 pub(crate) fn classify(error: &anyhow::Error) -> FailureClass {
     let message = format!("{error:#}").to_ascii_lowercase();
-    if crate::rpc::classify(error) == crate::rpc::FailureKind::InsufficientFunds
+    if crate::rpc::classify(error) == crate::rpc::FailureKind::SnapshotUnavailable {
+        FailureClass::SnapshotUnavailable
+    } else if crate::rpc::classify(error) == crate::rpc::FailureKind::InsufficientFunds
         || message.contains("insufficient funds")
     {
         FailureClass::InsufficientFunds
@@ -395,6 +402,7 @@ mod tests {
             local_mock_submit: false,
             require_proof_approval: false,
             min_remaining_slots: 1,
+            submission_min_remaining_slots: 1,
             ethereum_finality_mode: crate::indexer::FinalityMode::Finalized,
             ethereum_confirmations: 12,
             sequencer_graphql_url: None,
@@ -575,6 +583,274 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(pending, 0);
+    }
+
+    #[cfg(feature = "fake-prover-tests")]
+    async fn check_snapshot_recovery(pool: PgPool, checkpoint_changed: bool) {
+        use crate::ethereum::{IEthereumZekoBridge, IZekoSettlement};
+        use crate::prover::testing::Fixture;
+        use alloy::{primitives::B256, sol_types::SolCall};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use zeko_sp1_lib::{
+            BridgeDeposit, BridgeOuterActionV2, BridgeTransitionInput,
+            BridgeTransitionPublicValuesV2, EthereumBridgeState, ZekoBridgeState,
+        };
+
+        let input = serde_json::to_value(BridgeTransitionInput {
+            ethereum: EthereumBridgeState {
+                chain_id: 31337,
+                bridge_address: [0x22; 20],
+                deposit_nonce: 0,
+                deposit_state: [1; 32],
+            },
+            zeko: ZekoBridgeState {
+                action_state: [3; 32],
+                action_state_length: 0,
+            },
+            deposits: vec![BridgeDeposit {
+                token: [0; 20],
+                asset_id: [0; 32],
+                encoding_version: 0,
+                registry_index: 0,
+                record_commitment: [0; 32],
+                amount: alloy::primitives::U256::from(1_000_000_000u64).to_be_bytes(),
+                zeko_amount: Some(1),
+                zeko_recipient: [5; 32],
+                timeout: u32::MAX as u64,
+            }],
+        })
+        .unwrap();
+        let values = BridgeTransitionPublicValuesV2 {
+            ethereum_state_before: [1; 32],
+            ethereum_state_after: [2; 32],
+            ethereum_nonce_before: 0,
+            ethereum_nonce_after: 1,
+            zeko_action_state_before: [3; 32],
+            zeko_action_state_after: [4; 32],
+            zeko_action_state_length_before: 0,
+            zeko_action_state_length_after: 1,
+            actions: vec![BridgeOuterActionV2 {
+                fields: [[5; 32]; 5],
+                state_after: [4; 32],
+            }],
+        }
+        .encode();
+        let fixture = Fixture::new(
+            ProofKind::Bridge,
+            input.clone(),
+            values.clone(),
+            B256::ZERO.to_string(),
+        )
+        .unwrap();
+        sqlx::query("INSERT INTO gateway_config (genesis_timestamp, fork_slot, account_creation_fee, state_hash, recovery_ready) VALUES ('0', 0, '1', 'test', TRUE)")
+            .execute(&pool).await.unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO proof_jobs (id, kind, status, input, public_values, proof_request_id, proof_request_intent) VALUES ($1, 'bridge', 'queued', $2, $3, $4, $5)")
+            .bind(id).bind(&input).bind(format!("0x{}", hex::encode(&values)))
+            .bind(fixture.request_id()).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO gateway_pending_commands (job_id, public_key, nonce, command_kind, command_base64) VALUES ($1, 'outer', 0, 'zkapp', 'command')")
+            .bind(id).execute(&pool).await.unwrap();
+        let reservation = Uuid::new_v4();
+        sqlx::query("UPDATE gateway_outer_writer SET reservation_id = $1, owner_id = 'snapshot-test', job_id = $2 WHERE id = TRUE")
+            .bind(reservation).bind(id).execute(&pool).await.unwrap();
+
+        let original_hash = B256::repeat_byte(0xaa);
+        let replacement_hash = B256::repeat_byte(0xbb);
+        let headers = Arc::new(AtomicUsize::new(0));
+        let sends = Arc::new(AtomicUsize::new(0));
+        let pinned_calls = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let header_counter = headers.clone();
+        let send_counter = sends.clone();
+        let observed = pinned_calls.clone();
+        let server = crate::rpc::test_support::serve(move |request| {
+            let header_counter = header_counter.clone();
+            let send_counter = send_counter.clone();
+            let observed = observed.clone();
+            async move {
+                let result = match request["method"].as_str().unwrap() {
+                    "eth_getBlockByNumber" => {
+                        assert_eq!(request["params"][0], "latest");
+                        let hash = if header_counter.fetch_add(1, Ordering::SeqCst) == 0 { original_hash } else { replacement_hash };
+                        let empty: alloy::rpc::types::Block = Default::default();
+                        let mut block = serde_json::to_value(empty).unwrap();
+                        block["number"] = json!("0x64");
+                        block["hash"] = json!(hash.to_string());
+                        block
+                    }
+                    "eth_call" => {
+                        let data = request["params"][0]["input"].as_str()
+                            .or_else(|| request["params"][0]["data"].as_str()).unwrap();
+                        let selector = &data[..10];
+                        let is = |expected: [u8; 4]| selector == format!("0x{}", hex::encode(expected));
+                        if is(IEthereumZekoBridge::submitBridgeTransitionCall::SELECTOR) {
+                            json!("0x")
+                        } else {
+                            let hash = request["params"][1]["blockHash"].as_str().unwrap();
+                            assert_eq!(request["params"][1]["requireCanonical"], true);
+                            observed.lock().unwrap().push((hash.to_owned(), selector.to_owned()));
+                            // All bridge getters and the first settlement getter
+                            // succeeded before this snapshot became noncanonical.
+                            if hash == original_hash.to_string() && is(IZekoSettlement::vkHashCall::SELECTOR) {
+                                return Json(json!({"jsonrpc":"2.0", "id":request["id"],
+                                    "error":{"code":-32000,"message":"hash is not currently canonical"}})).into_response();
+                            }
+                            if is(IZekoSettlement::outerStateCall::SELECTOR) {
+                                json!(format!("0x{}", "00".repeat(32 * 8)))
+                            } else if is(IEthereumZekoBridge::depositNonceCall::SELECTOR) {
+                                json!(format!("0x{:064x}", 1))
+                            } else if is(IEthereumZekoBridge::depositStateByNonceCall::SELECTOR) {
+                                json!(B256::repeat_byte(1).to_string())
+                            } else if is(IEthereumZekoBridge::currentDepositStateCall::SELECTOR) {
+                                json!(B256::repeat_byte(2).to_string())
+                            } else if is(IZekoSettlement::actionStateCall::SELECTOR) {
+                                json!(B256::repeat_byte(if checkpoint_changed && hash == replacement_hash.to_string() { 6 } else { 3 }).to_string())
+                            } else {
+                                json!(B256::ZERO.to_string())
+                            }
+                        }
+                    }
+                    "eth_chainId" => json!("0x7a69"),
+                    "eth_estimateGas" => json!("0x5208"),
+                    "eth_getTransactionCount" => json!("0x0"),
+                    "eth_feeHistory" => json!({"oldestBlock":"0x0","baseFeePerGas":["0x1","0x1"],"gasUsedRatio":[0.5],"reward":[["0x1"]]}),
+                    "eth_getTransactionByHash" | "eth_getTransactionReceipt" => Value::Null,
+                    "eth_sendRawTransaction" => {
+                        send_counter.fetch_add(1, Ordering::SeqCst);
+                        let raw = hex::decode(request["params"][0].as_str().unwrap().trim_start_matches("0x")).unwrap();
+                        json!(keccak256(raw).to_string())
+                    }
+                    method => panic!("unexpected RPC {method}"),
+                };
+                Json(json!({"jsonrpc":"2.0", "id":request["id"], "result":result})).into_response()
+            }
+        }).await;
+        let state = state(pool.clone(), &server.url);
+        let claimed = crate::claim_job(&pool).await.unwrap().unwrap();
+        fixture
+            .run(crate::process_job(&state, claimed))
+            .await
+            .unwrap();
+        let saved = sqlx::query("SELECT status::text AS status, error_class, input, proof_bytes, public_values, proof_request_id, next_attempt_at IS NOT NULL AS retry_scheduled, completed_at IS NULL AS unfinished, prepared_transaction IS NULL AND transaction_hash IS NULL AS unsigned FROM proof_jobs WHERE id = $1")
+            .bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(saved.get::<String, _>("status"), "queued");
+        assert_eq!(
+            saved.get::<String, _>("error_class"),
+            "snapshot_unavailable"
+        );
+        assert_eq!(saved.get::<Value, _>("input"), input);
+        assert_eq!(
+            saved.get::<String, _>("public_values"),
+            format!("0x{}", hex::encode(&values))
+        );
+        assert_eq!(
+            saved.get::<String, _>("proof_request_id"),
+            fixture.request_id()
+        );
+        let saved_proof: String = saved.get("proof_bytes");
+        assert_eq!(
+            saved_proof,
+            format!("0x{}", hex::encode(b"explicit-test-proof"))
+        );
+        assert!(saved.get::<bool, _>("retry_scheduled"));
+        assert!(saved.get::<bool, _>("unfinished"));
+        assert!(saved.get::<bool, _>("unsigned"));
+        let pending: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM gateway_pending_commands WHERE job_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(pending, 1);
+        let lease: (Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+            "SELECT reservation_id, job_id FROM gateway_outer_writer WHERE id = TRUE",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(lease, (Some(reservation), Some(id)));
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
+        assert!(
+            crate::claim_job(&pool).await.unwrap().is_none(),
+            "retry must respect backoff"
+        );
+        sqlx::query(
+            "UPDATE proof_jobs SET next_attempt_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let claimed = crate::claim_job(&pool).await.unwrap().unwrap();
+        fixture
+            .run(crate::process_job(&state, claimed))
+            .await
+            .unwrap();
+
+        let completed = sqlx::query("SELECT status::text AS status, error_class, proof_bytes, proof_request_id FROM proof_jobs WHERE id = $1")
+            .bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(completed.get::<String, _>("proof_bytes"), saved_proof);
+        assert_eq!(
+            completed.get::<String, _>("proof_request_id"),
+            fixture.request_id()
+        );
+        if checkpoint_changed {
+            assert_eq!(completed.get::<String, _>("status"), "failed");
+            assert_eq!(
+                completed.get::<String, _>("error_class"),
+                "stale_checkpoint"
+            );
+            assert_eq!(sends.load(Ordering::SeqCst), 0);
+        } else {
+            assert_eq!(completed.get::<String, _>("status"), "submitted");
+            assert_eq!(sends.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(
+            fixture.counts().request_proof,
+            0,
+            "never purchase another proof"
+        );
+        assert_eq!(
+            fixture.counts().preflight,
+            0,
+            "never replace the persisted proof input"
+        );
+        assert_eq!(
+            fixture.counts().wait_proof,
+            1,
+            "reuse the proof saved before the failed snapshot"
+        );
+        assert_eq!(headers.load(Ordering::SeqCst), 2);
+        let calls = pinned_calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(hash, _)| *hash == original_hash.to_string())
+                .count(),
+            9,
+            "a canonicality failure must not replay the orphaned hash"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(hash, _)| *hash == replacement_hash.to_string())
+                .count(),
+            14,
+            "the replacement snapshot must refetch all bridge and settlement getters"
+        );
+    }
+
+    #[cfg(feature = "fake-prover-tests")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn orphaned_snapshot_retries_worker_without_losing_paid_proof_or_reservation(
+        pool: PgPool,
+    ) {
+        check_snapshot_recovery(pool, false).await;
+    }
+
+    #[cfg(feature = "fake-prover-tests")]
+    #[sqlx::test(migrations = "./migrations")]
+    async fn replacement_snapshot_still_rejects_a_genuinely_stale_proof(pool: PgPool) {
+        check_snapshot_recovery(pool, true).await;
     }
 
     #[sqlx::test(migrations = "./migrations")]

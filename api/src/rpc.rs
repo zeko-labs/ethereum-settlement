@@ -2,6 +2,7 @@
 //! including wallet fillers. Only read operations are retried here. Signed
 //! transaction retries belong to the durable submission state machine.
 use alloy::{
+    primitives::B256,
     rpc::{
         client::RpcClient,
         json_rpc::{RequestPacket, ResponsePacket},
@@ -11,6 +12,7 @@ use alloy::{
 use anyhow::{Context, Result};
 use reqwest::{header::RETRY_AFTER, Client, Url};
 use std::{
+    future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -107,8 +109,70 @@ impl std::error::Error for RpcUnavailable {
     }
 }
 
+/// The node can no longer serve the canonical hash selected for a snapshot.
+/// Retry the complete durable stage with a new header, not the same eth_call.
+#[derive(Debug)]
+pub struct SnapshotUnavailable {
+    block_hash: B256,
+    cause: anyhow::Error,
+}
+
+impl std::fmt::Display for SnapshotUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Ethereum snapshot {} is unavailable; retry the stage with a fresh canonical block: {}",
+            self.block_hash, self.cause
+        )
+    }
+}
+
+impl std::error::Error for SnapshotUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
+/// Apply only at a hash-pinned read boundary. The same RPC codes also describe
+/// contract failures, so neither the code alone nor arbitrary error text is
+/// enough to turn a failure into a retryable snapshot error.
+pub async fn read_pinned_snapshot<T>(
+    block_hash: B256,
+    read: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    match read.await {
+        Err(error)
+            if error.chain().filter_map(rpc_error).any(|error| {
+                error.as_error_resp().is_some_and(|response| {
+                    matches!(response.code, -32000 | -32001 | -32603)
+                        && matches!(
+                            response.message.trim().to_ascii_lowercase().as_str(),
+                            "hash is not currently canonical"
+                                | "block is not canonical"
+                                | "block not canonical"
+                                | "block hash is not canonical"
+                                | "header for hash not found"
+                                | "header not found"
+                                | "block not found"
+                                | "unknown block"
+                                | "resource not found"
+                        )
+                })
+            }) =>
+        {
+            Err(SnapshotUnavailable {
+                block_hash,
+                cause: error,
+            }
+            .into())
+        }
+        result => result,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FailureKind {
+    SnapshotUnavailable,
     Transient,
     InsufficientFunds,
     Other,
@@ -143,6 +207,9 @@ pub fn is_rate_limited(error: &anyhow::Error) -> bool {
 
 pub fn classify(error: &anyhow::Error) -> FailureKind {
     for cause in error.chain() {
+        if cause.is::<SnapshotUnavailable>() {
+            return FailureKind::SnapshotUnavailable;
+        }
         if cause.is::<RpcUnavailable>() {
             return FailureKind::Transient;
         }
@@ -720,6 +787,76 @@ mod tests {
         assert_eq!(
             classify(&anyhow::Error::new(wrapped)),
             FailureKind::InsufficientFunds
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_errors_require_a_pinned_read_and_a_specific_rpc_response() {
+        for (code, message, expected) in [
+            (
+                -32000,
+                "hash is not currently canonical",
+                FailureKind::SnapshotUnavailable,
+            ),
+            (
+                -32001,
+                "header for hash not found",
+                FailureKind::SnapshotUnavailable,
+            ),
+            (-32001, "block not found", FailureKind::SnapshotUnavailable),
+            (
+                -32001,
+                "Resource not found",
+                FailureKind::SnapshotUnavailable,
+            ),
+            (
+                -32603,
+                "block not canonical",
+                FailureKind::SnapshotUnavailable,
+            ),
+            (-32000, "execution reverted", FailureKind::Other),
+            (
+                -32000,
+                "execution reverted: header not found",
+                FailureKind::Other,
+            ),
+            (
+                -32602,
+                "invalid argument 1: expected block number",
+                FailureKind::Other,
+            ),
+            (3, "hash is not currently canonical", FailureKind::Other),
+        ] {
+            let error = anyhow::Error::new(alloy::contract::Error::TransportError(
+                TransportError::err_resp(alloy::rpc::json_rpc::ErrorPayload {
+                    code,
+                    message: message.into(),
+                    data: None,
+                }),
+            ));
+            assert_eq!(
+                classify(&error),
+                FailureKind::Other,
+                "unpinned error: {message}"
+            );
+            let error = read_pinned_snapshot::<()>(B256::repeat_byte(1), async { Err(error) })
+                .await
+                .unwrap_err();
+            assert_eq!(classify(&error), expected, "{message}");
+            assert_eq!(
+                error.is::<SnapshotUnavailable>(),
+                expected == FailureKind::SnapshotUnavailable
+            );
+        }
+        let error = read_pinned_snapshot::<()>(B256::repeat_byte(1), async {
+            anyhow::bail!("header for hash not found")
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            classify(&error),
+            FailureKind::Other,
+            "arbitrary text is not an RPC response"
         );
     }
 }

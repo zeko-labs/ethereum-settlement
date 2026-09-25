@@ -111,6 +111,13 @@ Reverted transactions become terminal only after canonical finality as well.
 The indexer checks the canonical tip even when its height stays unchanged or
 regresses, so local snapshot reverts restore virtual accounts without waiting
 for another block. It never rolls back a consensus-finalized checkpoint.
+Signed successors marked `reorged` retain their writer reservation and remain
+eligible for receipt reconciliation. A canonical finalized revert releases
+their pending work; successful transactions recover in canonical event order.
+Missing or unfinalized receipts keep ownership. In local confirmation mode, a
+pending successor behind an orphaned predecessor's Ethereum nonce can still
+require operator reconciliation; receipt absence does not authorize releasing
+the reservation or replacing the transaction.
 Deposit logs are requested by block hash and committed together with the block
 cursor; exhausted RPC retries cannot advance past an unread deposit block.
 
@@ -136,6 +143,11 @@ budget to fit the RPC account allowance shared with other instances and tools.
 Settlement, bridge and token-identity snapshots pin related contract reads to
 one canonical block hash using EIP-1898. The gateway requires an RPC endpoint
 that serves these calls; it does not mix fields from different `latest` blocks.
+If that hash becomes noncanonical or unavailable during a worker snapshot,
+the job records `snapshot_unavailable` and retries its durable stage with
+backoff and a fresh header. Completed proofs, request IDs, pending commands,
+and the reservation survive the retry. A real checkpoint mismatch remains a
+stale-proof failure.
 Transaction preparation fills and signs without sending. The worker persists
 the signed bytes and hash before broadcasting; a retry first reconciles that
 hash and only resends the identical transaction. Raw sends are never replayed
@@ -273,3 +285,12 @@ proof-bound upper slot. `PROVER_GAS_LIMIT` and
 approval can only be tighter. The approval response snapshots a read-only
 auction quote, but it still does not create the paid request. The worker does
 that only after atomically claiming the `approved` job.
+
+Before purchasing a new settlement proof, the worker checks
+`PROVER_MIN_REMAINING_SLOTS` (default 1900). A completed proof, including one
+resumed after restart, requires only `ETHEREUM_SUBMISSION_MIN_REMAINING_SLOTS`
+(default 10, or two minutes at 12 seconds/slot) before its upper slot. This
+separate inclusion margin avoids spending the proving budget a second time.
+Setting it to zero permits the contract's inclusive upper-slot boundary;
+already expired proofs are always rejected. Signed transactions are reconciled
+using their saved bytes and hash before applying freshness checks.
