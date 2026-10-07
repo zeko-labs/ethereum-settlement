@@ -9,8 +9,8 @@ use sp1_sdk::{
 };
 use zeko_sp1_lib::BridgeTransitionInput;
 use zkapp_script::{
-    execute_minimal, native_settlement_preflight, settlement_stdin_from_bundle,
-    SettlementProofBundle, BRIDGE_ELF, SETTLEMENT_ELF,
+    artifacts, execute_minimal, native_settlement_preflight, settlement_stdin_from_bundle,
+    SettlementProofBundle,
 };
 
 use crate::proof_kind::ProofKind;
@@ -36,7 +36,7 @@ pub async fn preflight(
                     .cloned()
                     .context("settlement proof bundle is required")?,
             )?;
-            let public_values = native_settlement_preflight(&bundle)?;
+            let public_values = native_settlement_preflight(&artifacts()?.native, &bundle)?;
             return Preflight::decode(kind, public_values, None);
         }
         let (elf, stdin) = stdin_for(kind, &input)?;
@@ -127,7 +127,7 @@ pub async fn request_proof(
 }
 
 pub async fn wait_proof(kind: ProofKind, request_id: &str) -> Result<ProofOutput> {
-    let elf = elf_for(kind);
+    let elf = elf_for(kind)?;
     let request_id: B256 = request_id.parse().context("invalid SP1 proof request id")?;
     let client = ProverClient::builder()
         .network_for(NetworkMode::Mainnet)
@@ -212,7 +212,7 @@ fn format_prove(value: U256) -> String {
 
 pub async fn program_vkey(kind: ProofKind) -> Result<String> {
     tokio::task::spawn_blocking(move || {
-        let elf = elf_for(kind);
+        let elf = elf_for(kind)?;
         let client = BlockingProverClient::builder().mock().build();
         let pk = client.setup(elf).context("setup SP1 program")?;
         Ok(pk.verifying_key().bytes32().to_string())
@@ -220,14 +220,18 @@ pub async fn program_vkey(kind: ProofKind) -> Result<String> {
     .await?
 }
 
-fn elf_for(kind: ProofKind) -> sp1_sdk::Elf {
-    match kind {
-        ProofKind::Settlement => SETTLEMENT_ELF,
-        ProofKind::Bridge => BRIDGE_ELF,
-    }
+/// Guest ELF from the startup-loaded artifacts directory (`Elf` clones share
+/// the underlying bytes).
+fn elf_for(kind: ProofKind) -> Result<sp1_sdk::Elf> {
+    let loaded = artifacts()?;
+    Ok(match kind {
+        ProofKind::Settlement => loaded.settlement_elf.clone(),
+        ProofKind::Bridge => loaded.bridge_elf.clone(),
+    })
 }
 
 fn stdin_for(kind: ProofKind, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)> {
+    let elf = elf_for(kind)?;
     match kind {
         ProofKind::Settlement => {
             let bundle: SettlementProofBundle = serde_json::from_value(
@@ -236,13 +240,13 @@ fn stdin_for(kind: ProofKind, input: &Value) -> Result<(sp1_sdk::Elf, SP1Stdin)>
                     .cloned()
                     .context("settlement proof bundle is required")?,
             )?;
-            Ok((SETTLEMENT_ELF, settlement_stdin_from_bundle(&bundle)?))
+            Ok((elf, settlement_stdin_from_bundle(&bundle)?))
         }
         ProofKind::Bridge => {
             let input: BridgeTransitionInput = serde_json::from_value(input.clone())?;
             let mut stdin = SP1Stdin::new();
             stdin.write(&input);
-            Ok((BRIDGE_ELF, stdin))
+            Ok((elf, stdin))
         }
     }
 }
@@ -275,6 +279,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "slow SP1 execution test"]
     async fn executes_bridge_preflight_in_process() {
+        zkapp_script::init_artifacts_from_env().expect("load settlement artifacts");
         let input: Value =
             serde_json::from_str(include_str!("../../proofs/bridge-input.json")).unwrap();
         assert!(matches!(

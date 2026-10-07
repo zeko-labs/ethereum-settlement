@@ -26,11 +26,12 @@ cargo run --release --bin zkapp -- --execute
 cargo run --release --bin bridge -- --execute
 ```
 
-Use a genuine settlement fixture:
+Use a genuine settlement fixture (guests built with `SETTLEMENT_VK_JSON`,
+then the ELFs and VK placed in one artifacts directory; the host binaries read
+`--artifacts-dir` or `ZEKO_ARTIFACTS_DIR`):
 
 ```sh
-SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
-  cargo run --release --bin vkey
+cargo run --release --bin vkey -- --artifacts-dir <artifacts-dir>
 ```
 
 ## Local native bridge
@@ -91,19 +92,29 @@ POC_ENV_FILE=deploy/testnet/secrets/fixture-keys.env \
   tools/export-deployment-artifacts.sh build/poc/deployment-fixture
 ```
 
+`tools/prepare-poc.sh` requires a prepared artifacts directory
+(`settlement-program`, `bridge-program`, `settlement-vk.serde.json`) whose VK
+is byte-identical to the fixture VK; the guests must have been built against
+that VK (`nix/README.md` step 4 `zeko-bootstrap build-guests`, or the `Dockerfile`
+`guest-builder` stage). The script no longer compiles guests or the gateway:
+
 ```sh
-FORGE=$HOME/.foundry/bin/forge \
+ZEKO_ARTIFACTS_DIR=<artifacts-dir> FORGE=$HOME/.foundry/bin/forge \
   tools/prepare-poc.sh \
     "$RPC_URL" "$ADMIN_ADDRESS" \
     build/poc/testnet-bridge-fixtures/deposit-sync build/poc-sepolia
 ```
 
-This builds/derives program vkeys and writes the manifest. It does not prove.
+This derives program vkeys from the artifacts directory and writes the
+manifest. It does not prove.
 
-Build and pin the machine-local runtime images:
+Build and pin the machine-local runtime images (the `Dockerfile` builds the
+guests against the given VK and bakes them with the VK into
+`/var/lib/zeko-proof-api/artifacts` of the gateway image; set
+`ZEKO_ARTIFACTS_DIR` to the same directory to assert the VK bytes match):
 
 ```sh
-tools/build-machine-images.sh \
+ZEKO_ARTIFACTS_DIR=<artifacts-dir> tools/build-machine-images.sh \
   build/poc/testnet-bridge-fixtures/deposit-sync/vk.serde.json deploy/testnet
 ```
 

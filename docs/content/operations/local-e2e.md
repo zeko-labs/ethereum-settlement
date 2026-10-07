@@ -30,11 +30,13 @@ Use the low-memory executor against an o1 fixture:
 cargo run --release --bin zkapp -- --execute
 ```
 
-For a real OCaml fixture, build the guest against its exact verifier index:
+For a real OCaml fixture, build the guests against its exact verifier index
+(`SETTLEMENT_VK_JSON` guest build, see `nix/README.md` step 4), place
+`settlement-program`, `bridge-program` and `settlement-vk.serde.json` in one
+directory and compute the program vkey from it:
 
 ```sh
-SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
-  cargo run --release --bin vkey
+cargo run --release --bin vkey -- --artifacts-dir <artifacts-dir>
 ```
 
 The gateway equivalent is `API_EXECUTE_ONLY=true`: it persists the job,

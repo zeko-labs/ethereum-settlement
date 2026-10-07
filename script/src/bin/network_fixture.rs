@@ -32,7 +32,8 @@ use std::{
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 use zeko_sp1_lib::ZkappPublicValues;
 use zkapp_script::{
-    execute_minimal, settlement_stdin_from_bundle, SettlementProofBundle, SETTLEMENT_ELF,
+    execute_minimal, settlement_stdin_from_bundle, Artifacts, SettlementProofBundle,
+    ARTIFACTS_DIR_ENV, DEFAULT_ARTIFACTS_DIR,
 };
 
 const PROVE_SCALE: u128 = 1_000_000_000_000_000_000;
@@ -60,6 +61,10 @@ struct SubmittedRequest {
 struct Args {
     #[arg(long, default_value = "proofs/mainnet-blockchain-snark")]
     fixture_dir: PathBuf,
+    /// Directory holding settlement-program, bridge-program and
+    /// settlement-vk.serde.json.
+    #[arg(long, env = ARTIFACTS_DIR_ENV, default_value = DEFAULT_ARTIFACTS_DIR)]
+    artifacts_dir: PathBuf,
     /// Create the paid request. Without this flag the command is read-only.
     #[arg(long)]
     request: bool,
@@ -98,6 +103,9 @@ async fn main() -> Result<()> {
         "approved PGU cap is below the retained simulation"
     );
 
+    let settlement_elf = Artifacts::load(&args.artifacts_dir)
+        .context("load settlement artifacts")?
+        .settlement_elf;
     let fixture = fixture_snapshot(&args.fixture_dir)?;
     let input_sha256 = fixture.input_sha256.clone();
     if args.request {
@@ -114,7 +122,7 @@ async fn main() -> Result<()> {
     let stdin = settlement_stdin_from_bundle(&fixture.bundle)?;
     let request_stdin = stdin.clone();
     let preflight_started = Instant::now();
-    let (expected_public_values, cycles) = execute_minimal(SETTLEMENT_ELF, stdin)
+    let (expected_public_values, cycles) = execute_minimal(settlement_elf.clone(), stdin)
         .context("execute low-memory settlement preflight")?;
     let decoded: ZkappPublicValues =
         bincode::deserialize(&expected_public_values).context("decode public values")?;
@@ -126,7 +134,7 @@ async fn main() -> Result<()> {
 
     let local_client = ProverClient::builder().mock().build().await;
     let local_pk = local_client
-        .setup(SETTLEMENT_ELF)
+        .setup(settlement_elf.clone())
         .await
         .context("set up settlement program")?;
     let program_vkey = local_pk.verifying_key().bytes32().to_string();
@@ -199,7 +207,7 @@ async fn main() -> Result<()> {
     );
 
     let pk = client
-        .setup(SETTLEMENT_ELF)
+        .setup(settlement_elf)
         .await
         .context("set up settlement program on network client")?;
     anyhow::ensure!(

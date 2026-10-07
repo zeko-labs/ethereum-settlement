@@ -83,10 +83,30 @@ deposit, and one bound native withdrawal preimage.
 
 ## 4. Prepare and build immutable images
 
+The gateway no longer embeds the VK or guests; it loads `settlement-program`,
+`bridge-program` and `settlement-vk.serde.json` from `ZEKO_ARTIFACTS_DIR` at
+startup. First build the SP1 guests against the exact retained OCaml verifier
+index with the `zeko-bootstrap` image's `build-guests` role, which writes the
+ELFs next to the VK in an artifacts directory outside the checkout
+(`nix/README.md` step 4; the image is built as described there):
+
+```sh
+export ZEKO_ARTIFACTS_DIR=$HOME/zeko-testnet-artifacts   # outside every checkout
+mkdir -p "$ZEKO_ARTIFACTS_DIR" "$HOME"/zeko-bootstrap-state
+chmod 0755 "$ZEKO_ARTIFACTS_DIR"
+cp build/poc/testnet-bridge-fixtures/deposit-sync/vk.serde.json \
+  "$ZEKO_ARTIFACTS_DIR"/settlement-vk.serde.json
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$ZEKO_ARTIFACTS_DIR":/var/lib/zeko-proof-api/artifacts \
+  -v "$HOME"/zeko-bootstrap-state:/var/lib/zeko-bootstrap \
+  docker.io/zekolabs/zeko-bootstrap:latest build-guests
+chmod 0644 "$ZEKO_ARTIFACTS_DIR"/*
+```
+
 With a Sepolia RPC URL and the public retained role addresses loaded, prepare
-the deterministic deployment identity. This computes SP1 program vkeys and
-builds the gateway against the exact retained OCaml verifier index; it does not
-prove or deploy:
+the deterministic deployment identity. This computes the SP1 program vkeys from
+the artifacts directory (its VK must be byte-identical to the fixture VK); it
+does not prove or deploy:
 
 ```sh
 set -a
@@ -108,7 +128,12 @@ ZEKO_UNSAFE_SEPOLIA_MOCK=true \
 ```
 
 Then build the gateway and OCaml runtime images from clean, committed source
-revisions and pin them in the machine-local loopback registry:
+revisions and pin them in the machine-local loopback registry. The `Dockerfile`
+builds the guests against the given VK in its `guest-builder` stage and bakes
+them with the VK into `/var/lib/zeko-proof-api/artifacts` of the gateway image
+(`ZEKO_ARTIFACTS_DIR` is preset there), so the machine image stays
+self-contained. With `ZEKO_ARTIFACTS_DIR` still exported, the script asserts
+the VK bytes match:
 
 ```sh
 tools/build-machine-images.sh \
@@ -116,11 +141,15 @@ tools/build-machine-images.sh \
 ```
 
 The command writes `deploy/testnet/artifacts/images.json`, updates `.env` with
-`repo@sha256` references, and records both source revisions and the embedded VK
+`repo@sha256` references, and records both source revisions and the baked VK
 digest. Tags and `latest` are rejected by preflight.
 
-The gateway recomputes all embedded program vkeys at startup and exits if they
-do not match the live contracts.
+The gateway recomputes the program vkeys of the loaded guest ELFs at startup
+and exits if they do not match the live contracts. The ELFs in the Docker image
+(SP1 `ghcr.io/succinctlabs/sp1:v6.1.0` toolchain) and those from
+`zeko-bootstrap build-guests` (Nix-pinned toolchain) are built with the same flags
+but their byte-equality is not verified by these tools; a mismatch surfaces as
+that startup vkey assertion failing.
 
 ## 5. Deploy Ethereum contracts
 

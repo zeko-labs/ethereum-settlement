@@ -54,6 +54,17 @@ gateway_tag="$REGISTRY_ADDRESS/zeko-gateway:${settlement_commit:0:12}"
 zeko_tag="$REGISTRY_ADDRESS/zeko:${zeko_commit:0:12}"
 zeko_da_tag="$REGISTRY_ADDRESS/zeko-da:${zeko_commit:0:12}"
 
+# The Dockerfile builds the guests against this VK in its guest-builder stage
+# and bakes settlement-program, bridge-program and settlement-vk.serde.json
+# into /var/lib/zeko-proof-api/artifacts of the runtime image; the gateway
+# loads them from ZEKO_ARTIFACTS_DIR at startup. When the artifacts directory
+# used by tools/prepare-poc.sh is known, require the same VK bytes.
+if [[ -n ${ZEKO_ARTIFACTS_DIR:-} ]]; then
+  cmp -s "$ZEKO_ARTIFACTS_DIR/settlement-vk.serde.json" "$VK_JSON" || {
+    echo "ZEKO_ARTIFACTS_DIR VK differs from $VK_JSON" >&2
+    exit 1
+  }
+fi
 docker build --pull --build-arg "SETTLEMENT_VK_JSON=${VK_JSON#"$ROOT/"}" \
   -t "$gateway_tag" "$ROOT"
 
