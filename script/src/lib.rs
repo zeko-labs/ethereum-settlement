@@ -1,33 +1,198 @@
 use anyhow::{Context, Result};
-use pickles_verifier::serialize::decode_verifier_blob;
+use mina_curves::pasta::{Pallas, Vesta};
+use pickles_verifier::serialize::{decode_verifier_blob, encode_verifier_blob};
 use pickles_verifier::types::{VerifiableProof, Verifier};
 use pickles_verifier::verify;
 use pickles_verifier::wire::{
     canonical_wrap_vk_json, parse_app_statement_fields, parse_wrap_proof, parse_wrap_vk, OcamlProof,
 };
+use poly_commitment::ipa::SRS;
+use sha2::{Digest, Sha256};
 use sp1_core_executor::Program;
 use sp1_core_executor_runner::MinimalExecutorRunner;
-use sp1_sdk::{include_elf, Elf, SP1Stdin};
-use std::path::Path;
+use sp1_sdk::{Elf, SP1Stdin};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use zeko_sp1_lib::SettlementWitnessV1;
 
-pub const SETTLEMENT_ELF: Elf = include_elf!("settlement-program");
-pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
+/// Environment variable naming the operator-mounted artifacts directory.
+pub const ARTIFACTS_DIR_ENV: &str = "ZEKO_ARTIFACTS_DIR";
+/// In-container default artifacts directory (declared by the Nix gateway image).
+pub const DEFAULT_ARTIFACTS_DIR: &str = "/var/lib/zeko-proof-api/artifacts";
+/// File names expected inside the artifacts directory. These match the
+/// `zeko-settlement-guests` Nix output layout.
+pub const SETTLEMENT_ELF_FILE: &str = "settlement-program";
+pub const BRIDGE_ELF_FILE: &str = "bridge-program";
+pub const SETTLEMENT_VK_FILE: &str = "settlement-vk.serde.json";
 
-#[repr(C, align(8))]
-struct Aligned<T: ?Sized>(T);
+// The Pasta SRS is a universal Mina constant, not a per-rollup artifact. These
+// are the same prod files `poly_commitment::precomputed_srs::get_srs` reads
+// from the source checkout, embedded because that checkout is absent at
+// runtime.
+static VESTA_SRS_BYTES: &[u8] = include_bytes!("../../vendor/proof-systems/srs/vesta.srs");
+static PALLAS_SRS_BYTES: &[u8] = include_bytes!("../../vendor/proof-systems/srs/pallas.srs");
 
-static NATIVE_SETTLEMENT_VERIFIER_BYTES: &Aligned<[u8]> = &Aligned(*include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/native_settlement_verifier.bin"
-)));
-static NATIVE_SETTLEMENT_VK_HASH: &[u8; 32] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/native_settlement_vk_hash.bin"));
-static NATIVE_SETTLEMENT_VK_JSON: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/native_settlement_vk.json"));
-static NATIVE_SETTLEMENT_VERIFIER: OnceLock<Verifier> = OnceLock::new();
-static NATIVE_SETTLEMENT_VK_CANONICAL: OnceLock<String> = OnceLock::new();
+/// Native (host-side) Pickles verifier pinned to one settlement VK.
+pub struct NativeSettlementVerifier {
+    vk_canonical: String,
+    vk_hash: [u8; 32],
+    verifier: Verifier,
+}
+
+impl NativeSettlementVerifier {
+    /// Build the verifier from the settlement VK JSON exactly as the former
+    /// build script did: parse the wrap VK, encode the verifier blob with the
+    /// prod Pasta SRS, then decode it so the wrap Lagrange basis is seeded.
+    /// `vk_hash` is the SHA-256 of the VK file bytes, matching the on-chain
+    /// `SETTLEMENT_VK_HASH` convention.
+    pub fn from_vk_json(vk_json: &str) -> Result<Self> {
+        let wrap_vk = parse_wrap_vk(vk_json)
+            .map_err(anyhow::Error::msg)
+            .context("parse settlement VK JSON")?;
+        let vk_canonical = canonical_wrap_vk_json(&wrap_vk)
+            .map_err(anyhow::Error::msg)
+            .context("canonicalize settlement VK")?;
+        let vesta_srs: SRS<Vesta> =
+            rmp_serde::from_slice(VESTA_SRS_BYTES).context("decode embedded Vesta SRS")?;
+        let pallas_srs: SRS<Pallas> =
+            rmp_serde::from_slice(PALLAS_SRS_BYTES).context("decode embedded Pallas SRS")?;
+        let blob = encode_verifier_blob(&vesta_srs, &pallas_srs, 1, &wrap_vk);
+        let blob = AlignedBlob::new(&blob);
+        let verifier = decode_verifier_blob(blob.as_bytes());
+        Ok(Self {
+            vk_canonical,
+            vk_hash: Sha256::digest(vk_json.as_bytes()).into(),
+            verifier,
+        })
+    }
+
+    pub fn vk_hash(&self) -> [u8; 32] {
+        self.vk_hash
+    }
+}
+
+/// `decode_verifier_blob` requires 8-byte aligned input; a `Vec<u8>` does not
+/// guarantee that, so the blob is copied into `u64` storage first.
+struct AlignedBlob {
+    words: Vec<u64>,
+    len: usize,
+}
+
+impl AlignedBlob {
+    fn new(bytes: &[u8]) -> Self {
+        let mut words = vec![0u64; bytes.len().div_ceil(8)];
+        // SAFETY: `words` owns `words.len() * 8 >= bytes.len()` initialized
+        // bytes; writing `bytes.len()` bytes through its `u8` view stays in
+        // bounds and `u64` has no invalid bit patterns.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                words.as_mut_ptr().cast::<u8>(),
+                bytes.len(),
+            );
+        }
+        Self {
+            words,
+            len: bytes.len(),
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: the first `len` bytes of `words` are initialized above and
+        // the returned slice borrows `self`.
+        unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.len) }
+    }
+}
+
+/// Per-rollup public artifacts loaded at startup from an operator-mounted
+/// directory: both SP1 guest ELFs and the settlement VK with its derived native
+/// verifier. Nothing is embedded at compile time and no fixture fallback exists.
+pub struct Artifacts {
+    pub dir: PathBuf,
+    pub settlement_elf: Elf,
+    pub bridge_elf: Elf,
+    pub settlement_vk_json: String,
+    pub native: NativeSettlementVerifier,
+}
+
+impl Artifacts {
+    /// Directory from `ZEKO_ARTIFACTS_DIR`, else [`DEFAULT_ARTIFACTS_DIR`].
+    pub fn dir_from_env() -> PathBuf {
+        std::env::var_os(ARTIFACTS_DIR_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_ARTIFACTS_DIR))
+    }
+
+    /// Load and validate every artifact; any missing or unparseable file is an
+    /// error naming the path.
+    pub fn load(dir: &Path) -> Result<Self> {
+        anyhow::ensure!(
+            dir.is_dir(),
+            "settlement artifacts directory {} does not exist or is not a directory (set {ARTIFACTS_DIR_ENV})",
+            dir.display()
+        );
+        let read_bytes = |name: &str| -> Result<Vec<u8>> {
+            let path = dir.join(name);
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("failed to read artifact {}", path.display()))?;
+            anyhow::ensure!(!bytes.is_empty(), "artifact {} is empty", path.display());
+            Ok(bytes)
+        };
+        let settlement_elf = Elf::from(read_bytes(SETTLEMENT_ELF_FILE)?);
+        let bridge_elf = Elf::from(read_bytes(BRIDGE_ELF_FILE)?);
+        let vk_path = dir.join(SETTLEMENT_VK_FILE);
+        let settlement_vk_json = String::from_utf8(read_bytes(SETTLEMENT_VK_FILE)?)
+            .with_context(|| format!("artifact {} is not UTF-8", vk_path.display()))?;
+        let native = NativeSettlementVerifier::from_vk_json(&settlement_vk_json)
+            .with_context(|| {
+                format!(
+                    "artifact {} is not a usable settlement VK",
+                    vk_path.display()
+                )
+            })?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            settlement_elf,
+            bridge_elf,
+            settlement_vk_json,
+            native,
+        })
+    }
+
+    pub fn load_from_env() -> Result<Self> {
+        Self::load(&Self::dir_from_env())
+    }
+}
+
+static ARTIFACTS: OnceLock<Artifacts> = OnceLock::new();
+
+/// Load the artifacts from `dir` once for the whole process. A second call
+/// with the same directory returns the already-loaded set; a different
+/// directory is an error.
+pub fn init_artifacts(dir: &Path) -> Result<&'static Artifacts> {
+    if let Some(loaded) = ARTIFACTS.get() {
+        anyhow::ensure!(
+            loaded.dir == dir,
+            "settlement artifacts were already loaded from {}",
+            loaded.dir.display()
+        );
+        return Ok(loaded);
+    }
+    let loaded = Artifacts::load(dir)?;
+    Ok(ARTIFACTS.get_or_init(|| loaded))
+}
+
+pub fn init_artifacts_from_env() -> Result<&'static Artifacts> {
+    init_artifacts(&Artifacts::dir_from_env())
+}
+
+/// Process-wide artifacts; fails closed when [`init_artifacts`] has not run.
+pub fn artifacts() -> Result<&'static Artifacts> {
+    ARTIFACTS
+        .get()
+        .context("settlement artifacts are not loaded; call init_artifacts at startup")
+}
 
 /// Execute without proving using the low-memory runner. SP1 SDK 6.1's execute
 /// wrapper can fail while extracting the public-value digest for this very
@@ -66,35 +231,34 @@ pub fn settlement_stdin_from_bundle(bundle: &SettlementProofBundle) -> Result<SP
     Ok(settlement_stdin_for_verifiable(&verifiable, witness))
 }
 
-pub fn native_settlement_preflight(bundle: &SettlementProofBundle) -> Result<Vec<u8>> {
-    let verifiable = native_verify_settlement(bundle)?;
+pub fn native_settlement_preflight(
+    native: &NativeSettlementVerifier,
+    bundle: &SettlementProofBundle,
+) -> Result<Vec<u8>> {
+    let verifiable = native_verify_settlement(native, bundle)?;
     let witness = settlement_witness(bundle)?
         .context("settlement binding and context are required for native preflight")?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        settlement_program::derive_receipt_bytes(&verifiable, witness, *NATIVE_SETTLEMENT_VK_HASH)
+        settlement_program::derive_receipt_bytes(&verifiable, witness, native.vk_hash)
     }))
     .map_err(|_| anyhow::anyhow!("settlement receipt derivation failed"))
 }
 
-fn native_verify_settlement(bundle: &SettlementProofBundle) -> Result<VerifiableProof> {
+fn native_verify_settlement(
+    native: &NativeSettlementVerifier,
+    bundle: &SettlementProofBundle,
+) -> Result<VerifiableProof> {
     let supplied_vk = parse_wrap_vk(&bundle.vk_json)
         .map_err(anyhow::Error::msg)
         .context("parse settlement VK JSON")?;
     let supplied_vk = canonical_wrap_vk_json(&supplied_vk).map_err(anyhow::Error::msg)?;
-    let pinned_vk = NATIVE_SETTLEMENT_VK_CANONICAL.get_or_init(|| {
-        let vk = parse_wrap_vk(NATIVE_SETTLEMENT_VK_JSON)
-            .expect("build-generated settlement VK JSON must parse");
-        canonical_wrap_vk_json(&vk).expect("build-generated settlement VK must canonicalize")
-    });
     anyhow::ensure!(
-        supplied_vk == *pinned_vk,
+        supplied_vk == native.vk_canonical,
         "settlement VK does not match the pinned verifier"
     );
     let verifiable = load_verifiable_bundle(bundle)?;
-    let verifier = NATIVE_SETTLEMENT_VERIFIER
-        .get_or_init(|| decode_verifier_blob(&NATIVE_SETTLEMENT_VERIFIER_BYTES.0));
     anyhow::ensure!(
-        verify(verifier, &verifiable),
+        verify(&native.verifier, &verifiable),
         "Pickles proof verification failed"
     );
     Ok(verifiable)
@@ -191,11 +355,39 @@ mod tests {
         }
     }
 
+    fn pinned_native_verifier() -> NativeSettlementVerifier {
+        NativeSettlementVerifier::from_vk_json(&pinned_fixture().vk_json)
+            .expect("pinned fixture VK must build a native verifier")
+    }
+
     #[test]
     fn native_verifier_accepts_pinned_fixture_and_json_whitespace() {
+        let native = pinned_native_verifier();
         let mut fixture = pinned_fixture();
         fixture.vk_json.push('\n');
-        native_verify_settlement(&fixture).expect("native verification");
+        native_verify_settlement(&native, &fixture).expect("native verification");
+    }
+
+    #[test]
+    fn artifacts_fail_closed_on_missing_directory() {
+        let missing = std::env::temp_dir().join("zeko-artifacts-does-not-exist");
+        let error = match Artifacts::load(&missing) {
+            Ok(_) => panic!("missing directory must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(ARTIFACTS_DIR_ENV));
+    }
+
+    #[test]
+    fn artifacts_fail_closed_on_missing_files() {
+        let dir = std::env::temp_dir().join(format!("zeko-artifacts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let error = match Artifacts::load(&dir) {
+            Ok(_) => panic!("empty directory must fail"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(SETTLEMENT_ELF_FILE));
+        std::fs::remove_dir_all(&dir).expect("remove temp dir");
     }
 
     #[test]
@@ -208,7 +400,7 @@ mod tests {
         fixture
             .app_statement_json
             .replace_range(last_digit..=last_digit, "2");
-        let error = match native_verify_settlement(&fixture) {
+        let error = match native_verify_settlement(&pinned_native_verifier(), &fixture) {
             Ok(_) => panic!("mutation must be rejected"),
             Err(error) => error,
         };
@@ -221,6 +413,6 @@ mod tests {
         let mut vk: serde_json::Value = serde_json::from_str(&fixture.vk_json).unwrap();
         vk["generic_comm"] = vk["psm_comm"].clone();
         fixture.vk_json = serde_json::to_string(&vk).unwrap();
-        assert!(native_verify_settlement(&fixture).is_err());
+        assert!(native_verify_settlement(&pinned_native_verifier(), &fixture).is_err());
     }
 }

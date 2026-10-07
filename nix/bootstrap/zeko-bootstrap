@@ -1,0 +1,195 @@
+#!@bash@/bin/bash
+# Entrypoint of docker.io/zekolabs/zeko-bootstrap (nix/bootstrap.nix): the
+# Ethereum half of fresh-rollup preparation. One role per invocation:
+#
+#   zeko-bootstrap predict-address   forge script PredictPocDeployment (pure)
+#   zeko-bootstrap build-guests      compile the SP1 guests against the mounted VK
+#   zeko-bootstrap vkey              SP1 program vkey from the mounted artifacts
+#   zeko-bootstrap deploy            forge script DeployPoc (--broadcast only if given)
+#   zeko-bootstrap forge | cast      Foundry against the bundled contracts
+#   zeko-bootstrap help
+#
+# @-placeholders are substituted with Nix store paths by nix/bootstrap.nix.
+# The image sets no fixed user: run it as the owner of the mounted directories
+# (`docker run --user "$(id -u):$(id -g)"`, Compose `user:`). Writable state
+# (forge workspace, solc cache, cargo target/home) lives under
+# ZEKO_BOOTSTRAP_STATE_DIR (image default /var/lib/zeko-bootstrap, HOME);
+# bind-mount it, the image directory is root-owned 0755 and unmounted use fails.
+set -euo pipefail
+umask 022
+
+state_dir=${ZEKO_BOOTSTRAP_STATE_DIR:-/var/lib/zeko-bootstrap}
+artifacts_dir=${ZEKO_ARTIFACTS_DIR:-/var/lib/zeko-proof-api/artifacts}
+contracts_bundle=/opt/zeko/contracts
+guest_src=/opt/zeko/guest-src
+
+die() {
+  printf 'zeko-bootstrap: %s\n' "$*" >&2
+  exit 1
+}
+
+require_state_dir() {
+  [ -d "$state_dir" ] && [ -w "$state_dir" ] ||
+    die "state directory $state_dir is not a writable directory: bind-mount a directory owned by the container user (ZEKO_BOOTSTRAP_STATE_DIR, nix/README.md)"
+}
+
+# Foundry writes cache/, out/ and broadcast/ next to the sources, and the
+# bundled contracts are read-only, so forge runs in a per-state-dir copy that
+# is refreshed from the bundle on every call. broadcast/ (deployment records)
+# persists there between runs.
+enter_forge_workspace() {
+  require_state_dir
+  local workspace="$state_dir/forge-workspace"
+  mkdir -p "$workspace"
+  cp -r "$contracts_bundle/." "$workspace/"
+  chmod -R u+w "$workspace"
+  cd "$workspace"
+}
+
+read_secret_file() {
+  local file=$1
+  [ -s "$file" ] || die "secret file $file is missing or empty"
+  local value
+  IFS= read -r value < "$file" || true
+  [ -n "$value" ] || die "secret file $file holds no value on its first line"
+  printf '%s' "$value"
+}
+
+role=${1:-help}
+[ $# -gt 0 ] && shift
+
+case "$role" in
+  predict-address)
+    [ -n "${ADMIN_ADDRESS:-}" ] || die "predict-address needs ADMIN_ADDRESS (the admin wallet address)"
+    enter_forge_workspace
+    exec @foundry@/bin/forge script \
+      script/PredictPocDeployment.s.sol:PredictPocDeployment "$@"
+    ;;
+
+  build-guests)
+    require_state_dir
+    vk="$artifacts_dir/settlement-vk.serde.json"
+    [ -d "$artifacts_dir" ] && [ -w "$artifacts_dir" ] ||
+      die "artifacts directory $artifacts_dir is not a writable directory (ZEKO_ARTIFACTS_DIR)"
+    [ -s "$vk" ] ||
+      die "exported public settlement VK not found at $vk: copy settlement-vk.serde.json from the Zeko export output first (no fixture or host VK is ever used)"
+    for existing in settlement-program bridge-program; do
+      [ ! -e "$artifacts_dir/$existing" ] ||
+        die "$artifacts_dir/$existing already exists; remove the previous guest outputs before rebuilding"
+    done
+
+    # Same target, toolchain pairing and flags as the Dockerfile guest-builder
+    # stage: cargo from the repository rust-toolchain, rustc from the pinned
+    # SP1 `succinct` toolchain (it ships no cargo), one job, locked and
+    # vendored crates only (.cargo/config.toml in the bundled source points at
+    # the absolute vendor directory). RUSTFLAGS are the flags sp1-build 6.1.0
+    # sets (command/utils.rs get_rust_compiler_flags); with --target they
+    # reach only the riscv crates, whose target spec links with the
+    # toolchain's own rust-lld, so no linker flag is needed for the guests.
+    #
+    # Host side: the x86_64 build scripts (program/settlement/build.rs) and
+    # proc macros are linked by the succinct rustc through `cc`, which the
+    # image does not put on PATH. The wrapped nixpkgs host compiler is named
+    # explicitly as cargo's host linker, as the host C compiler for cc-rs, and
+    # first on PATH (cc, ar, ld for anything that looks them up by name).
+    export PATH=@hostCc@/bin:$PATH
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=@hostCc@/bin/cc
+    export CC_x86_64_unknown_linux_gnu=@hostCc@/bin/cc
+    export CC=@hostCc@/bin/cc
+    export RUSTC=@sp1Toolchain@/bin/rustc
+    export RUSTC_BOOTSTRAP=1
+    export CFLAGS_riscv64im_succinct_zkvm_elf=-D__ILP32__
+    export CC_riscv64im_succinct_zkvm_elf=@clang@/bin/clang
+    export RUSTFLAGS='-C passes=lower-atomic -C link-arg=--image-base=2013265920 -C panic=abort --cfg getrandom_backend="custom" -C llvm-args=-misched-prera-direction=bottomup -C llvm-args=-misched-postra-direction=bottomup'
+    export CARGO_BUILD_JOBS=1
+    export RAYON_NUM_THREADS=1
+    export CARGO_NET_OFFLINE=true
+    export CARGO_HOME="$state_dir/cargo-home"
+    export CARGO_TARGET_DIR="$state_dir/target/elf-compilation"
+    export SETTLEMENT_VK_JSON="$vk"
+    mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+
+    cd "$guest_src"
+    for program in settlement bridge; do
+      @cargo@/bin/cargo build --release --offline --frozen \
+        --target riscv64im-succinct-zkvm-elf \
+        --manifest-path "program/$program/Cargo.toml"
+    done
+
+    release="$CARGO_TARGET_DIR/riscv64im-succinct-zkvm-elf/release"
+    install -m 0644 "$release/settlement-program" "$artifacts_dir/settlement-program"
+    install -m 0644 "$release/bridge-program" "$artifacts_dir/bridge-program"
+    (cd "$artifacts_dir" && sha256sum settlement-vk.serde.json settlement-program bridge-program > SHA256SUMS)
+    vk_sha=$(sha256sum "$vk" | cut -d' ' -f1)
+    settlement_sha=$(sha256sum "$artifacts_dir/settlement-program" | cut -d' ' -f1)
+    bridge_sha=$(sha256sum "$artifacts_dir/bridge-program" | cut -d' ' -f1)
+    jq -n \
+      --arg sp1 "6.1.0" \
+      --arg succinct "@sp1ToolchainVersion@" \
+      --arg rev "@sourceRevision@" \
+      --arg vk "$vk_sha" --arg settlement "$settlement_sha" --arg bridge "$bridge_sha" \
+      '{sp1_toolchain_version: $sp1, succinct_rust_toolchain: $succinct, ethereum_settlement_revision: $rev, settlement_vk_sha256: $vk, settlement_elf_sha256: $settlement, bridge_elf_sha256: $bridge}' \
+      > "$artifacts_dir/provenance.json"
+    chmod 0644 "$artifacts_dir/SHA256SUMS" "$artifacts_dir/provenance.json"
+    printf 'zeko-bootstrap: guests written to %s (settlement-program, bridge-program, SHA256SUMS, provenance.json)\n' "$artifacts_dir"
+    ;;
+
+  vkey)
+    exec @gatewayPackage@/bin/vkey "$@"
+    ;;
+
+  deploy)
+    # Every DeployPoc.s.sol parameter comes from the operator's environment.
+    # The deployer key is read from a file (never echoed, never an argument)
+    # when ZEKO_BOOTSTRAP_DEPLOYER_KEY_FILE is set; otherwise PRIVATE_KEY must
+    # already be in the environment. Transactions are sent only when the
+    # operator passes --broadcast (forge default is a dry run).
+    if [ -n "${ZEKO_BOOTSTRAP_DEPLOYER_KEY_FILE:-}" ]; then
+      PRIVATE_KEY=$(read_secret_file "$ZEKO_BOOTSTRAP_DEPLOYER_KEY_FILE")
+      export PRIVATE_KEY
+    fi
+    [ -n "${PRIVATE_KEY:-}" ] || die "deploy needs the deployer key: set ZEKO_BOOTSTRAP_DEPLOYER_KEY_FILE (secret file) or PRIVATE_KEY"
+    [ -n "${ADMIN_ADDRESS:-}" ] || die "deploy needs ADMIN_ADDRESS and the other DeployPoc.s.sol variables (contracts/script/DeployPoc.s.sol)"
+    enter_forge_workspace
+    exec @foundry@/bin/forge script script/DeployPoc.s.sol:DeployPoc "$@"
+    ;;
+
+  forge)
+    enter_forge_workspace
+    exec @foundry@/bin/forge "$@"
+    ;;
+
+  cast)
+    exec @foundry@/bin/cast "$@"
+    ;;
+
+  help | --help | -h)
+    cat <<EOF
+zeko-bootstrap: Ethereum-side preparation of a fresh Zeko rollup
+
+Usage: zeko-bootstrap <role> [args...]
+
+Roles:
+  predict-address  CREATE2 addresses of the PoC contracts (pure, no RPC);
+                   needs ADMIN_ADDRESS
+  build-guests     compile the SP1 settlement and bridge guests against
+                   \$ZEKO_ARTIFACTS_DIR/settlement-vk.serde.json and write
+                   settlement-program, bridge-program, SHA256SUMS and
+                   provenance.json next to it (fails if the VK is missing)
+  vkey             SP1 program verification key (--program settlement|bridge)
+                   from the artifacts directory
+  deploy           forge script DeployPoc.s.sol with the operator's environment;
+                   add --rpc-url <url> --broadcast to send transactions
+  forge | cast     Foundry against the bundled contracts workspace
+  help             this message
+
+Directories: ZEKO_BOOTSTRAP_STATE_DIR=$state_dir (writable, bind-mounted),
+ZEKO_ARTIFACTS_DIR=$artifacts_dir (the gateway's artifacts directory).
+Run as the owner of those directories: docker run --user "\$(id -u):\$(id -g)".
+EOF
+    ;;
+
+  *)
+    die "unknown role: $role (try: zeko-bootstrap help)"
+    ;;
+esac
