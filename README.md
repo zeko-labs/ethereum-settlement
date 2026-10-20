@@ -14,6 +14,12 @@ exact inner-action tree used by permissionless native and ERC-20 claims.
 
 The goal is to let Ethereum verify succinct SP1 proofs instead of directly verifying the full Zeko/o1 proof system or re-executing bridge action-state logic on-chain.
 
+## Licensing
+
+Zeko-authored code and documentation in this repository are licensed under the Apache License, Version 2.0. See [LICENSE-APACHE](./LICENSE-APACHE).
+
+This repository also contains upstream and third-party components with separate notices. In particular, the Succinct Labs MIT license in [LICENSE-MIT](./LICENSE-MIT), the licenses under `vendor/`, the Mina Snap package notices, and other component-level notices remain applicable to the materials they identify. The Apache-2.0 license does not relicense those components.
+
 ## Documentation
 
 The VitePress documentation lives in [`docs/content`](docs/content).
