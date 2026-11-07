@@ -1,0 +1,443 @@
+# EXAMPLE Compose for one fresh Zeko rollup settling on Ethereum: the
+# long-lived Zeko services plus the one-shot bootstrap steps. This is builder
+# documentation feeding the operator runbook (task 05); it is not the operator
+# runbook or the complete production stack definition (the sequencer and the
+# gateway are added there). It shows how the published images divide the work:
+#
+#   docker.io/zekolabs/zeko        long-lived: sequencer signer, prover (native
+#                                  entrypoints /bin/zeko-signer, /bin/zeko-prover)
+#                                  one-shot roles: signer TLS, circuit/deploy
+#                                  config, bootstrap L1 stand-in, first-proof/
+#                                  genesis/VK export (zeko/nix/bootstrap-roles)
+#   docker.io/zekolabs/zeko-da     long-lived: DA signer and DA node (native
+#                                  entrypoints /bin/zeko-signer, /bin/zeko-da;
+#                                  no bootstrap scripts)
+#   docker.io/zekolabs/zeko-bootstrap
+#                                  Ethereum half (this repository): address
+#                                  prediction, SP1 guest build, program vkeys,
+#                                  contract deployment, cast
+#   postgres:16, rabbitmq:latest   ordinary containers on the internal network
+#
+# Long-lived services (postgres, rabbitmq, sequencer-signer, da1-signer, da1,
+# prover) carry no profile: `docker compose up -d` starts them first, the
+# export runs against them, and the same containers keep running for the L2
+# afterwards (the DA database and signer identities created during the export
+# are the ones the rollup continues with). Every one-shot step is in the
+# `bootstrap` profile and is run explicitly. Each zeko-bootstrap one-shot
+# service fixes its role in `entrypoint:` (`/bin/zeko-bootstrap <role>`), so
+# anything after the service name in `docker compose run` is appended as role
+# arguments instead of replacing the role (`run` replaces `command:` only):
+#
+#   docker compose --profile bootstrap run --rm signer-tls
+#   docker compose --profile bootstrap run --rm predict-address
+#   docker compose --profile bootstrap run --rm generate-config 0x<bridge proxy>
+#   docker compose up -d                       # long-lived services
+#   docker compose --profile bootstrap run --rm exporter
+#   docker compose --profile bootstrap stop bootstrap-l1
+#   docker compose --profile bootstrap run --rm build-guests
+#   docker compose --profile bootstrap run --rm vkey --program settlement
+#   docker compose --profile bootstrap run --rm deploy --rpc-url <url> [--broadcast]
+#
+# Security model: every custom container runs as the workspace owner's uid:gid
+# (`user:`), secrets are files under /run/secrets, root filesystems are
+# read-only, all capabilities are dropped, the service network is internal and
+# no Docker socket or privilege is mounted. Only predict-address (solc fetch)
+# and deploy (Ethereum RPC) are on the egress network. The Zeko binaries read
+# MINA_PRIVATE_KEY and ZEKO_SIGNER_AUTH_TOKEN from the environment, so the
+# signer and DA services read their /run/secrets files into those variables
+# in a bash -c entrypoint before exec'ing the binary (the --private-key /
+# --auth-token flags would expose the values in `docker inspect`). `$$` is a
+# literal `$` for the shell (Compose interpolation).
+#
+# Copy this file and env.example into a persistent workspace OUTSIDE every
+# source checkout and run Compose from there; never create .env, secrets/,
+# config/, state/, tls/, out/ or artifacts/ inside the repository
+# (`nix build path:.` copies the whole checkout into the Nix store).
+#
+# Workspace layout (ZEKO_BOOTSTRAP_WORKSPACE, owned by ZEKO_BOOTSTRAP_UID:GID):
+#   .env                         values from env.example (0600)
+#   secrets/sequencer_key        Zeko Base58 private key (0600)
+#   secrets/da1_key              Zeko Base58 private key (0600)
+#   secrets/signer_auth_token    shared signer bearer token (0600)
+#   secrets/deployer_key         Ethereum admin/deployer private key, hex (0600)
+#   config/                      circuits-config.json, deploy-config.json,
+#                                deploy.env (DeployPoc.s.sol variables)
+#   tls/ca, tls/private          signer certificate / private key (signer-tls)
+#   state/<service>              per-service writable state (HOME of each container)
+#   out/export                   empty directory receiving the export
+#   artifacts/                   settlement-vk.serde.json copied from out/export,
+#                                then the guest ELFs, SHA256SUMS, provenance.json
+#                                (0755 dir, 0644 files: mounted into the gateway)
+name: zeko-bootstrap
+
+x-zeko-env: &zeko-env
+  HOME: /var/lib/zeko-bootstrap
+  ZEKO_BOOTSTRAP_STATE_DIR: /var/lib/zeko-bootstrap
+  # Zeko commit of the loaded images, recorded in deployment-manifest.json.
+  ZEKO_BOOTSTRAP_SOURCE_REVISION: ${ZEKO_SOURCE_REVISION:?set ZEKO_SOURCE_REVISION to the zeko commit the images were built from}
+  MINA_SIGNING_NETWORK_ID: ${MINA_SIGNING_NETWORK_ID:?set MINA_SIGNING_NETWORK_ID (testnet or mainnet)}
+  ZEKO_SIGNATURE_KIND: ${MINA_SIGNING_NETWORK_ID}
+  ZEKO_TEST_L1_NETWORK_ID: ${MINA_SIGNING_NETWORK_ID}
+  ZEKO_BOOTSTRAP_WORKSPACE_HOST: ${ZEKO_BOOTSTRAP_WORKSPACE:?set ZEKO_BOOTSTRAP_WORKSPACE to the absolute workspace path outside all source checkouts}
+  ZEKO_SIGNER_TLS_HOSTNAME: zeko-bootstrap-signer
+  ZEKO_SIGNER_TLS_CA_FILE: /run/zeko/signer-tls/ca/signer.crt
+
+x-common: &common
+  user: "${ZEKO_BOOTSTRAP_UID:?set ZEKO_BOOTSTRAP_UID to the workspace owner's numeric uid (id -u)}:${ZEKO_BOOTSTRAP_GID:?set ZEKO_BOOTSTRAP_GID to the workspace owner's numeric gid (id -g)}"
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: "no"
+
+x-zeko: &zeko
+  <<: *common
+  image: ${ZEKO_IMAGE:?set ZEKO_IMAGE to the loaded docker.io/zekolabs/zeko image reference}
+  environment: *zeko-env
+  networks:
+    - internal
+
+x-zeko-da: &zeko-da
+  <<: *common
+  image: ${ZEKO_DA_IMAGE:?set ZEKO_DA_IMAGE to the loaded docker.io/zekolabs/zeko-da image reference}
+  environment: *zeko-env
+  networks:
+    - internal
+
+# Signer healthcheck: pure-bash LISTEN probe of /proc/net/tcp (state 0A) on
+# the signer port; opens no connection, so the TLS server stays quiet. The
+# zeko-da image has bash but no awk/grep. Port hex: 8600 = 2198, 8601 = 2199.
+x-signer-healthcheck: &signer-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 30
+
+# Network is set per service: egress (predict-address, deploy) or none.
+x-bootstrap: &bootstrap
+  <<: *common
+  image: ${ZEKO_BOOTSTRAP_IMAGE:?set ZEKO_BOOTSTRAP_IMAGE to the loaded docker.io/zekolabs/zeko-bootstrap image reference}
+  profiles: ["bootstrap"]
+  environment: &bootstrap-env
+    HOME: /var/lib/zeko-bootstrap
+    ZEKO_BOOTSTRAP_STATE_DIR: /var/lib/zeko-bootstrap
+    ZEKO_ARTIFACTS_DIR: /var/lib/zeko-proof-api/artifacts
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      # Scratch database on tmpfs, reachable only on the internal network.
+      POSTGRES_PASSWORD: ${ZEKO_BOOTSTRAP_POSTGRES_PASSWORD:?set ZEKO_BOOTSTRAP_POSTGRES_PASSWORD (random, [A-Za-z0-9] only)}
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 60
+
+  rabbitmq:
+    image: rabbitmq:latest
+    environment:
+      # Dedicated broker user; Zeko's message_queue.ml reads the matching
+      # RABBITMQ_USER/RABBITMQ_PASSWORD. The built-in guest user is not used
+      # because RabbitMQ limits it to loopback connections.
+      RABBITMQ_DEFAULT_USER: ${ZEKO_BOOTSTRAP_RABBITMQ_USER:?set ZEKO_BOOTSTRAP_RABBITMQ_USER (not guest)}
+      RABBITMQ_DEFAULT_PASS: ${ZEKO_BOOTSTRAP_RABBITMQ_PASSWORD:?set ZEKO_BOOTSTRAP_RABBITMQ_PASSWORD (random)}
+    tmpfs:
+      - /var/lib/rabbitmq:rw,noexec,nosuid
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 30
+      start_period: 30s
+
+  # --- Zeko half: one-shots (profile bootstrap) ------------------------------
+
+  # Writes tls/ca/signer.crt and tls/private/signer.key (idempotent).
+  signer-tls:
+    <<: *zeko
+    profiles: ["bootstrap"]
+    entrypoint: ["/bin/zeko-bootstrap-signer-tls"]
+    command: []
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls:/run/zeko/signer-tls
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/signer-tls:/var/lib/zeko-bootstrap
+
+  # `docker compose --profile bootstrap run --rm generate-config 0x<bridge proxy>`
+  # writes the private circuit/deploy configuration into config/.
+  generate-config:
+    <<: *zeko
+    profiles: ["bootstrap"]
+    entrypoint: ["/bin/zeko-bootstrap-generate-config"]
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/config:/run/zeko/config
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/generate-config:/var/lib/zeko-bootstrap
+
+  # Single-block local chain standing in for L1 during the export.
+  bootstrap-l1:
+    <<: *zeko
+    profiles: ["bootstrap"]
+    entrypoint: ["/bin/zeko-bootstrap-l1"]
+    command: ["8080"]
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/l1:/var/lib/zeko-bootstrap
+
+  # `docker compose --profile bootstrap run --rm exporter` starts whatever of
+  # its dependency closure is not running yet (the long-lived services stay up
+  # after the exporter exits; stop bootstrap-l1 yourself). out/export must be
+  # empty; it is never overwritten.
+  exporter:
+    <<: *zeko
+    profiles: ["bootstrap"]
+    entrypoint: ["/bin/zeko-bootstrap-export"]
+    command: []
+    environment:
+      <<: *zeko-env
+      ZEKO_CIRCUITS_CONFIG: /run/zeko/config/circuits-config.json
+      ZEKO_DEPLOY_CONFIG: /run/zeko/config/deploy-config.json
+      ZEKO_BOOTSTRAP_L1: bootstrap-l1:8080
+      ZEKO_BOOTSTRAP_POSTGRES_HOST: postgres:5432
+      ZEKO_BOOTSTRAP_POSTGRES_PASSWORD: ${ZEKO_BOOTSTRAP_POSTGRES_PASSWORD}
+      ZEKO_BOOTSTRAP_MQ: rabbitmq:5672
+      RABBITMQ_USER: ${ZEKO_BOOTSTRAP_RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${ZEKO_BOOTSTRAP_RABBITMQ_PASSWORD}
+      ZEKO_BOOTSTRAP_SIGNER: sequencer-signer:8600
+      ZEKO_BOOTSTRAP_DA_NODES: da1:8555
+      ZEKO_BOOTSTRAP_DA_QUORUM: "1"
+      ZEKO_BOOTSTRAP_OUTPUT_DIR: /out
+    secrets:
+      - signer_auth_token
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/ca:/run/zeko/signer-tls/ca:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/config:/run/zeko/config:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/out/export:/out
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/exporter:/var/lib/zeko-bootstrap
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      prover:
+        condition: service_healthy
+      sequencer-signer:
+        condition: service_healthy
+      da1:
+        condition: service_healthy
+      bootstrap-l1:
+        condition: service_started
+
+  # --- Zeko long-lived services (no profile) ---------------------------------
+  # Started by `docker compose up -d` before the export and kept running for
+  # the L2 afterwards: the sequencer signer, the DA signer, the DA node and the
+  # prover are the same services the rollup runs on (the sequencer and gateway
+  # services are added by the operator runbook). Native image entrypoints;
+  # command lines verified against zeko src/app/zeko (zeko/nix/bootstrap-roles/
+  # README.md "Long-lived services"). `zeko-signer run` defaults to
+  # --host localhost, so --host 0.0.0.0 is passed (allowed with TLS).
+
+  sequencer-signer:
+    <<: *zeko
+    restart: unless-stopped
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        export MINA_PRIVATE_KEY=$$(</run/secrets/sequencer_key)
+        export ZEKO_SIGNER_AUTH_TOKEN=$$(</run/secrets/signer_auth_token)
+        [[ -n $$MINA_PRIVATE_KEY && -n $$ZEKO_SIGNER_AUTH_TOKEN ]] || { echo "sequencer-signer: empty secret file" >&2; exit 1; }
+        exec /bin/zeko-signer run --host 0.0.0.0 --port 8600 --allow-zkapp-signing \
+          --max-fee 10 --max-balance-change 1000000 \
+          --tls-cert-file /run/zeko/signer-tls/ca/signer.crt \
+          --tls-key-file /run/zeko/signer-tls/private/signer.key
+    healthcheck:
+      <<: *signer-healthcheck
+      test: ["CMD", "/bin/bash", "-c", "while read -r _ local _ st _; do [[ $$st == 0A && $$local == *:2198 ]] && exit 0; done </proc/net/tcp; exit 1"]
+    secrets:
+      - sequencer_key
+      - signer_auth_token
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/ca:/run/zeko/signer-tls/ca:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/private:/run/zeko/signer-tls/private:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/sequencer-signer:/var/lib/zeko-bootstrap
+
+  da1-signer:
+    <<: *zeko-da
+    restart: unless-stopped
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        export MINA_PRIVATE_KEY=$$(</run/secrets/da1_key)
+        export ZEKO_SIGNER_AUTH_TOKEN=$$(</run/secrets/signer_auth_token)
+        [[ -n $$MINA_PRIVATE_KEY && -n $$ZEKO_SIGNER_AUTH_TOKEN ]] || { echo "da1-signer: empty secret file" >&2; exit 1; }
+        exec /bin/zeko-signer run --host 0.0.0.0 --port 8601 --allow-field-signing \
+          --tls-cert-file /run/zeko/signer-tls/ca/signer.crt \
+          --tls-key-file /run/zeko/signer-tls/private/signer.key
+    healthcheck:
+      <<: *signer-healthcheck
+      test: ["CMD", "/bin/bash", "-c", "while read -r _ local _ st _; do [[ $$st == 0A && $$local == *:2199 ]] && exit 0; done </proc/net/tcp; exit 1"]
+    secrets:
+      - da1_key
+      - signer_auth_token
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/ca:/run/zeko/signer-tls/ca:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/private:/run/zeko/signer-tls/private:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/da1-signer:/var/lib/zeko-bootstrap
+
+  # Single DA node, quorum 1. state/da1 is the DA database the L2 keeps using
+  # after the export. zeko-da fetches its signer's public key once at startup
+  # and exits if the signer is unreachable, hence the healthy dependency (and
+  # restart). The node's own GET /health is served on the healthcheck port.
+  da1:
+    <<: *zeko-da
+    restart: unless-stopped
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        export ZEKO_SIGNER_AUTH_TOKEN=$$(</run/secrets/signer_auth_token)
+        [[ -n $$ZEKO_SIGNER_AUTH_TOKEN ]] || { echo "da1: empty secret file" >&2; exit 1; }
+        exec /bin/zeko-da run-node --port 8555 --healthcheck-port 8558 \
+          --network-id "$$MINA_SIGNING_NETWORK_ID" \
+          --db-dir /var/lib/zeko-bootstrap/da --signer da1-signer:8601
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8558/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    secrets:
+      - signer_auth_token
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/tls/ca:/run/zeko/signer-tls/ca:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/da1:/var/lib/zeko-bootstrap
+    depends_on:
+      da1-signer:
+        condition: service_healthy
+
+  # Real prover: compiles the operator's circuits from ZEKO_CIRCUITS_CONFIG at
+  # startup (long; proving hardware required), then consumes jobs from
+  # RabbitMQ as the dedicated broker user (RABBITMQ_USER/RABBITMQ_PASSWORD,
+  # read by Zeko's message_queue.ml). Unlike the exporter it does not refuse
+  # an unset ZEKO_CIRCUITS_CONFIG (that would select embedded test keys), so
+  # both config variables are set here explicitly.
+  prover:
+    <<: *zeko
+    restart: unless-stopped
+    entrypoint: ["/bin/zeko-prover"]
+    command: ["run-server", "--mq-host", "rabbitmq:5672"]
+    environment:
+      <<: *zeko-env
+      ZEKO_CIRCUITS_CONFIG: /run/zeko/config/circuits-config.json
+      ZEKO_DEPLOY_CONFIG: /run/zeko/config/deploy-config.json
+      RABBITMQ_USER: ${ZEKO_BOOTSTRAP_RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${ZEKO_BOOTSTRAP_RABBITMQ_PASSWORD}
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/config:/run/zeko/config:ro
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/prover:/var/lib/zeko-bootstrap
+    # zeko-prover connects to the broker only after compiling the circuits, so
+    # an ESTABLISHED connection (state 01) from this container to port 5672
+    # (hex 1628) means the jobs consumer is registering: pure-bash probe of
+    # /proc/net/tcp, no broker credentials or tools needed. Compilation can
+    # take hours on proving-grade hardware: failures during start_period do
+    # not count; after it, ten more failures mark the prover unhealthy.
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "for f in /proc/net/tcp /proc/net/tcp6; do [[ -r $$f ]] || continue; while read -r _ _ rem st _; do [[ $$st == 01 && $$rem == *:1628 ]] && exit 0; done <$$f; done; exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 8h
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # --- Ethereum half: zeko-bootstrap one-shots (profile bootstrap) ----------
+  # The image entrypoint is /bin/zeko-bootstrap with Cmd ["help"]; each
+  # service below sets a role-specific entrypoint and an empty command, so
+  # `docker compose run --rm <service> [args]` runs `/bin/zeko-bootstrap <role>
+  # [args]` (with no args for predict-address and build-guests).
+
+  # Pure CREATE2 prediction from ADMIN_ADDRESS; prints BRIDGE_CONTRACT_ADDRESS,
+  # the input of generate-config. Forge fetches solc on first use (egress).
+  predict-address:
+    <<: *bootstrap
+    entrypoint: ["/bin/zeko-bootstrap", "predict-address"]
+    command: []
+    environment:
+      <<: *bootstrap-env
+      ADMIN_ADDRESS: ${ADMIN_ADDRESS:?set ADMIN_ADDRESS to the admin wallet address}
+    networks:
+      - egress
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/bootstrap:/var/lib/zeko-bootstrap
+
+  # Compiles the SP1 guests against artifacts/settlement-vk.serde.json (copied
+  # from out/export after the export) and writes settlement-program,
+  # bridge-program, SHA256SUMS and provenance.json next to it. Offline.
+  build-guests:
+    <<: *bootstrap
+    entrypoint: ["/bin/zeko-bootstrap", "build-guests"]
+    command: []
+    network_mode: none
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/bootstrap:/var/lib/zeko-bootstrap
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/artifacts:/var/lib/zeko-proof-api/artifacts
+
+  # `run --rm vkey --program settlement|bridge` prints the SP1 program vkey
+  # (the arguments are appended to the `vkey` role entrypoint).
+  vkey:
+    <<: *bootstrap
+    entrypoint: ["/bin/zeko-bootstrap", "vkey"]
+    command: []
+    network_mode: none
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/bootstrap:/var/lib/zeko-bootstrap
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/artifacts:/var/lib/zeko-proof-api/artifacts:ro
+
+  # `run --rm deploy --rpc-url <url>` is a dry run; add --broadcast to send
+  # (the arguments are appended to the `deploy` role entrypoint).
+  # DeployPoc.s.sol parameters come from config/deploy.env (public values:
+  # vkeys, VK hash, initial outer state from out/export, role addresses); the
+  # deployer key is read from the secret file, never from .env or arguments.
+  # broadcast/ records persist in state/bootstrap/forge-workspace.
+  deploy:
+    <<: *bootstrap
+    entrypoint: ["/bin/zeko-bootstrap", "deploy"]
+    command: []
+    env_file:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/config/deploy.env
+    environment:
+      <<: *bootstrap-env
+      ADMIN_ADDRESS: ${ADMIN_ADDRESS}
+      ZEKO_BOOTSTRAP_DEPLOYER_KEY_FILE: /run/secrets/deployer_key
+    secrets:
+      - deployer_key
+    networks:
+      - egress
+    volumes:
+      - ${ZEKO_BOOTSTRAP_WORKSPACE}/state/bootstrap:/var/lib/zeko-bootstrap
+
+secrets:
+  sequencer_key:
+    file: ${ZEKO_BOOTSTRAP_WORKSPACE}/secrets/sequencer_key
+  da1_key:
+    file: ${ZEKO_BOOTSTRAP_WORKSPACE}/secrets/da1_key
+  signer_auth_token:
+    file: ${ZEKO_BOOTSTRAP_WORKSPACE}/secrets/signer_auth_token
+  deployer_key:
+    file: ${ZEKO_BOOTSTRAP_WORKSPACE}/secrets/deployer_key
+
+networks:
+  internal:
+    internal: true
+  egress: {}

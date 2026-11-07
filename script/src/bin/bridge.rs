@@ -13,12 +13,12 @@
 use clap::Parser;
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
-    include_elf, Elf, HashableKey, ProvingKey, SP1Stdin,
+    HashableKey, ProvingKey, SP1Stdin,
 };
+use std::path::PathBuf;
 use std::time::Instant;
 use zeko_sp1_lib::{BridgeTransitionInput, BridgeTransitionPublicValuesV2};
-
-pub const BRIDGE_ELF: Elf = include_elf!("bridge-program");
+use zkapp_script::{Artifacts, ARTIFACTS_DIR_ENV, DEFAULT_ARTIFACTS_DIR};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -29,6 +29,10 @@ struct Args {
     prove: bool,
     #[arg(long, default_value = "proofs/bridge-input.json")]
     input: String,
+    /// Directory holding settlement-program, bridge-program and
+    /// settlement-vk.serde.json.
+    #[arg(long, env = ARTIFACTS_DIR_ENV, default_value = DEFAULT_ARTIFACTS_DIR)]
+    artifacts_dir: PathBuf,
 }
 
 fn main() {
@@ -40,6 +44,10 @@ fn main() {
         eprintln!("Error: specify either --execute or --prove");
         std::process::exit(1);
     }
+
+    let bridge_elf = Artifacts::load(&args.artifacts_dir)
+        .unwrap_or_else(|error| panic!("load settlement artifacts: {error:#}"))
+        .bridge_elf;
 
     let input_json = std::fs::read_to_string(&args.input)
         .unwrap_or_else(|e| panic!("read bridge input {}: {e}", args.input));
@@ -54,7 +62,7 @@ fn main() {
 
     if args.execute {
         let (output, report) = client
-            .execute(BRIDGE_ELF, stdin)
+            .execute(bridge_elf, stdin)
             .run()
             .expect("execution failed");
 
@@ -90,7 +98,7 @@ fn main() {
         );
         println!("  deposit_count        : {}", public_values.deposit_count());
     } else {
-        let pk = client.setup(BRIDGE_ELF).expect("failed to setup ELF");
+        let pk = client.setup(bridge_elf).expect("failed to setup ELF");
 
         println!("Generating bridge proof...");
         let t = Instant::now();

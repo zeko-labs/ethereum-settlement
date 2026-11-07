@@ -87,8 +87,9 @@ OCaml inner Witness actions -> settlement SP1 Keccak tree
 
 - Ethereum: `RPC_URL`, contract addresses, per-role private keys,
   `ETHEREUM_FINALITY_MODE=finalized`, `ETHEREUM_INDEXER_START_BLOCK`.
-- SP1: build-time `SETTLEMENT_VK_JSON`, runtime `NETWORK_PRIVATE_KEY`,
-  `PROOF_SYSTEM=groth16`,
+- SP1: guest build-time `SETTLEMENT_VK_JSON`; gateway runtime
+  `ZEKO_ARTIFACTS_DIR` (directory with `settlement-program`, `bridge-program`,
+  `settlement-vk.serde.json`), `NETWORK_PRIVATE_KEY`, `PROOF_SYSTEM=groth16`,
   timeout, minimum auction period, optional gas/price caps.
 - Mina façade: genesis timestamp, fork slot, account-creation fee, initial
   state hash and `VIRTUAL_MINA_ACCOUNTS_PATH`.
@@ -160,12 +161,14 @@ operator data.
 ## Local execute-only checkpoint
 
 The real fixture uses optional Kimchi gates and lookup columns, so it must be
-run with the feature-aware Pickles verifier. Rebuild the settlement ELF and
-record its vkey whenever verifier code changes:
+run with the feature-aware Pickles verifier. Rebuild the settlement ELF with
+`SETTLEMENT_VK_JSON` pointing at that VK (guest build; see `Dockerfile`
+`guest-builder` stage or `nix/README.md` step 4), place `settlement-program`,
+`bridge-program` and the VK as `settlement-vk.serde.json` in one directory, and
+record the vkey whenever verifier code changes:
 
 ```sh
-SETTLEMENT_VK_JSON="$PWD/fixtures/zeko-local-e2e/vk.serde.json" \
-  cargo run --release --bin vkey
+cargo run --release --bin vkey -- --artifacts-dir <artifacts-dir>
 ```
 
 Start PostgreSQL and Anvil, then deploy the local proxy with

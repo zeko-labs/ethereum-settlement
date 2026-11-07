@@ -28,14 +28,13 @@ zstd              = "0.13"
 zeko_sp1_lib      = { path = "../lib" }
 pickles-verifier = { path = "../crates/pickles-verifier" }
 settlement-program = { path = "../program/settlement" }
+# Runtime native-verifier construction from the mounted settlement VK: the
+# same encode/decode path the former build script used, plus the embedded
+# Pasta SRS (vendor/proof-systems/srs) decoded with rmp-serde.
+mina-curves = { workspace = true }
+poly-commitment = { workspace = true }
+rmp-serde = "1"
 
 [dev-dependencies]
 alloy-primitives = { version = "=0.8.20", features = ["sha3-keccak"] }
 criterion = "0.5"
-
-[build-dependencies]
-sp1-build = "6.1.0"
-mina-curves = { workspace = true }
-pickles-verifier = { path = "../crates/pickles-verifier" }
-poly-commitment = { workspace = true }
-sha2 = "0.10"

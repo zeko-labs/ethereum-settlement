@@ -5,20 +5,24 @@ use pickles_verifier::types::VerifiableProof;
 use pickles_verifier::wire::{parse_app_statement, parse_wrap_proof, parse_wrap_vk, OcamlProof};
 use serde::{Deserialize, Serialize};
 use sp1_sdk::{
-    include_elf, network::NetworkMode, utils, Elf, HashableKey, ProveRequest, Prover, ProverClient,
-    ProvingKey, SP1ProofWithPublicValues, SP1Stdin, SP1VerifyingKey,
+    network::NetworkMode, utils, HashableKey, ProveRequest, Prover, ProverClient, ProvingKey,
+    SP1ProofWithPublicValues, SP1Stdin, SP1VerifyingKey,
 };
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use zeko_sp1_lib::ZkappPublicValues;
-
-pub const ZKAPP_ELF: Elf = include_elf!("settlement-program");
+use zkapp_script::{Artifacts, ARTIFACTS_DIR_ENV, DEFAULT_ARTIFACTS_DIR};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct EVMArgs {
     #[arg(long, default_value = "proofs/mainnet-blockchain-snark")]
     fixture_dir: String,
+
+    /// Directory holding settlement-program, bridge-program and
+    /// settlement-vk.serde.json.
+    #[arg(long, env = ARTIFACTS_DIR_ENV, default_value = DEFAULT_ARTIFACTS_DIR)]
+    artifacts_dir: PathBuf,
 
     #[arg(long, value_enum, default_value = "groth16")]
     system: ProofSystem,
@@ -48,6 +52,10 @@ async fn main() {
 
     let args = EVMArgs::parse();
 
+    let settlement_elf = Artifacts::load(&args.artifacts_dir)
+        .unwrap_or_else(|error| panic!("load settlement artifacts: {error:#}"))
+        .settlement_elf;
+
     let verifiable = load_verifiable(Path::new(&args.fixture_dir));
     let mut stdin = SP1Stdin::new();
     stdin.write(&verifiable);
@@ -58,7 +66,10 @@ async fn main() {
         .await;
 
     let t_setup = Instant::now();
-    let pk = client.setup(ZKAPP_ELF).await.expect("failed to setup ELF");
+    let pk = client
+        .setup(settlement_elf)
+        .await
+        .expect("failed to setup ELF");
     println!("Setup time: {:?}", t_setup.elapsed());
     println!("Proof System: {:?}", args.system);
 

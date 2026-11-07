@@ -9,14 +9,13 @@ use sp1_core_executor::Program;
 use sp1_core_executor_runner::MinimalExecutorRunner;
 use sp1_sdk::{
     blocking::{ProveRequest, Prover, ProverClient},
-    include_elf, Elf, ProvingKey, SP1Stdin,
+    Elf, ProvingKey, SP1Stdin,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use zeko_sp1_lib::ZkappPublicValues;
-
-pub const ZKAPP_ELF: Elf = include_elf!("settlement-program");
+use zkapp_script::{Artifacts, ARTIFACTS_DIR_ENV, DEFAULT_ARTIFACTS_DIR};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -36,6 +35,10 @@ struct Args {
     /// resulting accumulator commitment.
     #[arg(long, requires = "execute")]
     corrupt_accumulator_challenge: bool,
+    /// Directory holding settlement-program, bridge-program and
+    /// settlement-vk.serde.json.
+    #[arg(long, env = ARTIFACTS_DIR_ENV, default_value = DEFAULT_ARTIFACTS_DIR)]
+    artifacts_dir: PathBuf,
 }
 
 fn main() {
@@ -47,6 +50,10 @@ fn main() {
         eprintln!("Error: specify either --execute or --prove");
         std::process::exit(1);
     }
+
+    let settlement_elf = Artifacts::load(&args.artifacts_dir)
+        .unwrap_or_else(|error| panic!("load settlement artifacts: {error:#}"))
+        .settlement_elf;
 
     let mut verifiable = load_verifiable(Path::new(&args.fixture_dir));
     if args.corrupt_accumulator_challenge {
@@ -63,7 +70,7 @@ fn main() {
             // paid Succinct Network request.
             let client = ProverClient::builder().cpu().build();
             let (output, report) = client
-                .execute(ZKAPP_ELF, stdin)
+                .execute(settlement_elf, stdin)
                 .calculate_gas(true)
                 .run()
                 .expect("execution failed");
@@ -73,7 +80,8 @@ fn main() {
                 report.gas(),
             )
         } else {
-            let (output, cycles) = execute_minimal(ZKAPP_ELF, stdin).expect("execution failed");
+            let (output, cycles) =
+                execute_minimal(settlement_elf, stdin).expect("execution failed");
             (output, cycles, None)
         };
 
@@ -93,7 +101,7 @@ fn main() {
         println!("Pickles proof verified successfully");
     } else {
         let client = ProverClient::from_env();
-        let pk = client.setup(ZKAPP_ELF).expect("failed to setup ELF");
+        let pk = client.setup(settlement_elf).expect("failed to setup ELF");
 
         println!("Generating proof...");
         let t = Instant::now();

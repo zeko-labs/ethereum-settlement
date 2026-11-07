@@ -26,13 +26,10 @@ RUN apt-get update \
 
 WORKDIR /src
 COPY . .
-COPY --from=guest-builder /src/target/elf-compilation /src/target/elf-compilation
-COPY --from=guest-builder /src/settlement-vk.serde.json /src/settlement-vk.serde.json
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    SETTLEMENT_VK_JSON=/src/settlement-vk.serde.json \
-    SP1_SKIP_PROGRAM_BUILD=true
+# The gateway build is generic: it compiles no guests and embeds no VK.
+ENV PATH="/usr/local/go/bin:${PATH}"
 RUN cargo build --locked --release -p zeko-proof-api
 
 FROM debian:bookworm-slim AS runtime
@@ -43,6 +40,20 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=api-builder /src/target/release/zeko-proof-api /usr/local/bin/zeko-proof-api
+
+# Legacy per-rollup image: bake the guest ELFs built above and the exact VK they
+# embed into the runtime artifacts directory (script/src/lib.rs
+# DEFAULT_ARTIFACTS_DIR), so this image stays self-contained. The gateway loads
+# them at startup and asserts the program vkeys against the contracts.
+ENV ZEKO_ARTIFACTS_DIR=/var/lib/zeko-proof-api/artifacts
+COPY --from=guest-builder \
+    /src/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/settlement-program \
+    /var/lib/zeko-proof-api/artifacts/settlement-program
+COPY --from=guest-builder \
+    /src/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/bridge-program \
+    /var/lib/zeko-proof-api/artifacts/bridge-program
+COPY --from=guest-builder /src/settlement-vk.serde.json \
+    /var/lib/zeko-proof-api/artifacts/settlement-vk.serde.json
 
 EXPOSE 8080
 CMD ["zeko-proof-api"]

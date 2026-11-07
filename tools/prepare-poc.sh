@@ -2,7 +2,9 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <rpc-url> <admin-address> [fixture-dir] [output-dir]" >&2
+  echo "Usage: ZEKO_ARTIFACTS_DIR=<artifacts-dir> $0 <rpc-url> <admin-address> [fixture-dir] [output-dir]" >&2
+  echo "  <artifacts-dir> must hold settlement-program, bridge-program and" >&2
+  echo "  settlement-vk.serde.json (guests built against the fixture VK)." >&2
   exit 2
 }
 
@@ -42,18 +44,40 @@ OUTPUT_DIR=$(realpath "$OUTPUT_DIR")
 }
 BRIDGE_SCENARIO="$FIXTURE_DIR/../bridge-scenario.json"
 
+# The host binaries no longer compile guests or embed a VK. The program vkeys
+# are read from a prepared artifacts directory (nix/README.md step 4/5 or the
+# Dockerfile guest-builder stage) whose VK must be the selected fixture VK.
+[[ -n ${ZEKO_ARTIFACTS_DIR:-} ]] || {
+  echo "ZEKO_ARTIFACTS_DIR must name the prepared artifacts directory" >&2
+  usage
+}
+[[ $ZEKO_ARTIFACTS_DIR == /* ]] || ZEKO_ARTIFACTS_DIR="$ROOT/$ZEKO_ARTIFACTS_DIR"
+[[ -d $ZEKO_ARTIFACTS_DIR ]] || {
+  echo "Missing artifacts directory: $ZEKO_ARTIFACTS_DIR" >&2
+  exit 1
+}
+ZEKO_ARTIFACTS_DIR=$(realpath "$ZEKO_ARTIFACTS_DIR")
+for artifact in settlement-program bridge-program settlement-vk.serde.json; do
+  [[ -s "$ZEKO_ARTIFACTS_DIR/$artifact" ]] || {
+    echo "Missing artifact: $ZEKO_ARTIFACTS_DIR/$artifact" >&2
+    exit 1
+  }
+done
+cmp -s "$ZEKO_ARTIFACTS_DIR/settlement-vk.serde.json" "$FIXTURE_DIR/vk.serde.json" || {
+  echo "Artifacts VK $ZEKO_ARTIFACTS_DIR/settlement-vk.serde.json differs from fixture VK $FIXTURE_DIR/vk.serde.json" >&2
+  exit 1
+}
+export ZEKO_ARTIFACTS_DIR
+
 vkey() {
   local program=$1
   "$TARGET_DIR/release/vkey" --program "$program" \
+    --artifacts-dir "$ZEKO_ARTIFACTS_DIR" \
     | awk '/^0x[0-9a-fA-F]{64}$/ { value=$0 } END { if (value == "") exit 1; print value }'
 }
 
-echo "Computing SP1 program verification keys (no proving)..."
-SETTLEMENT_VK_JSON="$FIXTURE_DIR/vk.serde.json" \
-  cargo build --quiet --release --bin vkey
-echo "Building the gateway with the selected settlement verification key..."
-SETTLEMENT_VK_JSON="$FIXTURE_DIR/vk.serde.json" \
-  cargo build --quiet --release -p zeko-proof-api
+echo "Computing SP1 program verification keys from $ZEKO_ARTIFACTS_DIR (no proving)..."
+cargo build --quiet --release --bin vkey
 SETTLEMENT_PROGRAM_VKEY=$(vkey settlement)
 BRIDGE_PROGRAM_VKEY=$(vkey bridge)
 SETTLEMENT_VK_HASH=0x$(sha256sum "$FIXTURE_DIR/vk.serde.json" | awk '{print $1}')

@@ -347,6 +347,25 @@ async fn main() -> Result<()> {
             .ensure_local_mock_verifiers(unsafe_allow_mock_on_sepolia)
             .await?;
     }
+    #[cfg(feature = "real-prover")]
+    {
+        // Per-rollup public artifacts (guest ELFs, settlement VK) are mounted
+        // at runtime; missing or unparseable files abort startup here.
+        let artifacts = zkapp_script::init_artifacts_from_env().with_context(|| {
+            format!(
+                "load settlement artifacts from {} ({} / {} / {})",
+                zkapp_script::Artifacts::dir_from_env().display(),
+                zkapp_script::SETTLEMENT_ELF_FILE,
+                zkapp_script::BRIDGE_ELF_FILE,
+                zkapp_script::SETTLEMENT_VK_FILE
+            )
+        })?;
+        tracing::info!(
+            dir = %artifacts.dir.display(),
+            settlement_vk_hash = %format!("0x{}", hex::encode(artifacts.native.vk_hash())),
+            "loaded settlement artifacts"
+        );
+    }
     validate_program_vkeys(&ethereum).await?;
     let prover_config = prover::NetworkRequestConfig {
         timeout: Duration::from_secs(u64_env("PROVER_TIMEOUT_SECS", 21_600)?),
@@ -593,13 +612,13 @@ async fn get_bridge_config(State(state): State<AppState>) -> Response {
 async fn validate_program_vkeys(ethereum: &ethereum::Ethereum) -> Result<()> {
     let configured = ethereum.configured_program_vkeys().await?;
     for (index, kind) in ProofKind::ALL.into_iter().enumerate() {
-        let embedded = prover::program_vkey(kind)
+        let loaded = prover::program_vkey(kind)
             .await?
             .parse::<B256>()
-            .with_context(|| format!("invalid embedded {kind} program vkey"))?;
+            .with_context(|| format!("invalid loaded {kind} program vkey"))?;
         anyhow::ensure!(
-            embedded == configured[index],
-            "embedded {kind} program vkey {embedded} does not match contract {}",
+            loaded == configured[index],
+            "loaded {kind} program vkey {loaded} does not match contract {}",
             configured[index]
         );
     }

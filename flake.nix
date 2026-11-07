@@ -5,10 +5,9 @@
   inputs.rust-overlay.url = "github:oxalica/rust-overlay";
   inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
 
-  outputs = { nixpkgs, rust-overlay, ... }:
+  outputs = { self, nixpkgs, rust-overlay, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
-    in {
       devShells = nixpkgs.lib.genAttrs systems (system:
         let
           pkgs = import nixpkgs {
@@ -32,5 +31,26 @@
             '';
           };
         });
+      imagePkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [ rust-overlay.overlays.default ];
+      };
+      imageRust = imagePkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain;
+      imageRustPlatform = imagePkgs.makeRustPlatform {
+        cargo = imageRust;
+        rustc = imageRust;
+      };
+    in {
+      inherit devShells;
+      packages.x86_64-linux = imagePkgs.callPackage ./nix/docker.nix {
+        rustPlatform = imageRustPlatform;
+        rustToolchain = imageRust;
+        foundry = imagePkgs.foundry;
+        bash = imagePkgs.bash;
+        source = ./.;
+        # Recorded in the guest provenance written by `zeko-bootstrap
+        # build-guests`; unset for dirty or path: references.
+        sourceRevision = self.rev or "unknown";
+      };
     };
 }
